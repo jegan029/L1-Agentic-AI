@@ -1,0 +1,98 @@
+{
+  "sop_id": "SOP-MQ-001",
+  "title": "MQ Queue Depth High - Investigation and Remediation",
+  "applicable_services": ["PaymentService", "OrderService"],
+  "applicable_categories": ["Middleware", "MQ"],
+  "applicable_assignment_groups": ["L1-Middleware-Support"],
+  "keywords": ["queue depth", "mq", "messages not consumed", "queue high", "payment"],
+  "steps": [
+    {
+      "step_id": "step-1",
+      "step_type": "NOTE",
+      "description": "Begin MQ queue depth investigation",
+      "parameters": {"text": "Starting investigation of MQ queue depth issue."},
+      "on_success": "step-2"
+    },
+    {
+      "step_id": "step-2",
+      "step_type": "MQ_CHECK",
+      "description": "Check queue depth on reported queue",
+      "parameters": {
+        "queue_manager": "QMPROD01",
+        "queue": "PAYMENT.REQUEST",
+        "action": "depth"
+      },
+      "expected_output": "Queue depth and consumer status",
+      "on_success": "step-3",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-3",
+      "step_type": "MQ_CHECK",
+      "description": "Check queue status and consumers",
+      "parameters": {
+        "queue_manager": "QMPROD01",
+        "queue": "PAYMENT.REQUEST",
+        "action": "status"
+      },
+      "on_success": "step-4",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-4",
+      "step_type": "SPLUNK_SEARCH",
+      "description": "Search application logs for errors",
+      "parameters": {
+        "query": "index=app_logs sourcetype=log4j host=app-server-* \"PaymentService\" (ERROR OR FATAL)",
+        "time_range": {"earliest": "-2h", "latest": "now"}
+      },
+      "on_success": "step-5",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-5",
+      "step_type": "AUTOSYS_STATUS",
+      "description": "Check if batch payment processing job is running",
+      "parameters": {
+        "job_name": "BATCH_PAYMENT_PROCESS",
+        "query_type": "status"
+      },
+      "on_success": "step-6",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-6",
+      "step_type": "DECISION",
+      "description": "Evaluate all check results",
+      "parameters": {"rule": "any_failed"},
+      "on_success": "step-resolve",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-resolve",
+      "step_type": "NOTE",
+      "description": "All checks passed - summarise findings",
+      "parameters": {
+        "text": "Investigation complete. All checks executed successfully. Evidence collected and attached. Queue depth is elevated but consumers are being investigated. Recommend monitoring."
+      }
+    },
+    {
+      "step_id": "step-escalate",
+      "step_type": "NOTE",
+      "description": "Escalation required",
+      "parameters": {
+        "text": "One or more checks failed or produced concerning results. Escalating to L2 with collected evidence."
+      }
+    }
+  ],
+  "pre_checks": ["Verify MQ connectivity", "Verify Splunk access"],
+  "tools_required": ["IR360", "Splunk", "Autosys"],
+  "escalation_criteria": {
+    "max_retry_count": 2,
+    "escalate_on_access_denied": true,
+    "escalate_on_ambiguous_result": true,
+    "escalate_on_write_action": true,
+    "custom_rules": []
+  },
+  "version": "1.0"
+}

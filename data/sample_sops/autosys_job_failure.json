@@ -1,0 +1,95 @@
+{
+  "sop_id": "SOP-AUTOSYS-001",
+  "title": "Autosys Batch Job Failure - Investigation",
+  "applicable_services": ["BatchProcessing", "ETL-Pipeline"],
+  "applicable_categories": ["Batch", "Scheduling"],
+  "applicable_assignment_groups": ["L1-Batch-Support"],
+  "keywords": ["autosys", "job failure", "batch failed", "job status FA", "autorep"],
+  "steps": [
+    {
+      "step_id": "step-1",
+      "step_type": "NOTE",
+      "description": "Begin Autosys job failure investigation",
+      "parameters": {"text": "Starting investigation of Autosys job failure."},
+      "on_success": "step-2"
+    },
+    {
+      "step_id": "step-2",
+      "step_type": "AUTOSYS_STATUS",
+      "description": "Check current job status",
+      "parameters": {
+        "job_name": "${job_name}",
+        "query_type": "status"
+      },
+      "on_success": "step-3",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-3",
+      "step_type": "AUTOSYS_STATUS",
+      "description": "Check job dependencies",
+      "parameters": {
+        "job_name": "${job_name}",
+        "query_type": "dependencies"
+      },
+      "on_success": "step-4",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-4",
+      "step_type": "SPLUNK_SEARCH",
+      "description": "Search for job execution logs",
+      "parameters": {
+        "query": "index=batch_logs source=autosys \"${job_name}\" (FAILURE OR ERROR)",
+        "time_range": {"earliest": "-4h", "latest": "now"}
+      },
+      "on_success": "step-5",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-5",
+      "step_type": "FILE_CHECK",
+      "description": "Check job output log file",
+      "parameters": {
+        "unc_path": "//batch-server/logs/autosys/${job_name}.log",
+        "pattern": "ERROR|FATAL|Exception",
+        "last_n_lines": 200
+      },
+      "on_success": "step-6",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-6",
+      "step_type": "DECISION",
+      "description": "Evaluate investigation results",
+      "parameters": {"rule": "all_success"},
+      "on_success": "step-resolve",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-resolve",
+      "step_type": "NOTE",
+      "description": "Investigation complete",
+      "parameters": {
+        "text": "Autosys job failure investigation complete. Evidence collected. Job may need manual restart by L2."
+      }
+    },
+    {
+      "step_id": "step-escalate",
+      "step_type": "NOTE",
+      "description": "Escalation to L2",
+      "parameters": {
+        "text": "Unable to fully diagnose job failure. Escalating to L2 with collected evidence."
+      }
+    }
+  ],
+  "pre_checks": ["Verify Autosys CLI access", "Verify Splunk access"],
+  "tools_required": ["Autosys", "Splunk", "WindowsShare"],
+  "escalation_criteria": {
+    "max_retry_count": 2,
+    "escalate_on_access_denied": true,
+    "escalate_on_ambiguous_result": true,
+    "escalate_on_write_action": true
+  },
+  "version": "1.0"
+}

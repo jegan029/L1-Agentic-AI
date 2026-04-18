@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "l1-virtual-engineer-agent"
+version = "1.0.0"
+description = "L1 Virtual Engineer Agent - Automated incident triage and resolution using SOPs"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+
+dependencies = [
+    "aiohttp>=3.9.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+]
+smb = [
+    "smbprotocol>=1.12.0",
+]
+
+[project.scripts]
+l1-agent = "src.l1_agent.main:main"
+l1-agent-demo = "src.l1_agent.demo:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]
+
+[tool.setuptools.packages.find]
+include = ["src*"]

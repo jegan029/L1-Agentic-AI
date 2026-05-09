@@ -7,7 +7,10 @@ import json
 import signal
 from typing import Any, Dict
 
+import json
+import aiohttp_cors
 from aiohttp import web
+from pathlib import Path
 
 from src.l1_agent.adapters.autosys_adapter import AutosysAdapter
 from src.l1_agent.adapters.base import BaseAdapter
@@ -43,6 +46,12 @@ from src.l1_agent.utils.logging import get_logger, setup_logging
 from src.l1_agent.utils.metrics import metrics
 from src.l1_agent.utils.retry import CircuitBreaker
 from src.l1_agent.utils.secrets import SecretsProvider
+from src.l1_agent.events.event_bus import EventBus
+from src.l1_agent.store.incident_history import IncidentHistoryStore
+from src.l1_agent.api.dashboard import make_dashboard_handler
+from src.l1_agent.api.incidents import make_incidents_handler
+from src.l1_agent.api.sops import make_sops_handler
+from src.l1_agent.api.stream import handle_stream
 
 logger = get_logger("main")
 
@@ -57,11 +66,14 @@ class L1AgentService:
         self._sop_parser = SOPParser()
         self._adapters = self._build_adapters(settings)
         self._circuit_breakers = self._build_circuit_breakers(settings)
+        self._event_bus = EventBus()
+        self._history_store = IncidentHistoryStore()
         self._executor = SOPExecutor(
             adapters=self._adapters,
             circuit_breakers=self._circuit_breakers,
             retry_max_attempts=settings.agent.retry_max_attempts,
             retry_base_delay=settings.agent.retry_base_delay_seconds,
+            event_bus=self._event_bus,
         )
         # Wire AI components when LLM is enabled
         self._llm_client = None
@@ -81,19 +93,42 @@ class L1AgentService:
             )
 
         self._memory = ResolutionMemory()
+        # In demo mode, pre-load sample SOPs from disk so incidents resolve properly
+        demo_sop_cache = self._load_demo_sops() if settings.agent.demo_mode else None
         self._processor = IncidentProcessor(
             snow_client=self._snow_client,
             sop_matcher=self._sop_matcher,
             sop_parser=self._sop_parser,
             executor=self._executor,
+            sop_cache=demo_sop_cache,
             confidence_threshold=settings.agent.sop_confidence_threshold,
             llm_client=self._llm_client,
             ai_analyzer=ai_analyzer,
             ai_executor=ai_executor,
             memory=self._memory,
+            event_bus=self._event_bus,
+            history_store=self._history_store,
         )
         self._running = False
         self._semaphore = asyncio.Semaphore(settings.agent.max_concurrent_incidents)
+
+    def _load_demo_sops(self) -> list:
+        """Load all JSON SOPs from data/sample_sops/ for demo mode."""
+        from src.l1_agent.models.sop import SOP
+        sops = []
+        sop_dir = Path("data/sample_sops")
+        if not sop_dir.exists():
+            logger.warning("Demo SOP directory not found: %s", sop_dir)
+            return sops
+        for f in sop_dir.glob("*.json"):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                sops.append(SOP.from_dict(data))
+                logger.info("Demo: loaded SOP %s from %s", data.get("sop_id", f.name), f.name)
+            except Exception as exc:
+                logger.error("Failed to load demo SOP %s: %s", f.name, exc)
+        logger.info("Demo mode: pre-loaded %d SOPs", len(sops))
+        return sops
 
     def _build_adapters(self, settings: Settings) -> Dict[str, BaseAdapter]:
         if settings.agent.demo_mode:
@@ -166,10 +201,38 @@ class L1AgentService:
 
     def _create_app(self) -> web.Application:
         app = web.Application()
+        app["event_bus"] = self._event_bus
+        app["history_store"] = self._history_store
+
+        # Existing routes
         app.router.add_post("/webhook/incident", self._handle_webhook)
         app.router.add_get("/health", self._handle_health)
         app.router.add_get("/metrics", self._handle_metrics)
+
+        # Dashboard API routes
+        app.router.add_get("/api/dashboard/summary", make_dashboard_handler(self._history_store))
+        app.router.add_get("/api/incidents", make_incidents_handler(self._history_store))
+        app.router.add_get("/api/incidents/{incident_number}", make_incidents_handler(self._history_store))
+        app.router.add_get("/api/sops/stats", make_sops_handler(self._history_store))
+        app.router.add_get("/api/stream", handle_stream)
+
         SOPEditorRoutes(sop_dir="data/sample_sops").register(app)
+
+        # CORS — allow all origins (demo/showcase mode)
+        cors = aiohttp_cors.setup(app, defaults={
+            "*": aiohttp_cors.ResourceOptions(
+                allow_credentials=False,
+                expose_headers="*",
+                allow_headers="*",
+                allow_methods=["GET", "POST", "OPTIONS"],
+            )
+        })
+        for route in list(app.router.routes()):
+            try:
+                cors.add(route)
+            except Exception:
+                pass
+
         return app
 
     # ── Polling worker ────────────────────────────────────────────────
@@ -227,11 +290,19 @@ class L1AgentService:
         # Start poll loop as background task
         poll_task = asyncio.create_task(self._poll_loop())
 
-        # Wait for shutdown signal
+        # Wait for shutdown signal (Windows-compatible)
         stop_event = asyncio.Event()
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            loop.add_signal_handler(sig, stop_event.set)
+        try:
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(sig, stop_event.set)
+        except NotImplementedError:
+            # Windows does not support add_signal_handler; use signal.signal instead
+            import threading
+            def _win_handler(signum, frame):
+                loop.call_soon_threadsafe(stop_event.set)
+            signal.signal(signal.SIGINT, _win_handler)
+            signal.signal(signal.SIGTERM, _win_handler)
         await stop_event.wait()
 
         logger.info("Shutting down...")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from src.l1_agent.adapters.base import AdapterResult, BaseAdapter
 from src.l1_agent.models.evidence import (
@@ -18,6 +18,9 @@ from src.l1_agent.models.sop import SOP, SOPStep, StepType
 from src.l1_agent.utils.logging import get_logger, set_correlation_id
 from src.l1_agent.utils.metrics import metrics
 from src.l1_agent.utils.retry import CircuitBreaker, retry_with_backoff
+
+if TYPE_CHECKING:
+    from src.l1_agent.events.event_bus import EventBus
 
 logger = get_logger("executor")
 
@@ -46,11 +49,13 @@ class SOPExecutor:
         circuit_breakers: Optional[Dict[str, CircuitBreaker]] = None,
         retry_max_attempts: int = 3,
         retry_base_delay: float = 1.0,
+        event_bus: Optional["EventBus"] = None,
     ) -> None:
         self._adapters = adapters
         self._circuit_breakers = circuit_breakers or {}
         self._retry_max = retry_max_attempts
         self._retry_delay = retry_base_delay
+        self._event_bus = event_bus
 
     async def execute_sop(
         self,
@@ -85,11 +90,14 @@ class SOPExecutor:
         )
 
         if work_note_callback:
-            await work_note_callback(
-                incident.sys_id,
-                f"[L1 Agent] Starting SOP: {sop.title} ({sop.sop_id})\n"
-                f"Steps to execute: {len(sop.steps)}",
-            )
+            try:
+                await work_note_callback(
+                    incident.sys_id,
+                    f"[L1 Agent] Starting SOP: {sop.title} ({sop.sop_id})\n"
+                    f"Steps to execute: {len(sop.steps)}",
+                )
+            except Exception as exc:
+                logger.warning("Work note callback failed (start): %s", exc)
 
         # Build step index for DECISION branching
         step_index: Dict[str, SOPStep] = {s.step_id: s for s in sop.steps}
@@ -103,16 +111,38 @@ class SOPExecutor:
                 logger.warning("Step %s not found; ending execution", current_step_id)
                 break
 
+            if self._event_bus:
+                await self._event_bus.publish({
+                    "type": "step_executing",
+                    "incident_number": incident.number,
+                    "step_id": step.step_id,
+                    "step_type": step.step_type,
+                    "description": step.description,
+                })
+
             result = await self._execute_step(step, incident, summary)
             summary.step_results.append(result)
 
+            if self._event_bus:
+                await self._event_bus.publish({
+                    "type": "step_done",
+                    "incident_number": incident.number,
+                    "step_id": step.step_id,
+                    "status": result.status.value,
+                    "output_summary": result.output_summary[:200],
+                    "duration_ms": round(result.duration_ms, 1),
+                })
+
             # Post work note for this step
             if work_note_callback:
-                note = (
-                    f"[L1 Agent] Step {step.step_id} ({step.step_type}): "
-                    f"{result.status.value.upper()}\n{result.output_summary}"
-                )
-                await work_note_callback(incident.sys_id, note)
+                try:
+                    note = (
+                        f"[L1 Agent] Step {step.step_id} ({step.step_type}): "
+                        f"{result.status.value.upper()}\n{result.output_summary}"
+                    )
+                    await work_note_callback(incident.sys_id, note)
+                except Exception as exc:
+                    logger.warning("Work note callback failed (step %s): %s", step.step_id, exc)
 
             # Determine next step
             if result.status == StepStatus.ESCALATED:

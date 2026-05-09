@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 48" fill="none">
+  <!-- Blue square mark -->
+  <rect width="48" height="48" rx="2" fill="#001AFF"/>
+  <text x="9" y="32" font-family="Arial, sans-serif" font-weight="800" font-size="22" fill="#ffffff" letter-spacing="-1">SS</text>
+  <!-- Wordmark -->
+  <text x="58" y="20" font-family="Arial, sans-serif" font-weight="700" font-size="15" fill="#020B5B" letter-spacing="0.2">STATE STREET</text>
+  <text x="59" y="38" font-family="Arial, sans-serif" font-weight="400" font-size="11" fill="#020B5B" letter-spacing="0.5">CORPORATION</text>
+</svg>

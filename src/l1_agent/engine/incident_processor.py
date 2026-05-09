@@ -10,7 +10,7 @@ Supports two modes:
 
 from __future__ import annotations
 
-from typing import List, Optional, Set
+from typing import TYPE_CHECKING, List, Optional, Set
 
 from src.l1_agent.ai.ai_executor import AIExecutor
 from src.l1_agent.ai.analyzer import AIAnalyzer, AIMatchResult
@@ -25,6 +25,10 @@ from src.l1_agent.models.sop import SOP
 from src.l1_agent.engine.resolution_memory import ResolutionMemory
 from src.l1_agent.utils.logging import get_logger, set_correlation_id
 from src.l1_agent.utils.metrics import metrics
+
+if TYPE_CHECKING:
+    from src.l1_agent.events.event_bus import EventBus
+    from src.l1_agent.store.incident_history import IncidentHistoryStore
 
 logger = get_logger("incident_processor")
 
@@ -50,6 +54,8 @@ class IncidentProcessor:
         ai_analyzer: Optional[AIAnalyzer] = None,
         ai_executor: Optional[AIExecutor] = None,
         memory: Optional[ResolutionMemory] = None,
+        event_bus: Optional["EventBus"] = None,
+        history_store: Optional["IncidentHistoryStore"] = None,
     ) -> None:
         self._snow = snow_client
         self._matcher = sop_matcher
@@ -59,6 +65,8 @@ class IncidentProcessor:
         self._threshold = confidence_threshold
         self._processed_ids: Set[str] = set()
         self._memory = memory
+        self._event_bus = event_bus
+        self._history_store = history_store
 
         # AI components (optional)
         self._llm = llm_client
@@ -87,6 +95,15 @@ class IncidentProcessor:
 
         metrics.increment("incidents.received")
         logger.info("Processing incident %s: %s", incident.number, incident.short_description)
+
+        if self._event_bus:
+            await self._event_bus.publish({
+                "type": "incident_received",
+                "incident_number": incident.number,
+                "short_description": incident.short_description,
+                "priority": incident.priority,
+                "category": incident.category,
+            })
 
         if self._ai_enabled:
             return await self._process_with_ai(incident)
@@ -144,6 +161,14 @@ class IncidentProcessor:
             f"(confidence: {ai_match.confidence:.2f})\n"
             f"AI rationale: {ai_match.rationale}",
         )
+        if self._event_bus:
+            await self._event_bus.publish({
+                "type": "sop_matched",
+                "incident_number": incident.number,
+                "sop_id": sop.sop_id,
+                "sop_title": sop.title,
+                "confidence": round(ai_match.confidence, 3),
+            })
 
         # 4. Set incident to In Progress
         await self._update_state(incident, state=2)
@@ -178,13 +203,22 @@ class IncidentProcessor:
         )
         await self._post_note(incident, note)
         metrics.increment("incidents.escalated", labels={"reason": "no_sop_ai"})
-        return ExecutionSummary(
+        summary = ExecutionSummary(
             incident_number=incident.number,
             sop_id="",
             sop_title="",
             outcome=ExecutionOutcome.ESCALATED,
             escalation_reason=f"AI: No applicable SOP. {match.rationale}",
         )
+        if self._history_store:
+            await self._history_store.record(incident, summary)
+        if self._event_bus:
+            await self._event_bus.publish({
+                "type": "incident_escalated",
+                "incident_number": incident.number,
+                "reason": "no_sop_ai",
+            })
+        return summary
 
     async def _escalate_low_confidence_ai(
         self, incident: Incident, match: AIMatchResult
@@ -202,13 +236,22 @@ class IncidentProcessor:
         )
         await self._post_note(incident, note)
         metrics.increment("incidents.escalated", labels={"reason": "low_confidence_ai"})
-        return ExecutionSummary(
+        summary = ExecutionSummary(
             incident_number=incident.number,
             sop_id=sop_id,
             sop_title=sop_title,
             outcome=ExecutionOutcome.ESCALATED,
             escalation_reason=f"AI: Low confidence ({match.confidence:.2f}). {match.rationale}",
         )
+        if self._history_store:
+            await self._history_store.record(incident, summary)
+        if self._event_bus:
+            await self._event_bus.publish({
+                "type": "incident_escalated",
+                "incident_number": incident.number,
+                "reason": "low_confidence_ai",
+            })
+        return summary
 
     # ── Rule-based processing (fallback) ──────────────────────────────
 
@@ -238,6 +281,14 @@ class IncidentProcessor:
             f"[L1 Agent] SOP matched: {sop.title} (confidence: {match_result.confidence:.2f})\n"
             f"Rationale: {match_result.rationale}",
         )
+        if self._event_bus:
+            await self._event_bus.publish({
+                "type": "sop_matched",
+                "incident_number": incident.number,
+                "sop_id": sop.sop_id,
+                "sop_title": sop.title,
+                "confidence": round(match_result.confidence, 3),
+            })
 
         # 3. Set incident to In Progress
         await self._update_state(incident, state=2)
@@ -284,13 +335,18 @@ class IncidentProcessor:
         )
         await self._post_note(incident, note)
         metrics.increment("incidents.escalated", labels={"reason": "no_sop"})
-        return ExecutionSummary(
+        summary = ExecutionSummary(
             incident_number=incident.number,
             sop_id="",
             sop_title="",
             outcome=ExecutionOutcome.ESCALATED,
             escalation_reason="No applicable SOP found",
         )
+        if self._history_store:
+            await self._history_store.record(incident, summary)
+        if self._event_bus:
+            await self._event_bus.publish({"type": "incident_escalated", "incident_number": incident.number, "reason": "no_sop"})
+        return summary
 
     async def _escalate_low_confidence(
         self, incident: Incident, match: MatchResult
@@ -307,13 +363,18 @@ class IncidentProcessor:
         )
         await self._post_note(incident, note)
         metrics.increment("incidents.escalated", labels={"reason": "low_confidence"})
-        return ExecutionSummary(
+        summary = ExecutionSummary(
             incident_number=incident.number,
             sop_id=sop_id,
             sop_title=sop_title,
             outcome=ExecutionOutcome.ESCALATED,
             escalation_reason=f"Low confidence SOP match: {match.confidence:.2f}",
         )
+        if self._history_store:
+            await self._history_store.record(incident, summary)
+        if self._event_bus:
+            await self._event_bus.publish({"type": "incident_escalated", "incident_number": incident.number, "reason": "low_confidence"})
+        return summary
 
     async def _post_conclusion(
         self, incident: Incident, summary: ExecutionSummary, confidence: float = 0.0
@@ -322,11 +383,22 @@ class IncidentProcessor:
         note = summary.to_work_note()
         await self._post_note(incident, note)
 
+        if self._history_store:
+            await self._history_store.record(incident, summary)
+
         if summary.outcome == ExecutionOutcome.RESOLVED:
             await self._update_state(incident, state=6)  # Resolved
             metrics.increment("incidents.resolved")
             if self._memory and summary.sop_id:
                 self._memory.record(incident, summary, confidence_used=confidence)
+            if self._event_bus:
+                await self._event_bus.publish({
+                    "type": "incident_resolved",
+                    "incident_number": incident.number,
+                    "sop_id": summary.sop_id,
+                    "sop_title": summary.sop_title,
+                    "duration_ms": round(summary.total_duration_ms, 1),
+                })
         elif summary.outcome == ExecutionOutcome.ESCALATED:
             escalation_packet = summary.to_escalation_packet()
             await self._post_note(
@@ -334,8 +406,20 @@ class IncidentProcessor:
                 f"[L1 Agent] Escalation packet:\n{_format_escalation(escalation_packet)}",
             )
             metrics.increment("incidents.escalated", labels={"reason": "sop_execution"})
+            if self._event_bus:
+                await self._event_bus.publish({
+                    "type": "incident_escalated",
+                    "incident_number": incident.number,
+                    "reason": summary.escalation_reason or "sop_execution",
+                })
         else:
             metrics.increment("incidents.failed")
+            if self._event_bus:
+                await self._event_bus.publish({
+                    "type": "incident_escalated",
+                    "incident_number": incident.number,
+                    "reason": summary.escalation_reason or "failed",
+                })
 
     async def _post_note(self, incident: Incident, note: str) -> None:
         """Post a work note to the incident; swallow errors."""

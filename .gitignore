@@ -59,3 +59,11 @@ ENV/
 *.swo
 *~
 .DS_Store
+
+# Runtime data files
+data/incident_history.jsonl
+data/resolution_memory.jsonl
+
+# Frontend build output
+frontend/node_modules/
+frontend/dist/

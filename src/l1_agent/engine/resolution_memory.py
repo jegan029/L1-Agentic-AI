@@ -135,16 +135,22 @@ class ResolutionMemory:
     def stats(self) -> Dict[str, object]:
         """Return a snapshot of all tracked SOPs for observability."""
         with self._lock:
-            return {
-                sop_id: {
-                    "total": self._total_counts[sop_id],
-                    "resolved": self._success_counts[sop_id],
-                    "success_rate": round(self.success_rate(sop_id), 3),
-                    "avg_confidence": round(self.average_confidence(sop_id), 3),
-                    "boost_factor": round(self.boost_factor(sop_id), 3),
+            result = {}
+            for sop_id in self._total_counts:
+                total = self._total_counts[sop_id]
+                resolved = self._success_counts.get(sop_id, 0)
+                hist = self._confidence_history.get(sop_id, [])
+                rate = (resolved / total) if total > 0 else 0.5
+                avg_conf = (sum(hist) / len(hist)) if hist else 0.0
+                boost = 0.90 + (rate * 0.20) if total >= 3 else 1.0
+                result[sop_id] = {
+                    "total": total,
+                    "resolved": resolved,
+                    "success_rate": round(rate, 3),
+                    "avg_confidence": round(avg_conf, 3),
+                    "boost_factor": round(boost, 3),
                 }
-                for sop_id in self._total_counts
-            }
+            return result
 
     # ── Startup load ──────────────────────────────────────────────────
 

@@ -73,6 +73,18 @@ The L1 Virtual Engineer Agent automates L1 incident triage and resolution by:
 │  └───────────────────────────────────────────────────────────────────┘   │
 │                                                                           │
 │  ┌───────────────────────────────────────────────────────────────────┐   │
+│  │                  New in v3 — Escalation Engine                     │   │
+│  │  ┌─────────────────┐  ┌──────────────────┐  ┌─────────────────┐  │   │
+│  │  │ L2Router        │  │ EmailNotifier     │  │ EventBus /      │  │   │
+│  │  │ (CI→team        │  │ (SMTP/TLS         │  │ IncidentHistory │  │   │
+│  │  │  fnmatch rules) │  │  best-effort)     │  │ Store (SSE+JSONL│  │   │
+│  │  └─────────────────┘  └──────────────────┘  └─────────────────┘  │   │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │   │
+│  │  │ escalate_to_l2(): route → SNOW update → email → history →SSE │  │   │
+│  │  └──────────────────────────────────────────────────────────────┘  │   │
+│  └───────────────────────────────────────────────────────────────────┘   │
+│                                                                           │
+│  ┌───────────────────────────────────────────────────────────────────┐   │
 │  │                       Observability                                │   │
 │  │  ┌──────────────┐  ┌────────────────┐  ┌──────────────────────┐  │   │
 │  │  │ Structured   │  │ Metrics        │  │ Audit Trail          │  │   │
@@ -290,16 +302,67 @@ Every step execution produces an audit record:
 
 | Trigger | Action |
 |---------|--------|
-| No matching SOP | Post "No SOP found" note, assign to L2 |
-| SOP confidence < threshold | Post alternatives, assign to L2 |
-| Tool access denied | Post error details, assign to L2 |
-| Ambiguous/inconsistent data | Post findings, request L2 review |
+| No matching SOP | Post "No SOP found" note, route to L2 via CI mapping |
+| SOP confidence < threshold (or None) | Post alternatives, route to L2 via CI mapping |
+| Tool access denied | Post error details, route to L2 via CI mapping |
+| Ambiguous/inconsistent data | Post findings, route to L2 via CI mapping |
 | Write action required | Post approval request, pause execution |
-| Step execution failure (after retries) | Post error + evidence, assign to L2 |
+| Step execution failure (after retries) | Post error + evidence, route to L2 via CI mapping |
 
-### 7.2 Escalation Packet
+### 7.2 Central Escalation Function
 
-When escalating, the agent posts a structured summary:
+All escalation paths funnel through a single `escalate_to_l2()` coroutine
+(`src/l1_agent/escalation/escalator.py`) that performs these steps in order:
+
+```
+1. ROUTE    L2Router.resolve_l2_team(incident.cmdb_ci)
+            → looks up config/l2_routing.json (fnmatch wildcard patterns)
+            → returns {"name": "L2-Database", "email": "l2-db@example.com"}
+
+2. SNOW     Update incident assignment_group to the resolved L2 team name
+
+3. EMAIL    send_escalation_email(team_email, subject, body)
+            → SMTP/TLS using SMTP_HOST/PORT/USER/PASSWORD/FROM env vars
+            → best-effort: logs warning if unconfigured, escalation continues
+
+4. HISTORY  history_store.record(incident, summary)   [if not already recorded]
+
+5. SSE      event_bus.publish({
+              "type":           "incident_escalated",
+              "incident_number": "INC0012345",
+              "reason":          "low_confidence",
+              "l2_team_name":    "L2-Database",
+              "l2_team_email":   "l2-db@example.com",
+              "email_sent":       true
+            })
+```
+
+### 7.3 CI-Based L2 Team Routing
+
+`L2Router` (`src/l1_agent/escalation/l2_router.py`) loads routing rules from
+`src/l1_agent/config/l2_routing.json` at startup. CI patterns use Python's
+`fnmatch` (case-insensitive):
+
+```json
+{
+  "default_team": { "name": "L2-General", "email": "l2-general@statestreet.com" },
+  "ci_mappings": {
+    "DB*":      { "name": "L2-Database",     "email": "l2-database@statestreet.com" },
+    "MQ*":      { "name": "L2-Middleware",   "email": "l2-middleware@statestreet.com" },
+    "APP*":     { "name": "L2-AppSupport",   "email": "l2-appsupport@statestreet.com" },
+    "MF*":      { "name": "L2-Mainframe",    "email": "l2-mainframe@statestreet.com" },
+    "AUTOSYS*": { "name": "L2-BatchScheduling", "email": "l2-batch@statestreet.com" }
+  }
+}
+```
+
+If no pattern matches or the CI is empty, the `default_team` is used.
+The routing file can be updated without restarting the service; reload by
+restarting the process or adding a hot-reload endpoint.
+
+### 7.4 Escalation Packet
+
+When escalating after partial SOP execution, the agent posts a structured summary:
 ```
 [L1 Agent Escalation]
 Incident: INC0012345
@@ -312,6 +375,7 @@ Checks performed:
   [FAIL] step-3: Autosys job status - Connection timeout
 
 Action needed: Verify Autosys connectivity; review job BATCH_PAYMENT_001
+Routed to: L2-Middleware (l2-middleware@statestreet.com)
 ```
 
 ## 8. SOP Schema
@@ -580,6 +644,11 @@ Coverage reports are uploaded to Codecov. Bandit reports are stored as artifacts
 | `GET` | `/sop-editor/{id}` | Edit SOP form |
 | `POST` | `/sop-editor/save` | Save SOP |
 | `POST` | `/sop-editor/{id}/delete` | Delete SOP |
+| `GET` | `/api/dashboard/summary` | KPIs, outcome breakdown, escalation reasons, 7-day trend |
+| `GET` | `/api/incidents` | Paginated history (`?page=&per_page=&search=&outcome=&priority=`) |
+| `GET` | `/api/incidents/{n}` | Single incident with full step trace |
+| `GET` | `/api/sops/stats` | Per-SOP resolution statistics |
+| `GET` | `/api/stream` | SSE stream of real-time agent events |
 
 ## 14. Configuration Reference
 
@@ -596,6 +665,16 @@ All settings are environment-variable-driven. Copy `.env.example` and set values
 | `AGENT_WEBHOOK_PORT` | `8080` | HTTP server port |
 | `AGENT_LOG_LEVEL` | `INFO` | Logging level |
 
+### Email (Escalation Notifications)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SMTP_HOST` | — | SMTP server hostname (leave blank to skip email) |
+| `SMTP_PORT` | `587` | SMTP port (STARTTLS) |
+| `SMTP_USER` | — | SMTP login username |
+| `SMTP_PASSWORD` | — | SMTP login password |
+| `SMTP_FROM` | (`SMTP_USER`) | Sender address for escalation emails |
+
 ### Secrets Backend
 
 | Variable | Default | Description |
@@ -607,7 +686,52 @@ All settings are environment-variable-driven. Copy `.env.example` and set values
 | `AWS_REGION` | `us-east-1` | AWS region for SSM |
 | `AWS_SSM_PREFIX` | `/l1-agent` | SSM parameter path prefix |
 
-## 15. Future Enhancements
+## 15. New Features (v3)
+
+### 15.1 Intelligent Escalation Engine
+
+Three new modules implement a fully auditable L2 escalation pipeline:
+
+| Module | Path | Purpose |
+|--------|------|---------|
+| `L2Router` | `escalation/l2_router.py` | Resolves CI → L2 team via fnmatch wildcard rules |
+| `escalate_to_l2()` | `escalation/escalator.py` | Central coroutine: route, SNOW update, email, history, SSE |
+| `send_escalation_email()` | `notifications/email_notifier.py` | SMTP/TLS email, best-effort |
+| L2 routing config | `config/l2_routing.json` | CI pattern → team name + email (editable without code change) |
+
+**Confidence threshold enforcement** — both AI and rule-based paths now explicitly guard against `None` confidence scores in addition to below-threshold values. The check is `if confidence is None or confidence < threshold`.
+
+### 15.2 Frontend Dashboard (v3)
+
+A React + Vite customer-facing dashboard at `frontend/`:
+
+| Page | Data Source |
+|------|------------|
+| Live Dashboard | `GET /api/dashboard/summary` (polls every 10s) |
+| Incident Feed | `GET /api/incidents` with pagination + filters |
+| Incident Detail | `GET /api/incidents/{n}` (step-by-step trace) |
+| SOP Performance | `GET /api/sops/stats` (polls every 30s) |
+| Activity Feed | `GET /api/stream` (SSE, auto-reconnects) |
+
+The `incident_escalated` SSE event now carries `l2_team_name`, `l2_team_email`, and `email_sent` so the Activity Feed can display the routed team in real time.
+
+### 15.3 Bug Fixes
+
+| Bug | Root Cause | Fix |
+|-----|-----------|-----|
+| Backend hangs on restart when history exists | `ResolutionMemory.stats()` held `Lock` then called `success_rate()` / `average_confidence()` which re-acquired the same non-re-entrant `Lock` → deadlock | Compute all values inline within the single `with self._lock` block |
+| Demo SOPs not found when cwd differs | `_load_demo_sops()` used `Path("data/sample_sops")` relative to cwd | Changed to `Path(__file__).resolve().parent.parent.parent / "data" / "sample_sops"` with cwd fallback |
+
+### 15.4 Unit Tests
+
+| Test File | Tests | Coverage |
+|-----------|-------|---------|
+| `tests/unit/test_l2_router.py` | 11 | Wildcard match, case-insensitive, empty CI, missing config, copy safety |
+| `tests/unit/test_confidence_threshold.py` | 5 | None escalates, below threshold escalates, at threshold executes, above executes, no SOP escalates |
+
+Run with: `pytest tests/unit/ -v`
+
+## 16. Future Enhancements
 
 - **Kubernetes deployment**: Helm chart with HPA for auto-scaling
 - **Fine-tuned SOP matching model**: Train on historical incident-SOP pairs from ResolutionMemory

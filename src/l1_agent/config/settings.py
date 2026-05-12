@@ -119,6 +119,17 @@ class SecretsSettings:
 
 
 @dataclass(frozen=True)
+class SmtpSettings:
+    """SMTP configuration for escalation email notifications."""
+
+    host: str = ""
+    port: int = 587
+    user: str = ""
+    password: str = ""
+    from_address: str = ""
+
+
+@dataclass(frozen=True)
 class AgentSettings:
     sop_confidence_threshold: float = 0.6
     max_concurrent_incidents: int = 5
@@ -145,6 +156,7 @@ class Settings:
     llm: LLMSettings = field(default_factory=LLMSettings)
     agent: AgentSettings = field(default_factory=AgentSettings)
     secrets: SecretsSettings = field(default_factory=SecretsSettings)
+    smtp: SmtpSettings = field(default_factory=SmtpSettings)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -246,5 +258,12 @@ class Settings:
                 vault_path_prefix=os.getenv("VAULT_PATH_PREFIX", "l1-agent"),
                 aws_region=os.getenv("AWS_REGION", "us-east-1"),
                 aws_ssm_prefix=os.getenv("AWS_SSM_PREFIX", "/l1-agent"),
+            ),
+            smtp=SmtpSettings(
+                host=os.getenv("SMTP_HOST", ""),
+                port=int(os.getenv("SMTP_PORT", "587")),
+                user=os.getenv("SMTP_USER", ""),
+                password=os.getenv("SMTP_PASSWORD", ""),
+                from_address=os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "")),
             ),
         )

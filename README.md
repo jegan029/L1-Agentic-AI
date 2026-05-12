@@ -10,12 +10,24 @@ The platform includes a **React + Vite customer-facing dashboard** styled to the
 
 ## What's New
 
+### Intelligent Escalation Engine (Latest)
+
+A full L2 escalation pipeline has been added, replacing ad-hoc escalation logic with a single, auditable flow:
+
+- **CI-Based L2 Routing** (`escalation/l2_router.py`) — maps the ticket's Configuration Item to the correct L2 team via `config/l2_routing.json`. Supports fnmatch wildcards (`DB*`, `MQ*`, `APP*`) with a configurable default fallback team.
+- **Email Notification** (`notifications/email_notifier.py`) — sends a structured escalation email to the resolved L2 team via SMTP/TLS. Reads `SMTP_HOST/PORT/USER/PASSWORD/FROM` from environment. Best-effort: if SMTP is unconfigured, escalation proceeds and a warning is logged.
+- **Central Escalation Function** (`escalation/escalator.py`) — single `escalate_to_l2()` coroutine called by all escalation paths (no SOP, low confidence, mid-SOP failure). Handles routing → SNOW assignment group update → email → history record → enriched SSE event in one place.
+- **Confidence Threshold Enforcement** — both AI and rule-based paths now guard against `None` confidence; all checks use the single `AGENT_SOP_CONFIDENCE_THRESHOLD` variable.
+- **Enriched SSE Escalation Event** — `incident_escalated` events now include `l2_team_name`, `l2_team_email`, and `email_sent`.
+- **Bug fix** — `ResolutionMemory.stats()` had a threading deadlock (re-entrant `Lock` acquisition) that surfaced when historical data was present at startup. Fixed by computing all values inline within the single lock acquisition.
+- **Unit Tests** — `tests/unit/test_l2_router.py` (11 tests) and `tests/unit/test_confidence_threshold.py` (5 tests).
+
 ### Frontend Dashboard (React + Vite)
-A full customer-facing showcase dashboard has been added at `frontend/` with:
+A full customer-facing showcase dashboard at `frontend/` with:
 - **Live Dashboard** — KPI cards, outcome donut chart, escalation reasons bar chart, 7-day activity trend
 - **Incident Feed** — searchable/filterable table of all processed incidents; click any row to drill into the step-by-step execution trace
 - **SOP Performance** — per-SOP resolution rates with sortable columns and inline progress bars
-- **Activity Feed** — real-time SSE stream of every agent action (incident received → SOP matched → step executing → resolved/escalated)
+- **Activity Feed** — real-time SSE stream of every agent action; now shows routed L2 team and email status on escalation events
 - State Street brand design: navy/blue colour scheme, official logo, Inter typography
 
 ### Backend Extensions
@@ -109,6 +121,11 @@ L1-Agentic AI/
 │   │   │   ├── webui_scraper_adapter.py # Selenium headless browser
 │   │   │   ├── windows_share_adapter.py # SMB/UNC log reader
 │   │   │   └── mock_adapters.py       # Mock adapters for demo/testing
+│   │   ├── escalation/
+│   │   │   ├── l2_router.py           # NEW: CI → L2 team routing (fnmatch wildcards)
+│   │   │   └── escalator.py           # NEW: central escalate_to_l2() function
+│   │   ├── notifications/
+│   │   │   └── email_notifier.py      # NEW: SMTP/TLS escalation email sender
 │   │   ├── events/
 │   │   │   └── event_bus.py           # NEW: async SSE fan-out broadcaster
 │   │   ├── store/
@@ -130,7 +147,9 @@ L1-Agentic AI/
 │   │   ├── sample_sops/               # SOP JSON library (MQ, Autosys)
 │   │   └── incident_history.jsonl     # Persisted incident execution history
 │   ├── tests/
-│   │   ├── unit/                      # Unit tests with mock adapters
+│   │   ├── unit/
+│   │   │   ├── test_l2_router.py      # NEW: 11 tests for CI routing + wildcards
+│   │   │   └── test_confidence_threshold.py  # NEW: 5 tests for threshold enforcement
 │   │   └── integration/               # Integration test scaffolding
 │   ├── ARCHITECTURE.md
 │   ├── RUNBOOK.md
@@ -276,7 +295,7 @@ curl -X POST http://localhost:8080/webhook/incident \
 | `step_executing` | `incident_number`, `step_id`, `step_type`, `description` |
 | `step_done` | `incident_number`, `step_id`, `status`, `output_summary`, `duration_ms` |
 | `incident_resolved` | `incident_number`, `sop_id`, `duration_ms` |
-| `incident_escalated` | `incident_number`, `reason` |
+| `incident_escalated` | `incident_number`, `reason`, `l2_team_name`, `l2_team_email`, `email_sent` |
 | `heartbeat` | `ts` (every 25s, keeps connection alive) |
 
 ---
@@ -297,6 +316,10 @@ Copy `.env.example` and fill in credentials. Key variables:
 | `SERVICENOW_USERNAME` / `_PASSWORD` | — | API credentials |
 | `SPLUNK_BASE_URL` / `_TOKEN` | — | Splunk REST API |
 | `IR360_BASE_URL` / `_API_KEY` | — | IR360 MQ monitoring |
+| `SMTP_HOST` | — | SMTP server for escalation emails |
+| `SMTP_PORT` | `587` | SMTP port (STARTTLS) |
+| `SMTP_USER` / `SMTP_PASSWORD` | — | SMTP credentials |
+| `SMTP_FROM` | (`SMTP_USER`) | Sender address for escalation emails |
 
 ---
 

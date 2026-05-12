@@ -27,8 +27,12 @@ from src.l1_agent.utils.logging import get_logger, set_correlation_id
 from src.l1_agent.utils.metrics import metrics
 
 if TYPE_CHECKING:
+    from src.l1_agent.clients.servicenow_client import ServiceNowClient as _SNClient
     from src.l1_agent.events.event_bus import EventBus
     from src.l1_agent.store.incident_history import IncidentHistoryStore
+
+from src.l1_agent.escalation.escalator import escalate_to_l2
+from src.l1_agent.escalation.l2_router import L2Router
 
 logger = get_logger("incident_processor")
 
@@ -56,6 +60,7 @@ class IncidentProcessor:
         memory: Optional[ResolutionMemory] = None,
         event_bus: Optional["EventBus"] = None,
         history_store: Optional["IncidentHistoryStore"] = None,
+        l2_router: Optional[L2Router] = None,
     ) -> None:
         self._snow = snow_client
         self._matcher = sop_matcher
@@ -67,6 +72,7 @@ class IncidentProcessor:
         self._memory = memory
         self._event_bus = event_bus
         self._history_store = history_store
+        self._l2_router = l2_router or L2Router()
 
         # AI components (optional)
         self._llm = llm_client
@@ -151,7 +157,7 @@ class IncidentProcessor:
         if not ai_match.sop:
             return await self._escalate_no_sop_ai(incident, ai_match)
 
-        if ai_match.confidence < self._threshold:
+        if ai_match.confidence is None or ai_match.confidence < self._threshold:
             return await self._escalate_low_confidence_ai(incident, ai_match)
 
         sop = ai_match.sop
@@ -210,14 +216,15 @@ class IncidentProcessor:
             outcome=ExecutionOutcome.ESCALATED,
             escalation_reason=f"AI: No applicable SOP. {match.rationale}",
         )
-        if self._history_store:
-            await self._history_store.record(incident, summary)
-        if self._event_bus:
-            await self._event_bus.publish({
-                "type": "incident_escalated",
-                "incident_number": incident.number,
-                "reason": "no_sop_ai",
-            })
+        await escalate_to_l2(
+            incident=incident,
+            summary=summary,
+            reason="no_sop_ai",
+            l2_router=self._l2_router,
+            event_bus=self._event_bus,
+            history_store=self._history_store,
+            snow_client=self._snow,
+        )
         return summary
 
     async def _escalate_low_confidence_ai(
@@ -227,9 +234,9 @@ class IncidentProcessor:
         sop = match.sop
         sop_title = sop.title if sop else "N/A"
         sop_id = sop.sop_id if sop else ""
+        conf_str = f"{match.confidence:.2f}" if match.confidence is not None else "N/A"
         note = (
-            f"[L1 Agent - AI] ESCALATION: Low confidence SOP match "
-            f"({match.confidence:.2f}).\n"
+            f"[L1 Agent - AI] ESCALATION: Low confidence SOP match ({conf_str}).\n"
             f"Best match: {sop_title}\n"
             f"AI rationale: {match.rationale}\n"
             "Routing to L2 for confirmation."
@@ -241,16 +248,19 @@ class IncidentProcessor:
             sop_id=sop_id,
             sop_title=sop_title,
             outcome=ExecutionOutcome.ESCALATED,
-            escalation_reason=f"AI: Low confidence ({match.confidence:.2f}). {match.rationale}",
+            escalation_reason=f"AI: Low confidence ({conf_str}). {match.rationale}",
         )
-        if self._history_store:
-            await self._history_store.record(incident, summary)
-        if self._event_bus:
-            await self._event_bus.publish({
-                "type": "incident_escalated",
-                "incident_number": incident.number,
-                "reason": "low_confidence_ai",
-            })
+        await escalate_to_l2(
+            incident=incident,
+            summary=summary,
+            reason="low_confidence_ai",
+            l2_router=self._l2_router,
+            sop_name=sop_title,
+            confidence=match.confidence,
+            event_bus=self._event_bus,
+            history_store=self._history_store,
+            snow_client=self._snow,
+        )
         return summary
 
     # ── Rule-based processing (fallback) ──────────────────────────────
@@ -272,7 +282,7 @@ class IncidentProcessor:
         if not match_result.sop:
             return await self._escalate_no_sop(incident, match_result)
 
-        if match_result.confidence < self._threshold:
+        if match_result.confidence is None or match_result.confidence < self._threshold:
             return await self._escalate_low_confidence(incident, match_result)
 
         sop = match_result.sop
@@ -342,10 +352,15 @@ class IncidentProcessor:
             outcome=ExecutionOutcome.ESCALATED,
             escalation_reason="No applicable SOP found",
         )
-        if self._history_store:
-            await self._history_store.record(incident, summary)
-        if self._event_bus:
-            await self._event_bus.publish({"type": "incident_escalated", "incident_number": incident.number, "reason": "no_sop"})
+        await escalate_to_l2(
+            incident=incident,
+            summary=summary,
+            reason="no_sop",
+            l2_router=self._l2_router,
+            event_bus=self._event_bus,
+            history_store=self._history_store,
+            snow_client=self._snow,
+        )
         return summary
 
     async def _escalate_low_confidence(
@@ -355,8 +370,9 @@ class IncidentProcessor:
         sop = match.sop
         sop_title = sop.title if sop else "N/A"
         sop_id = sop.sop_id if sop else ""
+        conf_str = f"{match.confidence:.2f}" if match.confidence is not None else "N/A"
         note = (
-            f"[L1 Agent] ESCALATION: Low confidence SOP match ({match.confidence:.2f}).\n"
+            f"[L1 Agent] ESCALATION: Low confidence SOP match ({conf_str}).\n"
             f"Best match: {sop_title}\n"
             f"Rationale: {match.rationale}\n"
             "Routing to L2 for confirmation."
@@ -368,12 +384,19 @@ class IncidentProcessor:
             sop_id=sop_id,
             sop_title=sop_title,
             outcome=ExecutionOutcome.ESCALATED,
-            escalation_reason=f"Low confidence SOP match: {match.confidence:.2f}",
+            escalation_reason=f"Low confidence SOP match: {conf_str}",
         )
-        if self._history_store:
-            await self._history_store.record(incident, summary)
-        if self._event_bus:
-            await self._event_bus.publish({"type": "incident_escalated", "incident_number": incident.number, "reason": "low_confidence"})
+        await escalate_to_l2(
+            incident=incident,
+            summary=summary,
+            reason="low_confidence",
+            l2_router=self._l2_router,
+            sop_name=sop_title,
+            confidence=match.confidence,
+            event_bus=self._event_bus,
+            history_store=self._history_store,
+            snow_client=self._snow,
+        )
         return summary
 
     async def _post_conclusion(
@@ -406,20 +429,30 @@ class IncidentProcessor:
                 f"[L1 Agent] Escalation packet:\n{_format_escalation(escalation_packet)}",
             )
             metrics.increment("incidents.escalated", labels={"reason": "sop_execution"})
-            if self._event_bus:
-                await self._event_bus.publish({
-                    "type": "incident_escalated",
-                    "incident_number": incident.number,
-                    "reason": summary.escalation_reason or "sop_execution",
-                })
+            reason = summary.escalation_reason or "sop_execution"
+            # history already recorded above; pass history_store=None to avoid double-write
+            await escalate_to_l2(
+                incident=incident,
+                summary=summary,
+                reason=reason,
+                l2_router=self._l2_router,
+                sop_name=summary.sop_title or None,
+                event_bus=self._event_bus,
+                history_store=None,
+                snow_client=self._snow,
+            )
         else:
             metrics.increment("incidents.failed")
-            if self._event_bus:
-                await self._event_bus.publish({
-                    "type": "incident_escalated",
-                    "incident_number": incident.number,
-                    "reason": summary.escalation_reason or "failed",
-                })
+            reason = summary.escalation_reason or "failed"
+            await escalate_to_l2(
+                incident=incident,
+                summary=summary,
+                reason=reason,
+                l2_router=self._l2_router,
+                event_bus=self._event_bus,
+                history_store=None,
+                snow_client=self._snow,
+            )
 
     async def _post_note(self, incident: Incident, note: str) -> None:
         """Post a work note to the incident; swallow errors."""

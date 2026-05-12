@@ -1,0 +1,40 @@
+{
+  "default_team": {
+    "name": "L2-General",
+    "email": "l2-general@statestreet.com"
+  },
+  "ci_mappings": {
+    "DB*": {
+      "name": "L2-Database",
+      "email": "l2-database@statestreet.com"
+    },
+    "APP*": {
+      "name": "L2-AppSupport",
+      "email": "l2-appsupport@statestreet.com"
+    },
+    "MQ*": {
+      "name": "L2-Middleware",
+      "email": "l2-middleware@statestreet.com"
+    },
+    "WEB*": {
+      "name": "L2-WebPlatform",
+      "email": "l2-webplatform@statestreet.com"
+    },
+    "NET*": {
+      "name": "L2-Network",
+      "email": "l2-network@statestreet.com"
+    },
+    "SEC*": {
+      "name": "L2-Security",
+      "email": "l2-security@statestreet.com"
+    },
+    "MF*": {
+      "name": "L2-Mainframe",
+      "email": "l2-mainframe@statestreet.com"
+    },
+    "AUTOSYS*": {
+      "name": "L2-BatchScheduling",
+      "email": "l2-batch@statestreet.com"
+    }
+  }
+}

@@ -48,6 +48,7 @@ from src.l1_agent.utils.retry import CircuitBreaker
 from src.l1_agent.utils.secrets import SecretsProvider
 from src.l1_agent.events.event_bus import EventBus
 from src.l1_agent.store.incident_history import IncidentHistoryStore
+from src.l1_agent.escalation.l2_router import L2Router
 from src.l1_agent.api.dashboard import make_dashboard_handler
 from src.l1_agent.api.incidents import make_incidents_handler
 from src.l1_agent.api.sops import make_sops_handler
@@ -68,6 +69,7 @@ class L1AgentService:
         self._circuit_breakers = self._build_circuit_breakers(settings)
         self._event_bus = EventBus()
         self._history_store = IncidentHistoryStore()
+        self._l2_router = L2Router()
         self._executor = SOPExecutor(
             adapters=self._adapters,
             circuit_breakers=self._circuit_breakers,
@@ -108,6 +110,7 @@ class L1AgentService:
             memory=self._memory,
             event_bus=self._event_bus,
             history_store=self._history_store,
+            l2_router=self._l2_router,
         )
         self._running = False
         self._semaphore = asyncio.Semaphore(settings.agent.max_concurrent_incidents)
@@ -116,7 +119,11 @@ class L1AgentService:
         """Load all JSON SOPs from data/sample_sops/ for demo mode."""
         from src.l1_agent.models.sop import SOP
         sops = []
-        sop_dir = Path("data/sample_sops")
+        # Use path relative to this file so it works regardless of cwd
+        sop_dir = Path(__file__).resolve().parent.parent.parent / "data" / "sample_sops"
+        if not sop_dir.exists():
+            # Fallback to cwd-relative path
+            sop_dir = Path("data/sample_sops")
         if not sop_dir.exists():
             logger.warning("Demo SOP directory not found: %s", sop_dir)
             return sops

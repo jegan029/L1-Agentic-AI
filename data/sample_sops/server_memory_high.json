@@ -1,0 +1,109 @@
+{
+  "sop_id": "SOP-INFRA-001",
+  "title": "Server Memory High - Dynatrace Investigation",
+  "applicable_services": ["AppServerProd01", "WebServerProd01"],
+  "applicable_categories": ["Infrastructure", "Server"],
+  "applicable_assignment_groups": ["L1-Infra-Support"],
+  "keywords": [
+    "memory", "high memory", "memory usage", "memory alert",
+    "high mem", "ram", "oom", "out of memory",
+    "memory saturated", "dynatrace memory"
+  ],
+  "steps": [
+    {
+      "step_id": "step-1",
+      "step_type": "NOTE",
+      "description": "Begin server memory investigation",
+      "parameters": {
+        "text": "Starting investigation of high memory usage alert. Will query Dynatrace for current server health, memory metrics, and active problems."
+      },
+      "on_success": "step-2"
+    },
+    {
+      "step_id": "step-2",
+      "step_type": "DYNATRACE_VM_CHECK",
+      "description": "Check host health and status in Dynatrace",
+      "parameters": {
+        "action": "vm_health",
+        "host_name": "app-server-prod01"
+      },
+      "expected_output": "Host entity found, active problems listed",
+      "on_success": "step-3",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-3",
+      "step_type": "DYNATRACE_METRICS",
+      "description": "Query current memory utilisation metrics from Dynatrace",
+      "parameters": {
+        "action": "metrics",
+        "metric_selector": "builtin:host.mem.usage,builtin:host.mem.availableBytes",
+        "entity_selector": "type(\"HOST\"),entityName(\"app-server-prod01\")",
+        "time_range": "now-1h"
+      },
+      "expected_output": "Memory usage percentage and available bytes for the last hour",
+      "on_success": "step-4",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-4",
+      "step_type": "DYNATRACE_VM_CHECK",
+      "description": "Check active Dynatrace problems on the host",
+      "parameters": {
+        "action": "problems",
+        "entity_selector": "entityName(\"app-server-prod01\")",
+        "time_range": "now-2h"
+      },
+      "on_success": "step-5",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-5",
+      "step_type": "SPLUNK_SEARCH",
+      "description": "Search application logs for OOM errors and memory pressure events",
+      "parameters": {
+        "query": "index=app_logs host=app-server-prod01 (\"OutOfMemoryError\" OR \"java.lang.OutOfMemory\" OR \"Cannot allocate memory\" OR \"OOM Killer\")",
+        "time_range": {"earliest": "-2h", "latest": "now"}
+      },
+      "on_success": "step-6",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-6",
+      "step_type": "DECISION",
+      "description": "Evaluate all Dynatrace and log findings",
+      "parameters": {"rule": "any_failed"},
+      "on_success": "step-resolve",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-resolve",
+      "step_type": "NOTE",
+      "description": "Evidence collected — summarise findings and recommend action",
+      "parameters": {
+        "text": "Memory investigation complete. Dynatrace VM health, memory metrics, active problems, and OOM log evidence collected. Memory utilisation is critically elevated. Recommend L2 review for process restart or heap size adjustment."
+      }
+    },
+    {
+      "step_id": "step-escalate",
+      "step_type": "NOTE",
+      "description": "Escalation required — one or more diagnostic checks failed",
+      "parameters": {
+        "text": "Unable to complete memory investigation. One or more Dynatrace or Splunk checks failed. Escalating to L2 with partial evidence collected."
+      }
+    }
+  ],
+  "pre_checks": [
+    "Verify Dynatrace API connectivity",
+    "Verify Splunk access for app_logs index"
+  ],
+  "tools_required": ["Dynatrace", "Splunk"],
+  "escalation_criteria": {
+    "max_retry_count": 2,
+    "escalate_on_access_denied": true,
+    "escalate_on_ambiguous_result": true,
+    "escalate_on_write_action": true,
+    "custom_rules": []
+  },
+  "version": "1.0"
+}

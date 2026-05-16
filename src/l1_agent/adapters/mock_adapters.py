@@ -234,6 +234,9 @@ class MockDynatraceAdapter(BaseAdapter):
             return await self._mock_problems(parameters)
         return AdapterResult(success=False, error=f"Unknown action: {action}")
 
+    # Sentinel host name that triggers the memory-alert scenario in demo mode
+    _MEMORY_ALERT_HOST = "app-server-prod01"
+
     async def _mock_vm_health(self, parameters: Dict[str, Any]) -> AdapterResult:
         host_name = parameters.get("host_name", "app-server-01")
         hosts = [
@@ -248,6 +251,38 @@ class MockDynatraceAdapter(BaseAdapter):
                 },
             },
         ]
+
+        # Memory-alert scenario: prod server has an active MEMORY_SATURATED problem
+        if host_name == self._MEMORY_ALERT_HOST:
+            problems = [
+                {
+                    "problemId": "PROB-MEM-0042",
+                    "title": "Memory saturation",
+                    "severityLevel": "PERFORMANCE",
+                    "impactLevel": "APPLICATION",
+                    "status": "OPEN",
+                }
+            ]
+            evidence = (
+                f"VM Health Check | Host filter: {host_name}\n"
+                f"  Hosts found: 1\n"
+                f"  - {host_name} (HOST-1A2B3C4D5E6F)\n"
+                f"  Active problems: 1\n"
+                f"    [PERFORMANCE] Memory saturation (impact: APPLICATION)"
+            )
+            return AdapterResult(
+                success=True,
+                data={
+                    "hosts_found": 1,
+                    "hosts": hosts,
+                    "problems_count": 1,
+                    "problems": problems,
+                    "healthy": False,
+                },
+                raw_output=json.dumps({"hosts": hosts, "problems": problems}),
+                evidence_snippet=evidence,
+            )
+
         evidence = (
             f"VM Health Check | Host filter: {host_name}\n"
             f"  Hosts found: 1\n"
@@ -272,6 +307,7 @@ class MockDynatraceAdapter(BaseAdapter):
             "metric_selector",
             "builtin:host.cpu.usage,builtin:host.mem.usage",
         )
+        # Memory utilisation is critically high (92.5 %) to reflect a real alert
         metrics_data: List[Dict[str, Any]] = [
             {
                 "metric_id": "builtin:host.cpu.usage",
@@ -281,13 +317,13 @@ class MockDynatraceAdapter(BaseAdapter):
             {
                 "metric_id": "builtin:host.mem.usage",
                 "dimensions": {"dt.entity.host": "HOST-1A2B3C4D5E6F"},
-                "latest_value": 67.8,
+                "latest_value": 92.5,
             },
         ]
         evidence = (
             f"Dynatrace Metrics | Selector: {metric_selector}\n"
             f"  builtin:host.cpu.usage [HOST-1A2B3C4D5E6F]: 42.3\n"
-            f"  builtin:host.mem.usage [HOST-1A2B3C4D5E6F]: 67.8"
+            f"  builtin:host.mem.usage [HOST-1A2B3C4D5E6F]: 92.5 ⚠ CRITICAL"
         )
         return AdapterResult(
             success=True,
@@ -297,6 +333,26 @@ class MockDynatraceAdapter(BaseAdapter):
         )
 
     async def _mock_problems(self, parameters: Dict[str, Any]) -> AdapterResult:
+        entity_selector = parameters.get("entity_selector", "")
+        # Return an active problem when querying the prod memory-alert host
+        if self._MEMORY_ALERT_HOST in entity_selector:
+            problem = {
+                "problemId": "PROB-MEM-0042",
+                "title": "Memory saturation",
+                "severityLevel": "PERFORMANCE",
+                "impactLevel": "APPLICATION",
+                "status": "OPEN",
+            }
+            evidence = (
+                f"Dynatrace Problems | Open: 1\n"
+                f"  [PERFORMANCE] Memory saturation (impact: APPLICATION)"
+            )
+            return AdapterResult(
+                success=True,
+                data={"problem_count": 1, "problems": [problem]},
+                raw_output=json.dumps([problem]),
+                evidence_snippet=evidence,
+            )
         evidence = "Dynatrace Problems | Open: 0"
         return AdapterResult(
             success=True,

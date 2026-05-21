@@ -144,6 +144,22 @@ class AgentSettings:
 
 
 @dataclass(frozen=True)
+class CrewAISettings:
+    """CrewAI multi-agent framework configuration.
+
+    Set CREWAI_ENABLED=true to route incidents through the four-agent pipeline
+    (TriageAgent → ReviewAgent → ResolutionAgent → ResolverAgent) instead of
+    the existing rule-based / AI-executor path.
+    """
+
+    enabled: bool = False
+    model: str = "claude-sonnet-4-6"
+    api_key: str = ""
+    verbose: bool = False
+    max_iter: int = 15
+
+
+@dataclass(frozen=True)
 class Settings:
     servicenow: ServiceNowSettings = field(default_factory=ServiceNowSettings)
     splunk: SplunkSettings = field(default_factory=SplunkSettings)
@@ -157,6 +173,7 @@ class Settings:
     agent: AgentSettings = field(default_factory=AgentSettings)
     secrets: SecretsSettings = field(default_factory=SecretsSettings)
     smtp: SmtpSettings = field(default_factory=SmtpSettings)
+    crewai: CrewAISettings = field(default_factory=CrewAISettings)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -265,5 +282,12 @@ class Settings:
                 user=os.getenv("SMTP_USER", ""),
                 password=os.getenv("SMTP_PASSWORD", ""),
                 from_address=os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "")),
+            ),
+            crewai=CrewAISettings(
+                enabled=os.getenv("CREWAI_ENABLED", "false").lower() == "true",
+                model=os.getenv("CREWAI_MODEL", "claude-sonnet-4-6"),
+                api_key=os.getenv("CREWAI_API_KEY", os.getenv("ANTHROPIC_API_KEY", "")),
+                verbose=os.getenv("CREWAI_VERBOSE", "false").lower() == "true",
+                max_iter=int(os.getenv("CREWAI_MAX_ITER", "15")),
             ),
         )

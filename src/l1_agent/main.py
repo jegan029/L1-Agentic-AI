@@ -97,21 +97,39 @@ class L1AgentService:
         self._memory = ResolutionMemory()
         # In demo mode, pre-load sample SOPs from disk so incidents resolve properly
         demo_sop_cache = self._load_demo_sops() if settings.agent.demo_mode else None
-        self._processor = IncidentProcessor(
-            snow_client=self._snow_client,
-            sop_matcher=self._sop_matcher,
-            sop_parser=self._sop_parser,
-            executor=self._executor,
-            sop_cache=demo_sop_cache,
-            confidence_threshold=settings.agent.sop_confidence_threshold,
-            llm_client=self._llm_client,
-            ai_analyzer=ai_analyzer,
-            ai_executor=ai_executor,
-            memory=self._memory,
-            event_bus=self._event_bus,
-            history_store=self._history_store,
-            l2_router=self._l2_router,
-        )
+
+        if settings.crewai.enabled:
+            from src.l1_agent.crew.crew_processor import CrewIncidentProcessor
+            logger.info(
+                "CrewAI mode enabled (model: %s, verbose: %s)",
+                settings.crewai.model,
+                settings.crewai.verbose,
+            )
+            self._processor = CrewIncidentProcessor(
+                snow_client=self._snow_client,
+                crewai_settings=settings.crewai,
+                sops=demo_sop_cache or [],
+                adapters=self._adapters,
+                event_bus=self._event_bus,
+                history_store=self._history_store,
+                l2_router=self._l2_router,
+            )
+        else:
+            self._processor = IncidentProcessor(
+                snow_client=self._snow_client,
+                sop_matcher=self._sop_matcher,
+                sop_parser=self._sop_parser,
+                executor=self._executor,
+                sop_cache=demo_sop_cache,
+                confidence_threshold=settings.agent.sop_confidence_threshold,
+                llm_client=self._llm_client,
+                ai_analyzer=ai_analyzer,
+                ai_executor=ai_executor,
+                memory=self._memory,
+                event_bus=self._event_bus,
+                history_store=self._history_store,
+                l2_router=self._l2_router,
+            )
         self._running = False
         self._semaphore = asyncio.Semaphore(settings.agent.max_concurrent_incidents)
 

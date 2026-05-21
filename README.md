@@ -10,7 +10,44 @@ The platform includes a **React + Vite customer-facing dashboard** styled to the
 
 ## What's New
 
-### Dynatrace Memory High SOP — End-to-End Scenario (Latest)
+### CrewAI Multi-Agent Pipeline (Latest)
+
+The agent can now route incidents through a **four-agent CrewAI pipeline** instead of the single-processor path. Each agent has a specific role and hands its output to the next:
+
+| Agent | Role | Tools |
+|-------|------|-------|
+| **TriageAgent** | Parses the ServiceNow ticket; extracts symptoms, CI, category, priority | none — works from incident text |
+| **ReviewAgent** | Selects the best matching SOP from the library | `list_sops`, `get_sop_details` |
+| **ResolutionAgent** | Executes investigation steps using infrastructure tools | Dynatrace, Splunk, MQ, Autosys, File, WebUI, Mainframe |
+| **ResolverAgent** | Posts work note and marks the incident resolved or escalated | post to ServiceNow |
+
+Enable it with a single env var — the dashboard, history store, SSE stream, and all existing SOPs work unchanged:
+
+```bash
+# Terminal 1 — Backend in CrewAI mode
+cd L1_Agentic_AI_Solution
+export CREWAI_ENABLED=true
+export CREWAI_MODEL=claude-sonnet-4-6
+export ANTHROPIC_API_KEY=sk-ant-...
+export AGENT_DEMO_MODE=true
+export LLM_ENABLED=false
+python -m src.l1_agent.main
+```
+
+**Runtime flow for a memory incident:**
+```
+INC0070001 arrives
+  → TriageAgent  → "category=Infrastructure, CI=AppServerProd01, symptoms=[92% memory, OOM risk]"
+  → ReviewAgent  → "SOP-INFRA-001 selected, confidence=0.82"
+  → ResolutionAgent → dynatrace_vm_health() → dynatrace_metrics() → splunk_search() → "OUTCOME: ESCALATED"
+  → ResolverAgent → work note posted → incident escalated to L2-Infra-Support
+```
+
+The `crew/` package (`crew/tools.py`, `crew/agents.py`, `crew/tasks.py`, `crew/crew.py`, `crew/crew_processor.py`) is entirely additive — the rule-based and AI/LLM paths are untouched.
+
+---
+
+### Dynatrace Memory High SOP — End-to-End Scenario
 
 A complete Dynatrace-driven incident scenario has been added to demonstrate the `DYNATRACE_VM_CHECK` and `DYNATRACE_METRICS` step types:
 
@@ -113,12 +150,13 @@ A full customer-facing showcase dashboard at `frontend/` with:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Two execution modes** selected by `LLM_ENABLED` env var:
+**Three execution modes** — selected by env vars, all share the same adapters, SOPs, and post-processing:
 
-| Mode | SOP Selection | Step Execution |
-|------|--------------|----------------|
-| **AI-driven** (default) | LLM selects SOP with reasoning | LLM drives tool calls autonomously |
-| **Rule-based** (fallback) | Keyword/regex scoring | Deterministic sequential steps |
+| Mode | Env vars | SOP Selection | Step Execution |
+|------|----------|--------------|----------------|
+| **Rule-based** | `LLM_ENABLED=false` | Keyword/regex weighted scoring | Deterministic sequential steps |
+| **AI/LLM** | `LLM_ENABLED=true` | LLM selects SOP with reasoning | LLM drives tool-calling loop |
+| **CrewAI** | `CREWAI_ENABLED=true` | ReviewAgent calls `list_sops` / `get_sop_details` | ResolutionAgent calls tools per SOP |
 
 ---
 
@@ -148,6 +186,12 @@ L1-Agentic AI/
 │   │   │   ├── ai_executor.py         # LLM tool-calling execution loop
 │   │   │   ├── llm_client.py          # OpenAI-compatible LLM client
 │   │   │   └── mock_llm.py            # Mock LLM for demo mode
+│   │   ├── crew/                      # NEW: CrewAI 4-agent pipeline
+│   │   │   ├── tools.py               # CrewAI @tool wrappers around all 7 adapters + SOP helpers
+│   │   │   ├── agents.py              # TriageAgent, ReviewAgent, ResolutionAgent, ResolverAgent
+│   │   │   ├── tasks.py               # Sequential task definitions with context chaining
+│   │   │   ├── crew.py                # Crew assembly + CrewOutput → ExecutionSummary parsing
+│   │   │   └── crew_processor.py      # Drop-in for IncidentProcessor; runs crew in thread pool
 │   │   ├── adapters/
 │   │   │   ├── base.py                # Adapter interface
 │   │   │   ├── splunk_adapter.py      # Splunk REST API
@@ -243,6 +287,7 @@ pip install -r requirements.txt
 
 ### 2 — Start the backend (demo mode — no credentials needed)
 
+**Rule-based mode** (default, no API key needed):
 ```bash
 cd L1_Agentic_AI_Solution
 export AGENT_DEMO_MODE=true
@@ -251,10 +296,21 @@ python -m src.l1_agent.main
 # Webhook listener starts on http://localhost:8080
 ```
 
+**CrewAI mode** (requires Anthropic API key):
+```bash
+cd L1_Agentic_AI_Solution
+export AGENT_DEMO_MODE=true
+export LLM_ENABLED=false
+export CREWAI_ENABLED=true
+export CREWAI_MODEL=claude-sonnet-4-6
+export ANTHROPIC_API_KEY=sk-ant-...
+python -m src.l1_agent.main
+```
+
 Demo mode uses:
 - Mock adapters (no real Splunk / MQ / Autosys connections)
 - Sample SOPs pre-loaded from `data/sample_sops/`
-- Rule-based SOP matching (no LLM API key required)
+- Rule-based matching by default; CrewAI when `CREWAI_ENABLED=true`
 
 ### 3 — Start the frontend
 
@@ -386,10 +442,14 @@ Copy `.env.example` and fill in credentials. Key variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENT_DEMO_MODE` | `false` | Use mock adapters + pre-load sample SOPs |
-| `LLM_ENABLED` | `false` | Enable AI-driven SOP selection and execution |
+| `LLM_ENABLED` | `false` | Enable AI/LLM SOP selection and execution |
 | `LLM_ENDPOINT` | — | OpenAI-compatible endpoint URL |
 | `LLM_API_KEY` | — | LLM API key |
-| `AGENT_SOP_CONFIDENCE_THRESHOLD` | `0.6` | Minimum confidence to execute a SOP |
+| `CREWAI_ENABLED` | `false` | Enable CrewAI 4-agent pipeline (overrides LLM path) |
+| `CREWAI_MODEL` | `claude-sonnet-4-6` | Anthropic model for all four CrewAI agents |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key (also read from `CREWAI_API_KEY`) |
+| `CREWAI_VERBOSE` | `false` | Print per-agent deliberation to stdout |
+| `AGENT_SOP_CONFIDENCE_THRESHOLD` | `0.6` | Minimum confidence to execute a SOP (rule-based mode) |
 | `AGENT_WEBHOOK_PORT` | `8080` | Backend listening port |
 | `SERVICENOW_BASE_URL` | — | ServiceNow instance URL |
 | `SERVICENOW_USERNAME` / `_PASSWORD` | — | API credentials |

@@ -3,6 +3,10 @@ aiohttp-cors>=0.7.0
 pydantic>=2.0.0
 python-dotenv>=1.0.0
 
+# CrewAI multi-agent framework
+crewai>=0.80.0
+crewai-tools>=0.14.0
+
 # Dev / test dependencies
 pytest>=7.4.0
 pytest-asyncio>=0.23.0

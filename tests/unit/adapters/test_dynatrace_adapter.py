@@ -60,10 +60,20 @@ class TestMockDynatraceAdapter:
 
     @pytest.mark.asyncio
     async def test_problems_check(self, adapter):
+        # No entity_selector → healthy host → 0 problems
         result = await adapter.execute({"action": "problems"})
         assert result.success is True
         assert result.data["problem_count"] == 0
         assert result.data["problems"] == []
+
+    @pytest.mark.asyncio
+    async def test_metrics_memory_value(self, adapter):
+        result = await adapter.execute({"action": "metrics"})
+        mem_metric = next(
+            m for m in result.data["metrics"]
+            if m["metric_id"] == "builtin:host.mem.usage"
+        )
+        assert mem_metric["latest_value"] == 92.5
 
     @pytest.mark.asyncio
     async def test_unknown_action(self, adapter):

@@ -10,7 +10,81 @@ The platform includes a **React + Vite customer-facing dashboard** styled to the
 
 ## What's New
 
-### Intelligent Escalation Engine (Latest)
+### CrewAI Multi-Agent Pipeline (Latest)
+
+The agent can now route incidents through a **four-agent CrewAI pipeline** instead of the single-processor path. Each agent has a specific role and hands its output to the next:
+
+| Agent | Role | Tools |
+|-------|------|-------|
+| **TriageAgent** | Parses the ServiceNow ticket; extracts symptoms, CI, category, priority | none — works from incident text |
+| **ReviewAgent** | Selects the best matching SOP from the library | `list_sops`, `get_sop_details` |
+| **ResolutionAgent** | Executes investigation steps using infrastructure tools | Dynatrace, Splunk, MQ, Autosys, File, WebUI, Mainframe |
+| **ResolverAgent** | Posts work note and marks the incident resolved or escalated | post to ServiceNow |
+
+Enable it with a single env var — the dashboard, history store, SSE stream, and all existing SOPs work unchanged:
+
+```bash
+# Terminal 1 — Backend in CrewAI mode
+cd L1_Agentic_AI_Solution
+export CREWAI_ENABLED=true
+export CREWAI_MODEL=claude-sonnet-4-6
+export ANTHROPIC_API_KEY=sk-ant-...
+export AGENT_DEMO_MODE=true
+export LLM_ENABLED=false
+python -m src.l1_agent.main
+```
+
+**Runtime flow for a memory incident:**
+```
+INC0070001 arrives
+  → TriageAgent  → "category=Infrastructure, CI=AppServerProd01, symptoms=[92% memory, OOM risk]"
+  → ReviewAgent  → "SOP-INFRA-001 selected, confidence=0.82"
+  → ResolutionAgent → dynatrace_vm_health() → dynatrace_metrics() → splunk_search() → "OUTCOME: ESCALATED"
+  → ResolverAgent → work note posted → incident escalated to L2-Infra-Support
+```
+
+The `crew/` package (`crew/tools.py`, `crew/agents.py`, `crew/tasks.py`, `crew/crew.py`, `crew/crew_processor.py`) is entirely additive — the rule-based and AI/LLM paths are untouched.
+
+---
+
+### Dynatrace Memory High SOP — End-to-End Scenario
+
+A complete Dynatrace-driven incident scenario has been added to demonstrate the `DYNATRACE_VM_CHECK` and `DYNATRACE_METRICS` step types:
+
+- **New SOP** (`data/sample_sops/server_memory_high.json`) — `SOP-INFRA-001`: 8-step runbook that queries Dynatrace VM health, memory utilisation metrics, active problems, and Splunk OOM logs before reaching a DECISION verdict.
+- **Realistic mock data** — `MockDynatraceAdapter` now returns scenario-aware data for `app-server-prod01`: `MEMORY_SATURATED` problem in vm_health, **92.5% ⚠ CRITICAL** memory metric, and an active PERFORMANCE problem in the problems check. All other hosts remain healthy (regression-safe).
+- **18 new unit tests** (`tests/unit/test_dynatrace_memory_scenario.py`) across four test classes: memory-alert host behaviour, healthy-host regression guard, SOP structure assertions, and SOP confidence matching (verifies SOP-INFRA-001 wins over all three SOPs at ≥ 0.6 confidence).
+- **Demo result** — SOP-INFRA-001 achieves **100% resolution rate** across all test runs; matched at **78% confidence** in live testing; all 7 steps visible in the Activity Feed SSE stream.
+
+#### Demo: send a Dynatrace memory incident
+```bash
+curl -X POST http://localhost:8080/webhook/incident \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sys_id": "mem-demo-001",
+    "number": "INC0070001",
+    "short_description": "High memory usage alert on app-server-prod01 - memory at 92%",
+    "description": "Dynatrace has triggered a memory saturation alert for app-server-prod01. Memory usage is at 92% of total 32GB. Application response times increasing. OOM risk detected.",
+    "category": "Infrastructure",
+    "subcategory": "Server",
+    "cmdb_ci": "AppServerProd01",
+    "assignment_group": "L1-Infra-Support",
+    "priority": "2",
+    "state": "1"
+  }'
+```
+
+**Expected execution flow:**
+1. SOP-INFRA-001 matched at ≈78% confidence
+2. `DYNATRACE_VM_CHECK` (vm_health) → 1 active PERFORMANCE problem on `app-server-prod01`
+3. `DYNATRACE_METRICS` → memory at **92.5% CRITICAL**, CPU at 42.3%
+4. `DYNATRACE_VM_CHECK` (problems) → MEMORY_SATURATED problem OPEN
+5. `SPLUNK_SEARCH` → OOM / OutOfMemoryError log search
+6. `DECISION` (any_failed) → all steps passed → **RESOLVED**
+
+---
+
+### Intelligent Escalation Engine
 
 A full L2 escalation pipeline has been added, replacing ad-hoc escalation logic with a single, auditable flow:
 
@@ -76,12 +150,13 @@ A full customer-facing showcase dashboard at `frontend/` with:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Two execution modes** selected by `LLM_ENABLED` env var:
+**Three execution modes** — selected by env vars, all share the same adapters, SOPs, and post-processing:
 
-| Mode | SOP Selection | Step Execution |
-|------|--------------|----------------|
-| **AI-driven** (default) | LLM selects SOP with reasoning | LLM drives tool calls autonomously |
-| **Rule-based** (fallback) | Keyword/regex scoring | Deterministic sequential steps |
+| Mode | Env vars | SOP Selection | Step Execution |
+|------|----------|--------------|----------------|
+| **Rule-based** | `LLM_ENABLED=false` | Keyword/regex weighted scoring | Deterministic sequential steps |
+| **AI/LLM** | `LLM_ENABLED=true` | LLM selects SOP with reasoning | LLM drives tool-calling loop |
+| **CrewAI** | `CREWAI_ENABLED=true` | ReviewAgent calls `list_sops` / `get_sop_details` | ResolutionAgent calls tools per SOP |
 
 ---
 
@@ -111,6 +186,12 @@ L1-Agentic AI/
 │   │   │   ├── ai_executor.py         # LLM tool-calling execution loop
 │   │   │   ├── llm_client.py          # OpenAI-compatible LLM client
 │   │   │   └── mock_llm.py            # Mock LLM for demo mode
+│   │   ├── crew/                      # NEW: CrewAI 4-agent pipeline
+│   │   │   ├── tools.py               # CrewAI @tool wrappers around all 7 adapters + SOP helpers
+│   │   │   ├── agents.py              # TriageAgent, ReviewAgent, ResolutionAgent, ResolverAgent
+│   │   │   ├── tasks.py               # Sequential task definitions with context chaining
+│   │   │   ├── crew.py                # Crew assembly + CrewOutput → ExecutionSummary parsing
+│   │   │   └── crew_processor.py      # Drop-in for IncidentProcessor; runs crew in thread pool
 │   │   ├── adapters/
 │   │   │   ├── base.py                # Adapter interface
 │   │   │   ├── splunk_adapter.py      # Splunk REST API
@@ -144,12 +225,16 @@ L1-Agentic AI/
 │   │       ├── retry.py               # Exponential backoff + circuit breaker
 │   │       └── secrets.py             # Vault / AWS SSM integration
 │   ├── data/
-│   │   ├── sample_sops/               # SOP JSON library (MQ, Autosys)
+│   │   ├── sample_sops/               # SOP JSON library
+│   │   │   ├── mq_queue_depth_high.json      # SOP-MQ-001: MQ queue depth investigation
+│   │   │   ├── autosys_job_failure.json      # SOP-AUTOSYS-001: Autosys batch failure
+│   │   │   └── server_memory_high.json       # SOP-INFRA-001: NEW Dynatrace memory high
 │   │   └── incident_history.jsonl     # Persisted incident execution history
 │   ├── tests/
 │   │   ├── unit/
-│   │   │   ├── test_l2_router.py      # NEW: 11 tests for CI routing + wildcards
-│   │   │   └── test_confidence_threshold.py  # NEW: 5 tests for threshold enforcement
+│   │   │   ├── test_dynatrace_memory_scenario.py  # NEW: 18 tests — Dynatrace SOP scenario
+│   │   │   ├── test_l2_router.py                  # 11 tests for CI routing + wildcards
+│   │   │   └── test_confidence_threshold.py       # 5 tests for threshold enforcement
 │   │   └── integration/               # Integration test scaffolding
 │   ├── ARCHITECTURE.md
 │   ├── RUNBOOK.md
@@ -202,6 +287,7 @@ pip install -r requirements.txt
 
 ### 2 — Start the backend (demo mode — no credentials needed)
 
+**Rule-based mode** (default, no API key needed):
 ```bash
 cd L1_Agentic_AI_Solution
 export AGENT_DEMO_MODE=true
@@ -210,10 +296,21 @@ python -m src.l1_agent.main
 # Webhook listener starts on http://localhost:8080
 ```
 
+**CrewAI mode** (requires Anthropic API key):
+```bash
+cd L1_Agentic_AI_Solution
+export AGENT_DEMO_MODE=true
+export LLM_ENABLED=false
+export CREWAI_ENABLED=true
+export CREWAI_MODEL=claude-sonnet-4-6
+export ANTHROPIC_API_KEY=sk-ant-...
+python -m src.l1_agent.main
+```
+
 Demo mode uses:
 - Mock adapters (no real Splunk / MQ / Autosys connections)
 - Sample SOPs pre-loaded from `data/sample_sops/`
-- Rule-based SOP matching (no LLM API key required)
+- Rule-based matching by default; CrewAI when `CREWAI_ENABLED=true`
 
 ### 3 — Start the frontend
 
@@ -228,12 +325,14 @@ The Vite dev server proxies all `/api/*` requests to `http://localhost:8080` aut
 
 ### 4 — Fire demo incidents
 
-**Incident that resolves via SOP:**
+Three SOPs are pre-loaded in demo mode. Each maps to a specific incident shape:
+
+**MQ Queue Depth High → resolves via SOP-MQ-001** (steps: MQ_CHECK × 2, SPLUNK_SEARCH, AUTOSYS_STATUS, DECISION)
 ```bash
 curl -X POST http://localhost:8080/webhook/incident \
   -H "Content-Type: application/json" \
   -d '{
-    "sys_id": "demo-resolve-001",
+    "sys_id": "demo-mq-001",
     "number": "INC0009001",
     "short_description": "MQ queue depth high on PAYMENT.REQUEST - messages not being consumed",
     "description": "PAYMENT.REQUEST queue on QMPROD01 building up since 09:00. Consumer PaymentService not processing.",
@@ -246,12 +345,48 @@ curl -X POST http://localhost:8080/webhook/incident \
   }'
 ```
 
-**Incident that escalates to L2 (no matching SOP):**
+**Autosys Batch Failure → resolves via SOP-AUTOSYS-001** (steps: AUTOSYS_STATUS × 2, SPLUNK_SEARCH, FILE_CHECK, DECISION)
 ```bash
 curl -X POST http://localhost:8080/webhook/incident \
   -H "Content-Type: application/json" \
   -d '{
-    "sys_id": "demo-escalate-001",
+    "sys_id": "demo-autosys-001",
+    "number": "INC0009003",
+    "short_description": "Autosys batch job failure - ETL pipeline job BATCH_PAYMENT_PROCESS status FA",
+    "description": "The Autosys job BATCH_PAYMENT_PROCESS has entered FA state. Job ran at 02:00 but failed with exit code 1.",
+    "category": "Batch",
+    "subcategory": "Scheduling",
+    "cmdb_ci": "ETL-Pipeline",
+    "assignment_group": "L1-Batch-Support",
+    "priority": "3",
+    "state": "1"
+  }'
+```
+
+**Dynatrace Memory High → resolves via SOP-INFRA-001** (steps: DYNATRACE_VM_CHECK × 2, DYNATRACE_METRICS, SPLUNK_SEARCH, DECISION)
+```bash
+curl -X POST http://localhost:8080/webhook/incident \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sys_id": "demo-mem-001",
+    "number": "INC0009004",
+    "short_description": "High memory usage alert on app-server-prod01 - memory at 92%",
+    "description": "Dynatrace has triggered a memory saturation alert for app-server-prod01. Memory usage is at 92% of total 32GB. OOM risk detected.",
+    "category": "Infrastructure",
+    "subcategory": "Server",
+    "cmdb_ci": "AppServerProd01",
+    "assignment_group": "L1-Infra-Support",
+    "priority": "2",
+    "state": "1"
+  }'
+```
+
+**No SOP match → escalates to L2 (low confidence):**
+```bash
+curl -X POST http://localhost:8080/webhook/incident \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sys_id": "demo-esc-001",
     "number": "INC0009002",
     "short_description": "SSL certificate expiring in 3 days on payments-api.internal",
     "description": "SSL certificate for payments-api.internal expires in 72 hours. Automated renewal failed.",
@@ -307,10 +442,14 @@ Copy `.env.example` and fill in credentials. Key variables:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AGENT_DEMO_MODE` | `false` | Use mock adapters + pre-load sample SOPs |
-| `LLM_ENABLED` | `false` | Enable AI-driven SOP selection and execution |
+| `LLM_ENABLED` | `false` | Enable AI/LLM SOP selection and execution |
 | `LLM_ENDPOINT` | — | OpenAI-compatible endpoint URL |
 | `LLM_API_KEY` | — | LLM API key |
-| `AGENT_SOP_CONFIDENCE_THRESHOLD` | `0.6` | Minimum confidence to execute a SOP |
+| `CREWAI_ENABLED` | `false` | Enable CrewAI 4-agent pipeline (overrides LLM path) |
+| `CREWAI_MODEL` | `claude-sonnet-4-6` | Anthropic model for all four CrewAI agents |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key (also read from `CREWAI_API_KEY`) |
+| `CREWAI_VERBOSE` | `false` | Print per-agent deliberation to stdout |
+| `AGENT_SOP_CONFIDENCE_THRESHOLD` | `0.6` | Minimum confidence to execute a SOP (rule-based mode) |
 | `AGENT_WEBHOOK_PORT` | `8080` | Backend listening port |
 | `SERVICENOW_BASE_URL` | — | ServiceNow instance URL |
 | `SERVICENOW_USERNAME` / `_PASSWORD` | — | API credentials |
@@ -323,33 +462,56 @@ Copy `.env.example` and fill in credentials. Key variables:
 
 ---
 
-## SOP Schema
+## SOP Library
 
-SOPs are JSON files in `data/sample_sops/`. Supported step types:
+SOPs are JSON files in `data/sample_sops/`. Three SOPs are shipped:
+
+| SOP ID | Title | Key Step Types | CI Match |
+|--------|-------|---------------|----------|
+| `SOP-MQ-001` | MQ Queue Depth High | `MQ_CHECK`, `SPLUNK_SEARCH`, `AUTOSYS_STATUS` | `PaymentService` |
+| `SOP-AUTOSYS-001` | Autosys Batch Job Failure | `AUTOSYS_STATUS`, `SPLUNK_SEARCH`, `FILE_CHECK` | `ETL-Pipeline` |
+| `SOP-INFRA-001` | Server Memory High — Dynatrace | `DYNATRACE_VM_CHECK`, `DYNATRACE_METRICS`, `SPLUNK_SEARCH` | `AppServerProd01` |
+
+### Supported Step Types
 
 `SPLUNK_SEARCH` · `MQ_CHECK` · `FILE_CHECK` · `AUTOSYS_STATUS` · `DYNATRACE_VM_CHECK` · `DYNATRACE_METRICS` · `WEB_UI_CHECK` · `MAINFRAME_CHECK` · `DECISION` · `NOTE`
 
+### SOP Schema
+
 ```json
 {
-  "sop_id": "SOP-MQ-001",
-  "title": "MQ Queue Depth High - Investigation and Remediation",
-  "keywords": ["queue depth", "mq", "messages not consumed"],
-  "applicable_services": ["PaymentService"],
-  "applicable_categories": ["Middleware"],
-  "applicable_assignment_groups": ["L1-Middleware-Support"],
+  "sop_id": "SOP-INFRA-001",
+  "title": "Server Memory High - Dynatrace Investigation",
+  "keywords": ["memory", "high memory", "memory usage", "memory alert", "oom"],
+  "applicable_services": ["AppServerProd01"],
+  "applicable_categories": ["Infrastructure", "Server"],
+  "applicable_assignment_groups": ["L1-Infra-Support"],
   "steps": [
     {
-      "step_id": "step-1",
-      "step_type": "MQ_CHECK",
-      "description": "Check queue depth on reported queue",
-      "parameters": { "queue_manager": "QMPROD01", "queue": "PAYMENT.REQUEST", "action": "depth" },
-      "on_success": "step-2",
+      "step_id": "step-2",
+      "step_type": "DYNATRACE_VM_CHECK",
+      "description": "Check host health and status in Dynatrace",
+      "parameters": { "action": "vm_health", "host_name": "app-server-prod01" },
+      "on_success": "step-3",
       "on_failure": "step-escalate"
     },
     {
-      "step_id": "step-2",
+      "step_id": "step-3",
+      "step_type": "DYNATRACE_METRICS",
+      "description": "Query current memory utilisation metrics",
+      "parameters": {
+        "action": "metrics",
+        "metric_selector": "builtin:host.mem.usage,builtin:host.mem.availableBytes",
+        "entity_selector": "type(\"HOST\"),entityName(\"app-server-prod01\")",
+        "time_range": "now-1h"
+      },
+      "on_success": "step-4",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-6",
       "step_type": "DECISION",
-      "description": "Evaluate check results",
+      "description": "Evaluate all findings",
       "parameters": { "rule": "any_failed" },
       "on_success": "step-resolve",
       "on_failure": "step-escalate"

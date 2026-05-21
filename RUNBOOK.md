@@ -67,7 +67,7 @@ npm run build
 Open three terminals:
 
 ```bash
-# Terminal 1 — Backend (demo mode, no credentials needed)
+# Terminal 1 — Backend (rule-based, no credentials needed)
 cd L1_Agentic_AI_Solution
 export AGENT_DEMO_MODE=true
 export LLM_ENABLED=false
@@ -83,6 +83,28 @@ python -m src.l1_agent.demo
 ```
 
 Open **http://localhost:5173** in a browser to view the dashboard.
+
+### 1.6 Running with CrewAI Pipeline
+
+Requires an Anthropic API key. All other services (frontend, history store, SSE) work identically.
+
+```bash
+# Terminal 1 — Backend in CrewAI mode
+cd L1_Agentic_AI_Solution
+export AGENT_DEMO_MODE=true
+export LLM_ENABLED=false
+export CREWAI_ENABLED=true
+export CREWAI_MODEL=claude-sonnet-4-6       # or another Anthropic model ID
+export ANTHROPIC_API_KEY=sk-ant-...
+export CREWAI_VERBOSE=true                  # optional: prints agent deliberation
+python -m src.l1_agent.main
+
+# Terminal 2 — Frontend (unchanged)
+cd frontend
+npm run dev
+```
+
+The four agents (`TriageAgent → ReviewAgent → ResolutionAgent → ResolverAgent`) run sequentially inside a thread-pool executor so the async event loop is never blocked. Watch their deliberation in the Activity Feed at `http://localhost:5173`.
 
 ### 1.6 Health Check
 
@@ -120,7 +142,7 @@ Response:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LLM_ENABLED` | `false` | Enable AI-driven SOP selection and execution |
+| `LLM_ENABLED` | `false` | Enable AI/LLM path (AIAnalyzer + AIExecutor) |
 | `LLM_ENDPOINT` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
 | `LLM_API_KEY` | — | LLM API key — **store in secrets vault, never in code or logs** |
 | `LLM_MODEL` | `gpt-4` | Model name (e.g. `gpt-4o`, `gpt-4`, `gpt-3.5-turbo`) |
@@ -128,7 +150,17 @@ Response:
 | `LLM_MAX_TOKENS` | `4096` | Maximum tokens per LLM response |
 | `LLM_TIMEOUT_SECONDS` | `60` | HTTP timeout for LLM API calls |
 
-### 2.3 Agent Variables
+### 2.3 CrewAI Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CREWAI_ENABLED` | `false` | Enable CrewAI 4-agent pipeline; takes precedence over `LLM_ENABLED` |
+| `CREWAI_MODEL` | `claude-sonnet-4-6` | Anthropic model ID used by all four agents |
+| `ANTHROPIC_API_KEY` | — | Anthropic API key — also checked as `CREWAI_API_KEY` |
+| `CREWAI_VERBOSE` | `false` | Print agent deliberation to stdout (useful for debugging) |
+| `CREWAI_MAX_ITER` | `15` | Maximum tool-call iterations per agent before forced stop |
+
+### 2.4 Agent Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -140,7 +172,7 @@ Response:
 | `AGENT_MAX_CONCURRENT_INCIDENTS` | `5` | Semaphore limit for concurrent incident processing |
 | `SERVICENOW_POLL_INTERVAL` | `30` | Seconds between ServiceNow polling cycles |
 
-### 2.4 Tool Adapter Variables
+### 2.5 Tool Adapter Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -387,6 +419,11 @@ tail -20 data/incident_history.jsonl | python -m json.tool
 | Frontend shows "Reconnecting…" | Backend stopped or `/api/stream` unreachable | Restart backend; frontend auto-reconnects within 3s |
 | Adapter timeout | Network/firewall issue | Check connectivity; review circuit breaker state |
 | Duplicate work notes | Idempotency check bypassed | Verify `sys_id` is unique per incident; check `processed_ids` set |
+| CrewAI: `AuthenticationError` | Missing Anthropic API key | Set `ANTHROPIC_API_KEY` or `CREWAI_API_KEY` env var |
+| CrewAI: agents return wrong model | `CREWAI_MODEL` not a valid Anthropic ID | Use a valid model ID e.g. `claude-sonnet-4-6`, `claude-3-5-sonnet-20241022` |
+| CrewAI: incident `FAILED` outcome | Agent hit `CREWAI_MAX_ITER` limit | Increase `CREWAI_MAX_ITER` (default 15) or check `CREWAI_VERBOSE=true` logs |
+| CrewAI: `list_sops` returns "No SOPs loaded" | `register_sops()` called before SOPs loaded | Ensure `AGENT_DEMO_MODE=true` so sample SOPs are pre-loaded at startup |
+| CrewAI: blocking event loop warning | `run_in_executor` not wrapping kickoff | This is handled automatically by `CrewIncidentProcessor` — do not call `kickoff()` directly from async code |
 
 ### 6.2 Log Analysis
 
@@ -453,39 +490,68 @@ Key metrics to monitor:
 
 ---
 
-## 7. AI Mode Operations
+## 7. Execution Mode Operations
 
-### 7.1 How the AI Decides
+### 7.1 Mode Comparison
 
-In AI mode (`LLM_ENABLED=true`):
+| | Rule-Based | AI/LLM | CrewAI |
+|-|-----------|--------|--------|
+| **Env var** | `LLM_ENABLED=false` | `LLM_ENABLED=true` | `CREWAI_ENABLED=true` |
+| **API key required** | No | Yes (OpenAI-compat.) | Yes (Anthropic) |
+| **SOP selection** | Keyword/CI/category scoring | `AIAnalyzer.select_sop()` | ReviewAgent via `list_sops` |
+| **Step execution** | Deterministic sequential | LLM tool-calling loop (≤15 iter) | ResolutionAgent tool-calling |
+| **Processor class** | `IncidentProcessor` | `IncidentProcessor` | `CrewIncidentProcessor` |
+| **Best for** | Demo, CI, no LLM budget | Flexible unstructured incidents | Showcasing agentic reasoning |
+
+### 7.2 Switching Modes
+
+```bash
+# Rule-based (no API key, recommended for demo/testing)
+export LLM_ENABLED=false
+python -m src.l1_agent.main
+
+# AI/LLM mode
+export LLM_ENABLED=true
+export LLM_ENDPOINT=https://api.openai.com/v1
+export LLM_API_KEY=sk-...
+python -m src.l1_agent.main
+
+# CrewAI mode (overrides LLM_ENABLED)
+export CREWAI_ENABLED=true
+export CREWAI_MODEL=claude-sonnet-4-6
+export ANTHROPIC_API_KEY=sk-ant-...
+python -m src.l1_agent.main
+```
+
+If the LLM endpoint is unreachable at runtime in AI/LLM mode, the agent automatically falls back to rule-based mode for that incident.
+
+### 7.3 How AI/LLM Mode Decides
 
 1. **Incident analysis** — LLM reads the ticket and produces a preliminary root-cause analysis
 2. **SOP selection** — LLM calls `select_sop` tool, returning the best SOP with confidence score and rationale
-3. **Execution loop** — LLM drives tool calls (`splunk_search`, `mq_check`, `autosys_status`, `dynatrace_vm_check`, `mainframe_async_check`, etc.) up to 15 iterations
-4. **Conclusion** — LLM calls `resolve_incident` (with resolution summary) or `escalate_to_l2` (with reason and findings)
+3. **Execution loop** — LLM drives tool calls (`splunk_search`, `mq_check`, `dynatrace_vm_check`, etc.) up to 15 iterations
+4. **Conclusion** — LLM calls `resolve_incident` or `escalate_to_l2`
 
-### 7.2 Switching Between AI and Rule-Based
+### 7.4 How CrewAI Mode Decides
 
-```bash
-# AI-driven mode
-export LLM_ENABLED=true
-python -m src.l1_agent.main
-
-# Rule-based fallback (recommended for demo/testing)
-export LLM_ENABLED=false
-python -m src.l1_agent.main
+```
+Incident JSON
+  → TriageAgent     (no tools)   — structured triage report
+  → ReviewAgent     (list_sops, get_sop_details) — selected SOP + confidence
+  → ResolutionAgent (7 tool adapters) — per-SOP investigation + OUTCOME verdict
+  → ResolverAgent   (no tools)   — work note + "OUTCOME: RESOLVED/ESCALATED"
 ```
 
-If the LLM endpoint is unreachable at runtime, the agent automatically falls back to rule-based mode for that incident.
+The resolver agent's final output is parsed for `OUTCOME: RESOLVED` or `OUTCOME: ESCALATED` to determine the `ExecutionOutcome`. Each agent task's raw output is stored as a `StepResult` in the `ExecutionSummary`, so the Incident Detail view in the dashboard shows full agent deliberation.
 
-### 7.3 Demo Mode with AI
+### 7.5 Demo Mode with Mock LLM
 
 ```bash
-# Standalone demo — shows both AI-driven and rule-based flows without a running server
+# Standalone demo — rule-based path, no running server needed
 python -m src.l1_agent.demo
 ```
 
-Uses `MockLLMClient` (no real API calls). Shows AI analysing a sample MQ incident, selecting a SOP, calling tools, and resolving.
+Uses mock adapters and pre-loaded SOPs. Does not require any API key. Fires a batch of test incidents and prints execution summaries.
 
 ---
 

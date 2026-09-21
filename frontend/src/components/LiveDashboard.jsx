@@ -151,7 +151,7 @@ export default function LiveDashboard() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--ss-navy)' }}>Live Dashboard</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>Real-time L1 Engineer activity and resolution metrics</p>
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>Real-time Support Engineer activity and resolution metrics</p>
         </div>
         {loading && (
           <span style={{ fontSize: 11, color: 'var(--ss-blue)', background: 'var(--ss-light-blue)', padding: '4px 10px', borderRadius: 2, fontWeight: 500 }}>

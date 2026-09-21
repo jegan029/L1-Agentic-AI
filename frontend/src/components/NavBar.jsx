@@ -46,7 +46,7 @@ export default function NavBar({ activePage, onNavigate, isConnected }) {
           <img src="/state-street-logo-final.svg" alt="State Street" style={{ height: 36, width: 'auto', display: 'block' }} />
           <div style={{ borderLeft: '1px solid #dde0ec', paddingLeft: 18 }}>
             <div style={{ fontSize: 11, color: 'var(--ss-blue)', fontWeight: 600, letterSpacing: '0.06em' }}>
-              L1 ENGINEER AGENT
+              NEXUS - Detect. Decide. Resolve. Autonomously
             </div>
           </div>
         </div>
@@ -92,7 +92,7 @@ export default function NavBar({ activePage, onNavigate, isConnected }) {
           fontSize: 12,
         }}>
           <span className="material-symbols-rounded" style={{ fontSize: 16, color: 'var(--ss-blue)' }}>smart_toy</span>
-          <span style={{ color: 'var(--ss-navy)', fontWeight: 500 }}>L1 Engineer</span>
+          <span style={{ color: 'var(--ss-navy)', fontWeight: 500 }}>Support Engineer</span>
           <span style={{
             width: 6, height: 6, borderRadius: '50%',
             background: isConnected ? '#00875A' : '#C35109',

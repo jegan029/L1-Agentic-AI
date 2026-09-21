@@ -32,7 +32,7 @@ function Shell() {
       }}>
         <img src="/state-street-logo-final.svg" alt="State Street" style={{ height: 22, width: 'auto', display: 'block', opacity: 0.75 }} />
         <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          L1 Engineer Agent &middot; Internal Operations Platform
+          Support Engineer Agent &middot; Internal Operations Platform
         </span>
       </footer>
     </div>

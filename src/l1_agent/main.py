@@ -82,12 +82,18 @@ class L1AgentService:
         ai_analyzer = None
         ai_executor = None
         if settings.llm.enabled:
-            if settings.agent.demo_mode:
+            if settings.agent.demo_mode and not settings.llm.api_key:
+                # No API key — pure offline demo only
                 self._llm_client = MockLLMClient()
                 logger.info("AI mode enabled (demo: using MockLLMClient)")
             else:
+                # Real NVIDIA NIM endpoint
                 self._llm_client = LLMClient(settings.llm)
-                logger.info("AI mode enabled (endpoint: %s)", settings.llm.endpoint)
+                logger.info(
+                    "AI mode enabled (NVIDIA NIM: endpoint=%s model=%s)",
+                    settings.llm.endpoint,
+                    settings.llm.model,
+                )
             ai_analyzer = AIAnalyzer(self._llm_client)
             ai_executor = AIExecutor(
                 llm_client=self._llm_client,
@@ -297,6 +303,16 @@ class L1AgentService:
         setup_logging(self._settings.agent.log_level)
         logger.info("L1 Agent Service starting (demo_mode=%s)", self._settings.agent.demo_mode)
 
+        if self._llm_client is not None:
+            llm_type = type(self._llm_client).__name__
+            logger.info(
+                "LLM client active: %s (endpoint=%s model=%s)",
+                llm_type,
+                self._settings.llm.endpoint,
+                self._settings.llm.model,
+            )
+        else:
+            logger.info("LLM client: disabled")
         app = self._create_app()
         runner = web.AppRunner(app)
         await runner.setup()

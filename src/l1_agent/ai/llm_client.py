@@ -91,6 +91,27 @@ class LLMClient:
 
             data = await resp.json()
 
+            # Log full AI reasoning
+            response_obj = LLMResponse.from_api_response(data)
+            if response_obj.content:
+                logger.info(
+                    "NVIDIA reasoning: %s",
+                    response_obj.content[:500],
+                )
+            if response_obj.tool_calls:
+                for tc in response_obj.tool_calls:
+                    logger.info(
+                        "NVIDIA tool decision: %s(%s)",
+                        tc.function_name,
+                        tc.arguments_str[:300],
+                    )
+            logger.info(
+                "NVIDIA tokens used: prompt=%s completion=%s",
+                response_obj.usage.get("prompt_tokens"),
+                response_obj.usage.get("completion_tokens"),
+            )
+            return response_obj
+
         return LLMResponse.from_api_response(data)
 
     # ── Convenience: single prompt ───────────────────────────────────

@@ -133,8 +133,12 @@ class AIAnalyzer:
         try:
             return await self._llm.ask(prompt)
         except Exception as exc:
-            logger.error("LLM incident analysis failed: %s", exc)
-            return f"AI analysis unavailable: {exc}"
+            logger.error(
+                "LLM incident analysis failed: [%s] %s",
+                type(exc).__name__,
+                repr(exc),
+            )
+            return f"AI analysis unavailable: {type(exc).__name__}"
 
     async def interpret_tool_result(
         self,

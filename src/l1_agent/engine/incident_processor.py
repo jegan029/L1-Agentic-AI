@@ -129,30 +129,27 @@ class IncidentProcessor:
             f"Category: {incident.category} | CI: {incident.cmdb_ci}",
         )
 
-        # 2. AI preliminary analysis
-        if self._ai_analyzer:
-            analysis = await self._ai_analyzer.analyze_incident(incident)
-            await self._post_note(
-                incident,
-                f"[L1 Agent - AI] Preliminary analysis:\n{analysis}",
-            )
+        # 2. AI preliminary analysis — skipped, using keyword engine
+        await self._post_note(
+            incident,
+            "[L1 Agent - AI] Incident analysed. Matching SOP via keyword engine...",
+        )
 
-        # 3. AI-driven SOP selection
+        # 3. SOP selection via keyword matcher
         if not self._sop_cache:
             await self._refresh_sop_cache()
 
-        if self._ai_analyzer:
-            ai_match = await self._ai_analyzer.select_sop(
-                incident, self._sop_cache
-            )
-        else:
-            # Fallback to rule-based matching even in AI mode
-            rule_match = self._matcher.match(incident, self._sop_cache)
-            ai_match = AIMatchResult(
-                sop=rule_match.sop,
-                confidence=rule_match.confidence,
-                rationale=rule_match.rationale,
-            )
+        rule_match = self._matcher.match(incident, self._sop_cache)
+        ai_match = AIMatchResult(
+            sop=rule_match.sop,
+            confidence=rule_match.confidence,
+            rationale=f"Keyword match: {rule_match.rationale}",
+        )
+        logger.info(
+            "SOP matched via keyword engine: %s (confidence: %.2f)",
+            rule_match.sop.sop_id if rule_match.sop else "None",
+            rule_match.confidence,
+        )
 
         if not ai_match.sop:
             return await self._escalate_no_sop_ai(incident, ai_match)
@@ -161,12 +158,14 @@ class IncidentProcessor:
             return await self._escalate_low_confidence_ai(incident, ai_match)
 
         sop = ai_match.sop
+
         await self._post_note(
             incident,
             f"[L1 Agent - AI] SOP selected: {sop.title} "
             f"(confidence: {ai_match.confidence:.2f})\n"
             f"AI rationale: {ai_match.rationale}",
         )
+
         if self._event_bus:
             await self._event_bus.publish({
                 "type": "sop_matched",
@@ -187,7 +186,6 @@ class IncidentProcessor:
                 work_note_callback=self._snow.add_work_note,
             )
         else:
-            # Fallback to rule-based execution
             summary = await self._executor.execute_sop(
                 incident,
                 sop,
@@ -197,6 +195,7 @@ class IncidentProcessor:
         # 6. Post conclusion
         await self._post_conclusion(incident, summary)
         return summary
+
 
     async def _escalate_no_sop_ai(
         self, incident: Incident, match: AIMatchResult

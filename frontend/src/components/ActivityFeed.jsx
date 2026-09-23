@@ -1,5 +1,4 @@
 import { useAgent } from '../context/AgentContext'
-import { eventIcon, eventColor, formatRelativeTime } from '../utils/formatters'
 
 function eventMessage(evt) {
   switch (evt.type) {
@@ -13,13 +12,13 @@ function eventMessage(evt) {
   }
 }
 
-const TYPE_COLORS = {
-  incident_received:  'var(--ss-blue)',
-  sop_matched:        'var(--ss-navy)',
-  step_executing:     'var(--text-muted)',
-  step_done:          '#3a4470',
-  incident_resolved:  '#00875A',
-  incident_escalated: '#C35109',
+const TYPE_META = {
+  incident_received:  { color: '#58a6ff', prefix: 'RECV', icon: 'inbox' },
+  sop_matched:        { color: '#d2a8ff', prefix: 'SOP ', icon: 'checklist' },
+  step_executing:     { color: '#8b949e', prefix: 'EXEC', icon: 'play_circle' },
+  step_done:          { color: '#79c0ff', prefix: 'DONE', icon: 'done_all' },
+  incident_resolved:  { color: '#3fb950', prefix: 'RSLV', icon: 'task_alt' },
+  incident_escalated: { color: '#ffa657', prefix: 'ESCL', icon: 'escalator_warning' },
 }
 
 export default function ActivityFeed() {
@@ -28,21 +27,20 @@ export default function ActivityFeed() {
   return (
     <div style={{ padding: '28px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
 
-      {/* Page header */}
+      {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--ss-navy)' }}>Activity Feed</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>Real-time stream of L1 Engineer actions via Server-Sent Events</p>
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>
+            Real-time stream of L1 Engineer actions via Server-Sent Events
+          </p>
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          {/* Connection badge */}
           <div style={{
-            display: 'flex', alignItems: 'center', gap: 6,
-            padding: '6px 12px',
+            display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
             background: isConnected ? '#e8f5ee' : '#fff3e0',
             border: `1px solid ${isConnected ? '#b2dfcb' : '#ffd5a8'}`,
-            borderRadius: 2,
-            fontSize: 12, fontWeight: 600,
+            borderRadius: 2, fontSize: 12, fontWeight: 600,
             color: isConnected ? '#00875A' : '#C35109',
           }}>
             <span style={{ width: 6, height: 6, borderRadius: '50%', background: isConnected ? '#00875A' : '#C35109' }} />
@@ -52,76 +50,108 @@ export default function ActivityFeed() {
             <button onClick={clear} style={{
               padding: '6px 12px', fontSize: 12, borderRadius: 2,
               border: '1px solid var(--border-subtle)',
-              color: 'var(--text-secondary)',
-              background: '#fff',
-            }}>
-              Clear
-            </button>
+              color: 'var(--text-secondary)', background: '#fff', cursor: 'pointer',
+            }}>Clear</button>
           )}
         </div>
       </div>
 
-      {/* Feed */}
+      {/* ── Terminal Card ── */}
       <div style={{
-        background: '#fff',
-        border: '1px solid var(--border-subtle)',
+        background: '#0d1117',
+        border: '1px solid #30363d',
         borderRadius: 'var(--radius-md)',
-        boxShadow: 'var(--shadow-card)',
+        boxShadow: '0 4px 32px rgba(0,0,0,0.35)',
         overflow: 'hidden',
-        minHeight: 400,
+        minHeight: 480,
       }}>
-        {/* Table header */}
+        <style>{`
+          @keyframes term-blink  { 0%,100%{opacity:1}  50%{opacity:0.2} }
+          @keyframes term-slide  { from{opacity:0;transform:translateY(-5px)} to{opacity:1;transform:translateY(0)} }
+        `}</style>
+
+        {/* macOS title bar */}
         <div style={{
-          display: 'grid', gridTemplateColumns: '140px 1fr 90px',
-          padding: '10px 20px',
-          background: 'var(--bg-1)',
-          borderBottom: '1px solid var(--border-subtle)',
-          fontSize: 11, fontWeight: 600, color: 'var(--text-muted)',
-          textTransform: 'uppercase', letterSpacing: '0.05em',
+          padding: '10px 18px',
+          background: '#161b22',
+          borderBottom: '1px solid #30363d',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         }}>
-          <span>Event Type</span>
-          <span>Details</span>
-          <span>Time</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            {/* Traffic lights */}
+            <div style={{ display: 'flex', gap: 7 }}>
+              {['#ff5f57', '#febc2e', '#28c840'].map((c, i) => (
+                <span key={i} style={{ width: 13, height: 13, borderRadius: '50%', background: c, display: 'inline-block' }} />
+              ))}
+            </div>
+            <span style={{ fontSize: 12, color: '#8b949e', fontFamily: 'monospace', letterSpacing: '0.03em' }}>
+              nexus-agent — activity-stream
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 11, color: '#3fb950', fontFamily: 'monospace' }}>
+              {events.length} events
+            </span>
+            <span style={{
+              width: 7, height: 7, borderRadius: '50%', display: 'inline-block',
+              background: isConnected ? '#3fb950' : '#ffa657',
+              animation: isConnected ? 'term-blink 2s ease-in-out infinite' : 'none',
+            }} />
+          </div>
         </div>
 
-        {events.length === 0 ? (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '60px 20px', gap: 10 }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 36, color: 'var(--bg-3)' }}>bolt</span>
-            <span style={{ fontSize: 14, color: 'var(--text-muted)', fontWeight: 500 }}>Waiting for agent activity</span>
-            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Events appear here in real time as the L1 Engineer processes incidents</span>
-          </div>
-        ) : (
-          events.map((evt, i) => {
-            const color = TYPE_COLORS[evt.type] || 'var(--text-muted)'
-            const icon = eventIcon(evt.type)
-            return (
-              <div key={i} style={{
-                display: 'grid', gridTemplateColumns: '140px 1fr 90px',
-                padding: '12px 20px',
-                borderBottom: '1px solid var(--border-subtle)',
-                borderLeft: `3px solid ${color}`,
-                animation: i === 0 ? 'fadeUp 0.2s ease both' : undefined,
-                background: i === 0 ? 'rgba(0,26,255,0.02)' : '#fff',
-              }}>
-                {/* Type chip */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span className="material-symbols-rounded" style={{ fontSize: 15, color, flexShrink: 0 }}>{icon}</span>
-                  <span style={{ fontSize: 10, fontWeight: 600, color, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-                    {evt.type.replace(/_/g, ' ')}
-                  </span>
-                </div>
-                {/* Message */}
-                <div style={{ fontSize: 13, color: 'var(--text-primary)', alignSelf: 'center', paddingRight: 16, wordBreak: 'break-word' }}>
-                  {eventMessage(evt)}
-                </div>
-                {/* Time */}
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', alignSelf: 'center' }}>
-                  {formatRelativeTime(evt.ts)}
-                </div>
+        {/* Terminal body */}
+        <div style={{ padding: '14px 20px', fontFamily: '"JetBrains Mono","Fira Code","Cascadia Code",monospace' }}>
+          {events.length === 0 ? (
+            <div style={{ padding: '40px 0', textAlign: 'center' }}>
+              <div style={{ fontSize: 13, color: '#8b949e', marginBottom: 8 }}>
+                $ waiting for agent activity...
               </div>
-            )
-          })
-        )}
+              <span style={{ fontSize: 14, color: '#3fb950', animation: 'term-blink 1s step-end infinite', display: 'inline-block' }}>█</span>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              {events.map((evt, i) => {
+                const meta = TYPE_META[evt.type] || { color: '#8b949e', prefix: '?   ', icon: 'bolt' }
+                const ts   = evt.ts
+                  ? new Date(evt.ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                  : '??:??:??'
+                return (
+                  <div key={i} style={{
+                    display: 'flex', gap: 10, alignItems: 'flex-start',
+                    padding: '4px 6px',
+                    paddingLeft: i === 0 ? 4 : 6,
+                    borderLeft: i === 0 ? `2px solid ${meta.color}` : '2px solid transparent',
+                    animation: i === 0 ? 'term-slide 0.2s ease' : undefined,
+                    borderRadius: 2,
+                    background: i === 0 ? `${meta.color}08` : 'transparent',
+                  }}>
+                    <span style={{ fontSize: 11, color: '#484f58', flexShrink: 0, width: 68, paddingTop: 1 }}>
+                      {ts}
+                    </span>
+                    <span style={{
+                      fontSize: 10, fontWeight: 700,
+                      color: meta.color,
+                      background: `${meta.color}18`,
+                      padding: '1px 7px', borderRadius: 2,
+                      flexShrink: 0, letterSpacing: '0.05em',
+                      marginTop: 1,
+                    }}>
+                      {meta.prefix}
+                    </span>
+                    <span style={{ fontSize: 12, color: '#e6edf3', lineHeight: 1.55, wordBreak: 'break-word' }}>
+                      {eventMessage(evt)}
+                    </span>
+                  </div>
+                )
+              })}
+              {/* Blinking cursor at end */}
+              <div style={{ paddingLeft: 8, marginTop: 4 }}>
+                <span style={{ fontSize: 13, color: '#3fb950', animation: 'term-blink 1s step-end infinite', display: 'inline-block' }}>█</span>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

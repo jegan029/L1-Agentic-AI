@@ -8,11 +8,14 @@ import ActivityFeed from './components/ActivityFeed'
 
 function Shell() {
   const [page, setPage] = useState('dashboard')
+  const [isDark, setIsDark] = useState(false)
   const { stream: { isConnected } } = useAgent()
+
+  
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-1)' }}>
-      <NavBar activePage={page} onNavigate={setPage} isConnected={isConnected} />
+      <NavBar activePage={page} onNavigate={setPage} isConnected={isConnected} isDark={isDark} onToggleDark={() => setIsDark(d => !d)} />
       <main style={{ maxWidth: 1400, margin: '0 auto' }}>
         {page === 'dashboard' && <LiveDashboard />}
         {page === 'incidents' && <IncidentFeed />}

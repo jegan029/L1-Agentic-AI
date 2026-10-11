@@ -107,7 +107,7 @@ These are product, commercial or irreversible choices. Each has a recommendation
 | D3 | CrewAI path: repair it in Phase 1, or remove it in Phase 1. | Remove. ADR 0001 retires it, it cannot be verified without a provider key, and repairing code that is scheduled for deletion is wasted review effort. If you want it kept alive until Phase 5, Phase 1 repairs the four defects and forces its outcome through the same fail-closed mapping. |
 | D4 | Lead deployment shape (ADR 0003). | Single-tenant in the customer environment first; keep the runner split so the hosted control plane can follow. |
 | D5 | Highest tier allowed to run without a human approval. **Decided: as recommended.** | T1 only. T2 always needs an approval bound to the action hash, in every autonomy level. This is a liability position as much as an engineering one. |
-| D6 | Model providers at launch, and whether "no model" is a supported configuration. | Support a customer-supplied OpenAI-compatible endpoint and Anthropic. Make the engine fully functional with the model disabled, because some buyers will start that way. |
+| D6 | Model providers at launch, and whether "no model" is a supported configuration. **Decided: as recommended.** | Support a customer-supplied OpenAI-compatible endpoint and Anthropic. Make the engine fully functional with the model disabled, because some buyers will start that way. |
 | D7 | Product name, licence, and whether the mainframe and browser connectors ship in the first release. | Ship both connectors as T0 read only and labelled preview. They carry the most risk for the least reference-case value. |
 | D8 | ServiceNow approval mechanism: approval on a change request created from a standard change template, or a custom approval record. Whether we ship a ServiceNow scoped application. **Decided: as recommended.** | Standard change template plus approval on the change request. A scoped application is the durable answer but adds store certification work; defer it to after Phase 6. |
 
@@ -459,4 +459,6 @@ Not verified: the force start against Autosys (`sendevent` exit codes, output an
 
 A live test for the change and approval calls exists and has not been run: `tests/live/test_servicenow_changes_live.py`. It needs the name of a standard change template on the instance (`LIVE_SERVICENOW_CHANGE_TEMPLATE`) and creates tagged change records there.
 
-Open decisions: D6 (model providers) is needed before Phase 5. D7 (product name, licence, preview connectors) is needed before Phase 6.
+Decision recorded for Phase 5: **D6** a customer-supplied OpenAI-compatible endpoint and Anthropic are the supported model providers at launch, and running with no model is a supported configuration.
+
+Open decisions: D7 (product name, licence, preview connectors) is needed before Phase 6.

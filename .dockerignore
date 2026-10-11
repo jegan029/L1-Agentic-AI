@@ -1,4 +1,4 @@
-# Only src/, data/sample_sops and the requirements files belong in the image.
+# Only src/, the sample SOPs under data/ and the requirements files belong in the image.
 .git
 .env
 .env.*

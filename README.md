@@ -2,14 +2,15 @@
 
 An async Python service that takes a ServiceNow incident, matches it to a published Standard Operating Procedure (SOP), runs the SOP's diagnostic steps through tool adapters, and ends in one explicit outcome: resolved with verification, or handed to a person with the evidence. A React dashboard shows what the agent did.
 
-**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow client has run against one developer instance and the model client against one hosted provider. Every tool adapter (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock, and sign-in has only run against identity providers faked in the tests. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
+**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow connector has run against one developer instance (basic authentication only) and the model client against one hosted provider. Every operations connector (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock and against fixtures written from vendor documentation, and sign-in has only run against identity providers faked in the tests. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
 
 ## What it does today
 
-- Receives incidents by signed webhook or by polling ServiceNow.
-- Matches each incident to an SOP by keyword, CI, category and assignment group. A field the ticket does not carry is left out of the score; it is not counted as a mismatch. A model, if configured, can help choose between candidates that already clear the confidence threshold. It has no tools and cannot decide what runs.
+- Receives incidents by signed webhook or by polling ServiceNow, and claims each ticket before working it. A ticket someone else already holds is left alone.
+- Keeps SOPs as versions with a review workflow: one person submits a draft, a different person approves it, and only a published version is ever matched or run. Articles pulled from a ServiceNow knowledge base or a Git repository arrive as drafts.
+- Matches each incident to a published SOP by keyword, CI, category and assignment group. A field the ticket does not carry is left out of the score; it is not counted as a mismatch. A model, if configured, can help choose between candidates that already clear the confidence threshold. It has no tools and cannot decide what runs.
 - Binds typed parameters from the ticket (for example an Autosys job name), validates them, and stops if any cannot be bound.
-- Executes the SOP step by step with read-only adapters: Splunk, IR360/IBM MQ, Autosys, Windows file shares, Dynatrace, a browser check and mainframe TN3270.
+- Executes the SOP step by step through read-only connectors: Splunk, IBM MQ (through IR360), Autosys, file shares, Dynatrace, a browser check and mainframe TN3270. Each connector declares its capabilities, their parameters and their risk tier in a manifest.
 - Ends every run in one of four outcomes.
 
 | Outcome | Meaning |
@@ -17,11 +18,11 @@ An async Python service that takes a ServiceNow incident, matches it to a publis
 | `resolved` | A VERIFY step ran and its assertion showed the symptom is gone. The incident is resolved in ServiceNow. |
 | `escalated` | The SOP routed the incident to an L2 team, with the evidence collected. |
 | `needs_human` | The agent could not continue safely: invalid SOP, unbound parameter, adapter unavailable, internal error. The incident stays open and is routed to a person. |
-| `aborted` | Stopped by an operator. Reserved; nothing triggers it yet. |
+| `aborted` | Stopped before doing anything. Today that means the ticket was already assigned to someone else. |
 
 There is no default outcome. A run cannot be recorded as resolved without a passed verification; see [ADR 0002](docs/adr/0002-fail-closed-outcomes.md).
 
-All adapters are read only. The agent does not change anything in a target system yet. Remediation actions with policy and approval are planned for a later phase.
+All connectors are read only, and the connector layer refuses to call a write capability at all. The agent does not change anything in a target system yet. Remediation actions with policy and approval are planned for a later phase.
 
 ## Quick start (demo mode)
 
@@ -116,10 +117,17 @@ SOPs are JSON. The samples in [data/sample_sops/](data/sample_sops/) show the fu
 - At least one step; every `on_success` and `on_failure` points at a step that exists; no cycles.
 - Every path ends in an `ESCALATE` or `RESOLVE` step. A failed step with no `on_failure` escalates.
 - `RESOLVE` can only be reached straight from the success edge of a `VERIFY` step (only `NOTE` steps may sit in between).
-- Adapter parameters must match the closed schema for that step type in [src/l1_agent/adapters/schemas.py](src/l1_agent/adapters/schemas.py).
+- A check's parameters must match the closed schema its connector declares. `l1-agent connectors` lists every capability; the schemas are in [src/l1_agent/connectors/ops/](src/l1_agent/connectors/ops/).
 - Every `${name}` placeholder must be a declared parameter.
 
-Step types: `SPLUNK_SEARCH`, `MQ_CHECK`, `FILE_CHECK`, `AUTOSYS_STATUS`, `DYNATRACE_VM_CHECK`, `DYNATRACE_METRICS`, `WEB_UI_CHECK`, `MAINFRAME_CHECK`, `DECISION`, `NOTE`, `VERIFY`, `ESCALATE`, `RESOLVE`.
+Step types: `CHECK`, `DECISION`, `NOTE`, `VERIFY`, `ESCALATE`, `RESOLVE`. A `CHECK` step names a connector capability:
+
+```json
+{"step_id": "step-2", "step_type": "CHECK", "capability": "splunk.search",
+ "parameters": {"query": "index=app_logs ERROR"}, "on_success": "step-3"}
+```
+
+The older typed step names still work and mean the same thing: `SPLUNK_SEARCH` (`splunk.search`), `MQ_CHECK` (`ibm_mq.queue.check`), `FILE_CHECK` (`fileshare.file.read`), `AUTOSYS_STATUS` (`autosys.job.status`), `DYNATRACE_VM_CHECK` (`dynatrace.host.health`), `DYNATRACE_METRICS` (`dynatrace.metrics.query`), `WEB_UI_CHECK` (`browser.page.check`), `MAINFRAME_CHECK` (`mainframe.screen.check`).
 
 A parameter is bound from the ticket before any step runs:
 
@@ -155,7 +163,19 @@ A verification runs a read check and asserts on its output:
 
 `DECISION` rules and `VERIFY` assertions use a small expression language: comparisons, `in`, `and`, `or`, `not`, and paths such as `result.jobs[0].status` or `steps["step-2"].current_depth`. An expression that cannot be evaluated never passes.
 
-A prose knowledge article fetched from ServiceNow becomes a draft. Drafts are never matched or executed. The review and approval workflow is Phase 3.
+### From draft to published
+
+```
+draft ──submit──▶ in review ──approve──▶ approved ──publish──▶ published ──▶ superseded | retired
+             ◀──changes requested──
+```
+
+- A draft comes from an author in the dashboard (**SOP library**), from `l1-agent sop import --file sop.json`, or from a knowledge source (`l1-agent knowledge sync`). A structured article keeps its steps; a prose article becomes a draft with no steps and the article text beside it.
+- Submitting runs the validator and fixes the content hash. The reviewer sees the validator results, every connector capability the SOP calls with its risk tier, what changed from the published version, and the source article.
+- Approval is of that hash, by someone other than the author. The service refuses the author and so does a database constraint. A machine token cannot author or approve, and there is no command-line way to approve or publish.
+- A published version cannot be edited. Publishing a new version supersedes the old one; a run that had already started finishes on the version it started with. Every run records the SOP id, version number and hash.
+
+In demo mode the sample SOPs are published at start-up, and one sample is left in review so the screen has something to approve. The demo user holds every role but still cannot approve its own drafts.
 
 ## API
 
@@ -172,6 +192,11 @@ Every route is denied unless it is declared with an access rule; the service wil
 | `GET /metrics` | `metrics.read` | Prometheus text format |
 | `GET /api/audit/events`, `/api/audit/verify` | `audit.read` | The audit log and its integrity |
 | `/api/tokens`, `/api/role-mappings` | `tokens.manage`, `roles.manage` | Access administration |
+| `GET /api/sops`, `/api/sop-versions/{id}` | `incidents.read` | SOP versions; one version with its checks, capabilities and changes |
+| `POST /api/sops`, `PUT`/`DELETE /api/sop-versions/{id}`, `POST .../submit`, `POST /api/knowledge/sync` | `sops.author` | Write, submit and discard drafts; pull drafts from the knowledge sources |
+| `POST /api/sop-versions/{id}/approve`, `.../request-changes`, `.../publish`, `POST /api/sops/{sop_id}/retire` | `sops.approve` | Review. The author of a version cannot approve it |
+| `GET /api/connectors` | `system.read` | Every connector's manifest and whether this tenant has configured it. No credentials |
+| `PUT`/`DELETE /api/connectors/{id}/connection`, `POST /api/connectors/{id}/test` | `connectors.manage` | A connector's settings and credential references; test the connection |
 | `/auth/login`, `/auth/callback`, `/auth/saml/*`, `/auth/break-glass`, `/auth/logout` | public, except logout | Sign-in and sign-out |
 
 A signed-in browser sends `X-CSRF-Token` (from `/api/me`) on every request that changes something. API tokens go in `Authorization: Bearer`.
@@ -200,6 +225,10 @@ What the key tests prove:
 - [tests/db/test_tenant_isolation.py](tests/db/test_tenant_isolation.py): with the tenant filter deliberately left out, a query still sees one tenant.
 - [tests/db/test_audit_log.py](tests/db/test_audit_log.py): a changed, removed, inserted or reordered audit event is detected.
 - [tests/api/test_http_access.py](tests/api/test_http_access.py): an undeclared route stops start-up, and every route refuses a caller without the right credentials.
+- [tests/db/test_sop_lifecycle.py](tests/db/test_sop_lifecycle.py): a draft, or anything not published, cannot reach the engine; an author cannot approve their own version, in the service or by writing to the table; a submitted version cannot be changed.
+- [tests/unit/connectors/test_manifest_lint.py](tests/unit/connectors/test_manifest_lint.py): a connector whose write capability lacks a tier, verify operation, closed schema, scopes or allow list is not registered.
+- [tests/unit/connectors/test_secrets.py](tests/unit/connectors/test_secrets.py): a credential rotated in the secrets backend is used on the next call without a restart.
+- [tests/contract/](tests/contract/): each connector against recorded conversations, including errors and paging. The recordings were written by hand from vendor documentation; they are not captures from live systems.
 
 ## Layout
 
@@ -213,14 +242,16 @@ src/l1_agent/
   audit/               hash-chained audit log
   auth/                roles, sessions, API tokens, OpenID Connect, SAML, break-glass
   api/                 routes, access control, middleware
-  sop/                 SOP validator
-  adapters/            seven tool adapters, their mocks, and parameter schemas
+  sop/                 SOP validator, version store and lifecycle, ingestion from knowledge sources
+  connectors/          sdk/ (manifest, lint, registry, credential references, HTTP client),
+                       itsm/ (ServiceNow), knowledge/ (ServiceNow KB, Git), ops/ (the seven),
+                       hub.py (a tenant's connections)
+  adapters/            the seven original adapters the ops connectors run through, and their mocks
   ai/                  model client and SOP ranking (advice only)
-  clients/             ServiceNow client
   escalation/          L2 routing and the escalation flow
   models/ store/ notifications/ config/ utils/
 frontend/              React + Vite dashboard
-data/sample_sops/      sample SOPs
+data/sample_sops/      sample SOPs (published in demo mode); data/sample_drafts/ (left in review)
 docs/                  target architecture, threat model, controls matrix, ADRs, delivery plan
 ```
 
@@ -228,8 +259,9 @@ docs/                  target architecture, threat model, controls matrix, ADRs,
 
 ## Known limits
 
-- One deployment serves one tenant's ServiceNow, identity provider and tool connections. The data layer isolates tenants; the connections are not yet per tenant.
-- Adapters are read only. There are no remediation actions, approvals or policy engine yet.
-- SOPs are files or knowledge articles; there is no review and approval workflow yet.
+- One deployment serves one tenant's ServiceNow and identity provider. Operations connectors and knowledge sources are per tenant.
+- Connectors are read only. There are no remediation actions, action approvals or policy engine yet.
+- Knowledge sources are a ServiceNow knowledge base and Git. Confluence and SharePoint are not built. A prose article becomes an empty draft; nothing drafts the steps for you yet.
+- Connections are set from the command line or the API; the dashboard has no screen for them yet.
 - The audit log is not yet exported to a SIEM and has no retention control.
-- Connector behaviour is tested against mocks and hand-written fixtures only, and sign-in against faked identity providers only.
+- Connector behaviour is tested against mocks and hand-written fixtures only, and sign-in against faked identity providers only. ServiceNow OAuth has not run against a real instance.

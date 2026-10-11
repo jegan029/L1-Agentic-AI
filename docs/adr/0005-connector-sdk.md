@@ -1,6 +1,6 @@
 # ADR 0005: Connector SDK and registry
 
-Status: proposed, awaiting review. Engineering decision.
+Status: accepted and built in Phase 3, with the differences listed under "As built in Phase 3" at the end. Engineering decision.
 
 ## Context
 
@@ -84,3 +84,28 @@ The existing adapters are evolved, not rewritten: their HTTP and parsing code is
 
 - Out-of-process connectors over gRPC. Better isolation, more operational weight. The runner split in ADR 0003 already gives a process and network boundary; revisit if third-party connectors are allowed.
 - Model Context Protocol servers as the connector layer. Rejected for the execution path: the protocol is designed for model-driven tool use, which ADR 0001 rules out, and it does not carry tiers, verify or rollback.
+
+## As built in Phase 3
+
+Built as decided: the manifest model and its lint; a registry that refuses to exist with a bad manifest; SOP steps that reference capability ids, checked by the validator at submission and again at publication; closed parameter schemas and allow lists enforced before connector code runs; credential references resolved per call through a short-lived cache; the write entry point refusing every call; `test_connection` and `health`; and the ServiceNow, ServiceNow knowledge base and Git connectors.
+
+Differences from the decision above, each an engineering choice:
+
+| Decision | As built | Why |
+|---|---|---|
+| Connectors register through Python entry points; the image carries a signed list of permitted versions | A first-party list in `connectors/catalog.py` | Only first-party connectors exist. Entry points and a signed list are packaging work and move to Phase 6. |
+| The seven adapters are ported onto the SDK's HTTP client | Each is wrapped by a connector that declares the manifest and delegates to the original adapter | The adapters' HTTP and parsing code cannot be verified against real systems here. Rewriting it would add risk with nothing to check it against. The SDK HTTP client is used by the ServiceNow connectors, which can be checked against a developer instance. |
+| Retry only for the error classes a capability lists; circuit breaker in the SDK | Retries and breakers stay in the engine (`engine/executor.py`); manifests carry `retryable_errors` but nothing reads it yet. Breakers are now per tenant and connector | Every capability today is an idempotent read, so retrying is safe. The distinction matters for writes and is built with them in Phase 4. |
+| Audit hooks in the SDK record every call | The engine's `step.started` and `step.completed` events record every call made in a run; `connection.tested` records a test | One record per call already exists. A second in the SDK would duplicate it. |
+| A write requires an action grant minted by the policy engine | A write is refused unconditionally, whatever is passed as a grant | There is no policy engine to mint one. Phase 4 replaces the refusal with the grant check. |
+| ITSM interface in neutral terms (ticket, state category, assignee group) | The interface keeps the method names the engine already used (`add_work_note`, `update_incident`, `resolve_incident`) and adds `claim` | With one ITSM system there is nothing to generalise from. Rename when the second one is added. |
+| `test_connection` reports per-scope results | It reports the health check as one result | Per-scope probing needs calls that cannot be verified here. The result type already carries a list. |
+| Browser connector in a sandboxed container | Unchanged local Selenium; marked `preview` in its manifest and not in the default image | As the decision allows: it stays out of the default image until the sandbox exists. |
+| Mainframe navigation scripts selected by name | One script per connection (`default_navigation`); a step cannot supply keystrokes | Named scripts need a connection editor. Phase 6. |
+
+Two additions the decision did not foresee:
+
+- **A credential that changed is retried once.** When a call fails and the backend now holds a different value from the one that was used, the connector reads the new value and repeats the call. That makes a rotation take effect on the next call even inside the cache lifetime. It is limited to reads; for ServiceNow it applies to any request that was answered `401`, which means the request was not processed.
+- **One connection per connector per tenant.** `connections` is unique on tenant and connector. Two instances of the same system for one tenant need a connection name in the key; that is a migration, deferred until someone needs it.
+
+Defects found in the original adapters while writing the contract tests, and fixed: Dynatrace host health read only the first page of hosts and asked about problems on only the first 20, so a large group could be reported healthy with a problem on an unread host; a Dynatrace host name was placed inside a quoted selector unescaped; an IR360 queue or queue manager name was placed in a URL path unchecked; the Autosys status was taken from the last column of `autorep` output, which on real output is the exit code column.

@@ -70,8 +70,8 @@ jobs:
       - name: Run all tests with coverage (SQLite and PostgreSQL)
         run: |
           pytest tests/ -v --timeout=180 --cov=src/l1_agent --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=75 | tee result.txt
-          if grep -E "tests/(db|api)/.*SKIPPED" result.txt; then
-            echo "A database or sign-in test was skipped" >&2
+          if grep -E "tests/(db|api|contract)/.*SKIPPED" result.txt; then
+            echo "A database, sign-in or connector contract test was skipped" >&2
             exit 1
           fi
 

@@ -317,3 +317,63 @@ Verified by running: 755 tests on Windows and in a Linux container, on SQLite an
 
 Not verified: sign-in against a real identity provider; PostgreSQL behind a connection pooler or on a managed service; behaviour at production volumes; the new CI workflow on the hosted runner; the dashboard sign-in screen in a browser.
 
+## 7. Phase 3 record
+
+Delivered on branch `phase-3/connectors-and-knowledge`, based on `phase-2/foundations`. No product decision was needed; D8 (the ServiceNow approval mechanism) concerns Phase 4.
+
+Exit criteria
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | Manifest lint fails a connector whose write capability lacks a tier, verify operation, parameter schema or scopes | `tests/unit/connectors/test_manifest_lint.py`: each missing part is reported, and the registry refuses to be built with such a connector. Also required: an allow list for each target parameter and a rollback statement. |
+| 2 | Contract tests replay recorded fixtures for each connector, including error and pagination cases | `tests/contract/`: ServiceNow ITSM and knowledge base, Splunk, Dynatrace, IBM MQ, Autosys, file share, browser, mainframe, Git. Paging is covered where the target pages: ServiceNow lists, Dynatrace entities, Git changes. **The fixtures were written by hand from vendor documentation. None is a capture from a live system.** |
+| 3 | A draft cannot be selected by the matcher, at the data layer | `tests/db/test_sop_lifecycle.py::TestOnlyPublishedVersionsReachTheEngine`: the engine's view shows only published versions; a valid, matching SOP in review is not run; a row cannot be marked published without an approver and a hash. |
+| 4 | The same user cannot author and approve one version, by constraint and at the API | `tests/db/test_sop_lifecycle.py::TestAuthorCannotApprove` (service and direct table writes), `tests/api/test_sop_api.py` (a user holding both roles). |
+| 5 | Rotating a credential takes effect on the next call without restart | `tests/unit/connectors/test_secrets.py::TestRotation`, and over HTTP in `tests/contract/` for ServiceNow and Splunk. |
+
+Also delivered: per-tenant connections with credential references; the ticket claim step; ServiceNow OAuth and paging; ingestion of articles as drafts; the SOP library and review screen; `l1-agent sop`, `connection`, `connectors` and `knowledge` commands.
+
+Deviations from the plan
+
+| Item | What happened |
+|---|---|
+| Seven adapters "ported" | Each is wrapped by a connector that declares a manifest and delegates to the original adapter. Their HTTP code was not moved onto the SDK client. Reasons are in ADR 0005. |
+| Connector registration by entry points | A first-party list in code. Phase 6. |
+| Confluence and SharePoint | Not built. The knowledge interface is two methods; ServiceNow knowledge base and Git implement it. |
+| Parameter source `lookup`; language-aware escaping in templates | Not built. String parameters without a pattern stay limited to `[A-Za-z0-9_.-]`. Two places where a value reached a query or path unchecked were closed in the adapters instead (Dynatrace selector, IR360 path). |
+| Drafting steps from a prose article | Not built: it is a model task (Phase 5). A prose article becomes a draft with no steps. |
+| The engine role restricted to the published view | The view exists and is the only path the engine uses. There is still one application role, which can read the version table. |
+| ITSM and identity provider per tenant | Still per deployment. Operations connectors and knowledge sources are per tenant. |
+| Duplicate closing work notes after a crash | Listed for Phase 3 in the Phase 2 record. Not fixed; moved to Phase 4. |
+| Screen for connections | Not built. Command line and API only. |
+| Neutral ITSM method names | Kept the existing names and added `claim` (ADR 0005). |
+
+Defects found in existing adapters while writing contract tests, and fixed
+
+| Adapter | Defect |
+|---|---|
+| Dynatrace | Host health read one page of hosts and asked about problems on the first 20 only. A larger group could be reported healthy with an open problem on a host that was never checked. |
+| Dynatrace | A host or host group name was placed inside a quoted selector without checking for quotes. |
+| IR360 | A queue or queue manager name was placed in the request path without checking for `/`. |
+| Autosys | The job status was read from the last column of `autorep` output. Real output ends with the run and exit columns, so the status would have been wrong. |
+
+Test expectations changed
+
+| Test | Before | Now | Reason |
+|---|---|---|---|
+| `test_servicenow_display_values.py::test_error_carries_status_and_servicenow_message` | Client built against a plain-http test server | Same, with `demo_mode=True` | The connector now refuses a plain-http base URL outside demo mode. Every assertion is unchanged. |
+| `test_confidence_threshold.py` fixture | Mock ITSM with no `claim` | Mock ITSM whose `claim` succeeds | The engine claims a ticket before working it. Every assertion is unchanged. |
+| `test_api_data.py::test_every_read_route_returns_only_the_callers_tenant` | Walked the Phase 2 routes | Also seeds an SOP version and a connection in each tenant and walks the new routes | New routes and tables. Extended, not relaxed. |
+| `test_http_access.py::concrete`, `test_tenant_isolation.py::seed` | Knew the Phase 2 path parameters and tables | Know the new ones | Same. |
+
+No test was removed.
+
+Behaviour that changed for an existing deployment
+
+- Outside demo mode the service starts with no SOPs. Knowledge articles are no longer loaded and run directly; they arrive as drafts and need two people.
+- The agent assigns a ticket to itself before working it (`SERVICENOW_CLAIM`, default on).
+- A step for a connector with no connection ends the run as `needs_human`. Before, every adapter was constructed whether or not it was configured.
+- A mainframe transaction parameter is refused when the allow list is empty. Before, an empty list allowed any.
+- `get_new_incidents` reads every page up to the ceiling. Before, the first 20 rows.
+
+Not verified: ServiceNow OAuth, paging and the claim step against a real instance (the live tests were not run in this phase); every operations connector against its real system; the Vault and AWS secrets backends; Git over https with a token; the review screen in a browser; the CI workflow for this branch on the hosted runner.

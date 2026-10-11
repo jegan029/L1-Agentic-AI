@@ -1,8 +1,8 @@
 # L1 Engineer Agent: architecture as built
 
-This describes the code as it stands after Phase 2 of the [delivery plan](docs/delivery-plan.md). Where the product is going is in [docs/target-architecture.md](docs/target-architecture.md); the reasons for the main choices are in [docs/adr/](docs/adr/).
+This describes the code as it stands after Phase 3 of the [delivery plan](docs/delivery-plan.md). Where the product is going is in [docs/target-architecture.md](docs/target-architecture.md); the reasons for the main choices are in [docs/adr/](docs/adr/).
 
-What has run against a real system: the ServiceNow client (one developer instance), the model client (one hosted provider), and the database layer (PostgreSQL 16 in a container). Every tool adapter has only run against its mock, and sign-in has only run against identity providers faked in the tests.
+What has run against a real system: the ServiceNow connector with basic authentication as it stood after Phase 1 (one developer instance), the model client (one hosted provider), the database layer (PostgreSQL 16 in a container) and the Git source (local repositories). ServiceNow OAuth, paging and the claim step, and every operations connector, have only run against mocks and against fixtures written by hand from vendor documentation. Sign-in has only run against identity providers faked in the tests.
 
 ## 1. Shape
 
@@ -50,9 +50,9 @@ Three independent layers stop an unverified resolution: the SOP validator (`sop/
 
 ## 4. SOP matching and execution
 
-`engine/sop_matcher.py` scores each published, valid SOP on keywords (0.50), CI (0.20), category (0.15) and assignment group (0.15). A signal is scored only when the ticket carries it and the SOP declares it; otherwise it is left out and the other weights are rescaled. The run proceeds only if the best score reaches `AGENT_SOP_CONFIDENCE_THRESHOLD` (default 0.6).
+The engine is handed the tenant's published SOP versions for each run, read through the `published_sops` view (section 10). `engine/sop_matcher.py` scores each published, valid SOP on keywords (0.50), CI (0.20), category (0.15) and assignment group (0.15). A signal is scored only when the ticket carries it and the SOP declares it; otherwise it is left out and the other weights are rescaled. The run proceeds only if the best score reaches `AGENT_SOP_CONFIDENCE_THRESHOLD` (default 0.6).
 
-An SOP is a JSON document of typed parameters and a graph of steps. Parameters are bound and validated before any step runs. Each check step calls one adapter, with its parameters validated against a closed schema (`adapters/schemas.py`). DECISION and VERIFY steps evaluate a small expression language (`engine/expressions.py`); nothing is passed to `eval`.
+An SOP is a JSON document of typed parameters and a graph of steps. Parameters are bound and validated before any step runs. Each check step calls one connector capability, named directly (`CHECK` with `capability`) or through one of the older typed step names; its parameters are validated against the closed schema in the connector's manifest before anything is called (section 9). DECISION and VERIFY steps evaluate a small expression language (`engine/expressions.py`); nothing is passed to `eval`.
 
 ## 5. Durable runs ([ADR 0004](docs/adr/0004-persistence-and-queue.md))
 
@@ -98,22 +98,52 @@ What is still per deployment and not per tenant: the ServiceNow connection, the 
 
 Recorded today: incident intake, SOP choice, each step start and result, the outcome, sign-in success and failure, sign-out, break-glass use, token and role-mapping changes, and refused access.
 
-## 9. Other safeguards
+## 9. Connectors ([ADR 0005](docs/adr/0005-connector-sdk.md))
 
-- **Adapters.** All read only. Each validates inputs against an allow list, and an empty allow list denies. TLS verification cannot be turned off outside demo mode.
+Three families share one set of rules: ITSM (ServiceNow), knowledge (ServiceNow knowledge base, Git) and operations (Splunk, Dynatrace, IBM MQ, Autosys, file share, browser, mainframe).
+
+- **Manifest.** Each connector declares, as data, its settings, its credential slots and its capabilities: id, read or write, risk tier, a closed parameter schema, required scopes and which parameters are held to an allow list. `connectors/sdk/manifest.py` lints it. The registry (`connectors/sdk/registry.py`) lints every manifest when it is built and does not exist if one fails, so a write capability without a tier, verify operation, closed schema, scopes, rollback statement or allow list for its target cannot ship. Only the first-party list in `connectors/catalog.py` is loaded.
+- **One way in.** `Connector.invoke` checks that the capability is declared, that a step context was supplied, that the parameters fit the schema and that every allow-listed parameter has a non-empty list to be checked against, before any connector code runs. A write capability is refused outright: nothing can authorise one until the policy engine exists. No write capability is declared today.
+- **Credentials are references.** A connection holds `vault:`, `aws:`, `file:` or `env:` references (`connectors/sdk/secrets.py`). Values are read when a call needs them, cached for 30 seconds, and never written to the database, the environment or a log. When a call fails and the backend now holds a different value, the connector reads it and repeats the call once, so a rotation takes effect without a restart.
+- **HTTP.** `connectors/sdk/http.py` is used by the ServiceNow connectors: TLS verification on and https required outside demo mode, a timeout on every call, one re-read of the credential on `401`, and retries on `429`, `502`, `503` and `504` for reads only.
+- **Per tenant.** `connectors/hub.py` builds each tenant's operations connectors from its `connections` rows, falling back to the deployment's environment settings, and re-reads them every few seconds. One bad connection does not take the others down. The ServiceNow ITSM connection and the identity provider are still per deployment.
+- **The seven operations connectors** are the original adapters behind manifests (`connectors/ops/` over `adapters/`). Their own HTTP and parsing code is unchanged except for the defects found while writing the contract tests: Dynatrace host checks now follow paging and ask about every host, not the first 20; host names cannot break out of a Dynatrace selector; queue names cannot change the IR360 request path; and the Autosys status is read from the status column of real `autorep` output.
+- **ServiceNow.** Basic or OAuth 2.0 authentication, paged lists, and a claim step: the agent assigns the ticket to itself before working it and leaves alone a ticket someone else holds. If the claim cannot be attempted at all, the job is retried later; nothing is guessed.
+
+## 10. SOP versions
+
+```
+draft ──submit──▶ in_review ──approve──▶ approved ──publish──▶ published ──▶ superseded | retired
+             ◀──changes requested──
+```
+
+`sop/store.py` holds the lifecycle; each transition writes its audit event in the same transaction.
+
+- **Only published versions run.** The engine reads SOPs through the `published_sops` view. A draft, a version in review, an approved-but-unpublished version and a retired one are not in it.
+- **Two people.** Submitting fixes the SHA-256 of the canonical content. Approval is of that hash, and the approver is not the author: the service checks it, and a table constraint (`approver_id <> author_id`) holds whatever the code does. A second constraint means no row can be approved, published or retired without an approver and a hash.
+- **Immutable.** On PostgreSQL a trigger refuses any change to a submitted version's content, hash or author, any change to an approved version's approver or number, and deletion of anything but a draft, for every role including the table owner. SQLite (demo) has the constraints but not the trigger.
+- **Runs record what they ran.** `runs` stores the SOP id, version number and hash. A run interrupted while a newer version is published finishes on the version it started with; if that version was retired, it stops as `needs_human`.
+- **Ingestion.** `sop/ingest.py` turns each changed article from a knowledge source into a draft, once per revision. A structured article keeps its steps; a prose article becomes a draft with no steps and the article text, stripped of markup, beside it. Nothing ingested can run until two people have acted on it.
+
+## 11. Other safeguards
+
 - **Model boundary.** Ticket text is redacted, length-limited and delimited before it is sent. Model output is never logged and is only ever read as an SOP choice.
 - **Logs and secrets.** Operational logs are JSON with pattern-based redaction. Secrets fetched from Vault or AWS are passed to the settings object and are not written to the process environment.
 
-## 10. What this design does not have yet
+## 12. What this design does not have yet
 
 | Gap | Consequence today | Phase |
 |---|---|---|
-| Connections are per deployment | One process serves one tenant's ServiceNow and identity provider. | 3 |
-| No connector framework; basic authentication to ServiceNow | Adapters are hard-wired; no OAuth, pagination or ticket claim step. | 3 |
-| No SOP review workflow | SOPs are files or knowledge articles; nothing records who approved one. The demo HTML editor was removed. | 3 |
+| ITSM and identity provider are per deployment | One process serves one tenant's ServiceNow and identity provider. Operations connectors are per tenant. | 6 |
+| Connectors still run through the original adapters | Retries are not yet limited to the error classes a capability lists as retryable; per-call audit hooks are the engine's step events, not the SDK's. | 4 |
+| Connectors are not loaded through entry points, and there is no signed list of permitted connector versions | Only the first-party list in code is loaded. | 6 |
+| The engine role is not restricted to the published view | The view is the only path the engine code uses; the application role can still read the version table. | 6 |
+| Confluence and SharePoint sources; the `lookup` parameter source; drafting steps from prose | Prose articles become empty drafts for a person to structure. | 5 |
+| No screen for connections | Command line and API only. | 6 |
+| The browser connector uses a local Chrome | Marked preview and not in the default image. | 6 |
 | No write actions, policy engine or approvals | The agent diagnoses and verifies; it does not remediate. | 4 |
 | Runner not split out | Adapters run in the worker process, not behind the outbound-only runner protocol of ADR 0003. | 6 |
 | Audit export, retention, legal hold, evidence store | The chain stays in the database; checkpoints are stored by hand. | later phases |
 | Rate limit is per process | Behind several replicas the limit multiplies. | 6 |
-| A crash during the final ServiceNow update | The closing work notes can be posted twice. | 3 |
+| A crash during the final ServiceNow update | The closing work notes can be posted twice. Not fixed in Phase 3. | 4 |
 | No model evaluation suite | Redaction and injection resistance are unit tested, not measured on a corpus. | 5 |

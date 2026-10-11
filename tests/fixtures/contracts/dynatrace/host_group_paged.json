@@ -1,0 +1,188 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/entities",
+        "query": {
+          "pageSize": "50"
+        }
+      },
+      "response": {
+        "json": {
+          "totalCount": 22,
+          "pageSize": 50,
+          "nextPageKey": "page-2",
+          "entities": [
+            {
+              "entityId": "HOST-0001",
+              "displayName": "app-server-01",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0002",
+              "displayName": "app-server-02",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0003",
+              "displayName": "app-server-03",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0004",
+              "displayName": "app-server-04",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0005",
+              "displayName": "app-server-05",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0006",
+              "displayName": "app-server-06",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0007",
+              "displayName": "app-server-07",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0008",
+              "displayName": "app-server-08",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0009",
+              "displayName": "app-server-09",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0010",
+              "displayName": "app-server-10",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0011",
+              "displayName": "app-server-11",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0012",
+              "displayName": "app-server-12",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0013",
+              "displayName": "app-server-13",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0014",
+              "displayName": "app-server-14",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0015",
+              "displayName": "app-server-15",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0016",
+              "displayName": "app-server-16",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0017",
+              "displayName": "app-server-17",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0018",
+              "displayName": "app-server-18",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0019",
+              "displayName": "app-server-19",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0020",
+              "displayName": "app-server-20",
+              "type": "HOST"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/entities",
+        "query": {
+          "nextPageKey": "page-2"
+        },
+        "absent_query": [
+          "entitySelector",
+          "pageSize"
+        ]
+      },
+      "response": {
+        "json": {
+          "totalCount": 22,
+          "entities": [
+            {
+              "entityId": "HOST-0021",
+              "displayName": "app-server-21",
+              "type": "HOST"
+            },
+            {
+              "entityId": "HOST-0022",
+              "displayName": "app-server-22",
+              "type": "HOST"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/problems"
+      },
+      "response": {
+        "json": {
+          "totalCount": 0,
+          "problems": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/problems",
+        "query": {
+          "entitySelector": "entityId(\"HOST-0021\"),entityId(\"HOST-0022\")"
+        }
+      },
+      "response": {
+        "json": {
+          "totalCount": 1,
+          "problems": [
+            {
+              "problemId": "P-1",
+              "title": "Memory saturation",
+              "severityLevel": "RESOURCE_CONTENTION",
+              "impactLevel": "INFRASTRUCTURE",
+              "status": "OPEN"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

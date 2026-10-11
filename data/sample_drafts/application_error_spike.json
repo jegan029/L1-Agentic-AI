@@ -1,0 +1,91 @@
+{
+  "sop_id": "SOP-LOG-001",
+  "title": "Application error spike - log investigation",
+  "applicable_services": [
+    "OrderService"
+  ],
+  "applicable_categories": [
+    "Application"
+  ],
+  "applicable_assignment_groups": [
+    "L1-Application-Support"
+  ],
+  "keywords": [
+    "error spike",
+    "error rate",
+    "exceptions",
+    "log errors"
+  ],
+  "parameters": [
+    {
+      "name": "service",
+      "type": "string",
+      "description": "The service the ticket is about",
+      "source": {
+        "kind": "ticket_field",
+        "field": "cmdb_ci"
+      },
+      "max_length": 64
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step-1",
+      "step_type": "NOTE",
+      "description": "Begin log investigation",
+      "parameters": {
+        "text": "Checking application logs for the reported error spike."
+      },
+      "on_success": "step-2"
+    },
+    {
+      "step_id": "step-2",
+      "step_type": "CHECK",
+      "capability": "splunk.search",
+      "description": "Errors logged by the service in the last hour",
+      "parameters": {
+        "query": "index=app_logs \"${service}\" (ERROR OR FATAL)",
+        "time_range": {
+          "earliest": "-1h",
+          "latest": "now"
+        }
+      },
+      "on_success": "step-verify",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-verify",
+      "step_type": "VERIFY",
+      "description": "Confirm no errors in the last five minutes",
+      "parameters": {
+        "check": "splunk.search",
+        "parameters": {
+          "query": "index=app_logs \"${service}\" (ERROR OR FATAL)",
+          "time_range": {
+            "earliest": "-5m",
+            "latest": "now"
+          }
+        },
+        "assert": "result.result_count == 0"
+      },
+      "on_success": "step-resolve",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-resolve",
+      "step_type": "RESOLVE",
+      "description": "The spike has passed",
+      "parameters": {
+        "text": "No errors logged in the last five minutes. Evidence attached."
+      }
+    },
+    {
+      "step_id": "step-escalate",
+      "step_type": "ESCALATE",
+      "description": "Errors are still being logged",
+      "parameters": {
+        "reason": "The service is still logging errors. Escalating to L2 with the log evidence."
+      }
+    }
+  ]
+}

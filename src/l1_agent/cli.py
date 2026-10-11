@@ -7,6 +7,11 @@
     roles grant|remove          map an identity provider group to a role
     token create|revoke|list    scoped API tokens
     audit verify|checkpoint|timeline
+    sop import --file F         add an SOP as a draft (it still needs review and approval)
+    sop list
+    connection set|remove|list|test   a connector's settings and credential references
+    connectors                  the connectors in this build and what each can do
+    knowledge sync              pull changed articles from the SOP sources as drafts
     breakglass hash             hash a break-glass password
 
 Commands that change access write to the audit log as actor `system:cli`.
@@ -23,12 +28,17 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
+from src.l1_agent.api.security import SecurityConfigError
 from src.l1_agent.audit import log as audit
 from src.l1_agent.audit.log import Actor
 from src.l1_agent.auth import breakglass, store
 from src.l1_agent.config.settings import ConfigError, Settings
+from src.l1_agent.connectors import hub as connections
+from src.l1_agent.connectors.catalog import default_registry
 from src.l1_agent.db.engine import Database
 from src.l1_agent.db.migrate import upgrade
+from src.l1_agent.sop import ingest
+from src.l1_agent.sop import store as sop_store
 
 CLI = Actor.system("cli")
 
@@ -67,6 +77,29 @@ def _parser() -> argparse.ArgumentParser:
     aud.add_parser("checkpoint")
     timeline = aud.add_parser("timeline")
     timeline.add_argument("--run", required=True)
+
+    sop = sub.add_parser("sop").add_subparsers(dest="action", required=True)
+    imported = sop.add_parser("import")
+    imported.add_argument("--file", required=True)
+    sop.add_parser("list")
+
+    connection = sub.add_parser("connection").add_subparsers(dest="action", required=True)
+    setter = connection.add_parser("set")
+    setter.add_argument("--connector", required=True)
+    setter.add_argument("--config", help="JSON file of the connector's settings")
+    setter.add_argument(
+        "--secret",
+        action="append",
+        default=[],
+        metavar="SLOT=REFERENCE",
+        help="where a credential is kept, e.g. token=vault:splunk/token",
+    )
+    setter.add_argument("--disable", action="store_true")
+    for action in ("remove", "test"):
+        connection.add_parser(action).add_argument("--connector", required=True)
+    connection.add_parser("list")
+    sub.add_parser("connectors")
+    sub.add_parser("knowledge").add_subparsers(dest="action", required=True).add_parser("sync")
 
     bg = sub.add_parser("breakglass").add_subparsers(dest="action", required=True)
     bg.add_parser("hash")
@@ -130,6 +163,48 @@ async def _run(args: argparse.Namespace, settings: Settings) -> int:
             print("Store the token now; it cannot be shown again.", file=sys.stderr)
             return 0
 
+        if args.command == "sop":
+            if args.action == "list":
+                for v in await sop_store.list_versions(db, tenant_id):
+                    number = v["version"] if v["version"] is not None else "-"
+                    print(f"{v['sop_id']}\t{number}\t{v['status']}\t{v['id']}\t{v['title']}")
+                return 0
+            content = json.loads(Path(args.file).read_text(encoding="utf-8"))
+            try:
+                version_id = await sop_store.create_draft(db, tenant_id, CLI, content)
+            except sop_store.SopError as exc:
+                raise ConfigError(str(exc)) from None
+            print(f"draft {version_id}")
+            print("A person must submit it and a different person must approve it.")
+            return 0
+
+        if args.command == "connection" and args.action in ("set", "remove", "list"):
+            if args.action == "list":
+                stored = await connections.stored_connections(db, tenant_id)
+                for connector_id, c in sorted(stored.items()):
+                    state = "enabled" if c.enabled else "disabled"
+                    refs = ",".join(f"{k}={v}" for k, v in sorted(c.secret_refs.items()))
+                    print(f"{connector_id}\t{state}\t{refs}")
+                return 0
+            if args.action == "remove":
+                done = await connections.remove_connection(db, tenant_id, CLI, args.connector)
+                print("removed" if done else "not found")
+                return 0 if done else 1
+            config = {}
+            if args.config:
+                config = json.loads(Path(args.config).read_text(encoding="utf-8"))
+            refs = {}
+            for item in args.secret:
+                slot, sep, reference = item.partition("=")
+                if not sep or not slot or not reference:
+                    raise ConfigError("--secret takes SLOT=REFERENCE")
+                refs[slot] = reference
+            await connections.set_connection(
+                db, tenant_id, CLI, args.connector, config, refs, enabled=not args.disable
+            )
+            print("saved")
+            return 0
+
         if args.command == "audit":
             key = settings.auth.audit_checkpoint_key
             if args.action == "checkpoint":
@@ -163,8 +238,50 @@ async def _run(args: argparse.Namespace, settings: Settings) -> int:
     return 1
 
 
+async def _with_service(args: argparse.Namespace, settings: Settings) -> int:
+    """Commands that need the connectors themselves, not only the database."""
+    from src.l1_agent.main import L1AgentService
+
+    service = L1AgentService(settings)
+    try:
+        ctx = await service.setup()
+        if args.command == "knowledge":
+            sources = await ctx.hub.knowledge_sources(ctx.tenant_id, ctx.itsm)
+            if not sources:
+                print("no knowledge source is configured")
+                return 0
+            failed = False
+            for result in await ingest.sync_all(ctx.db, ctx.tenant_id, sources, CLI):
+                print(json.dumps(result.to_dict()))
+                failed = failed or bool(result.errors)
+            return 2 if failed else 0
+        try:
+            checks = await ctx.hub.test(ctx.tenant_id, args.connector)
+        except LookupError:
+            raise ConfigError(f"Unknown connector '{args.connector}'") from None
+        for check in checks:
+            print(f"{'ok  ' if check.ok else 'FAIL'} {check.name} {check.detail}".rstrip())
+        return 0 if all(c.ok for c in checks) else 2
+    finally:
+        await service.close()
+
+
+def _print_connectors() -> None:
+    for manifest in default_registry().manifests():
+        flag = " (preview)" if manifest.preview else ""
+        print(f"{manifest.id}\t{manifest.family.value}\t{manifest.display_name}{flag}")
+        for slot in manifest.secrets:
+            print(f"    credential {slot.name}: {slot.purpose}")
+        for cap in manifest.capabilities:
+            tier = cap.tier.value if cap.tier else "-"
+            print(f"    {cap.id}\t{cap.kind.value}\t{tier}\t{cap.summary}")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "connectors":
+        _print_connectors()
+        return 0
     if args.command == "breakglass":
         first = getpass.getpass("Break-glass password: ")
         if first != getpass.getpass("Again: "):
@@ -187,8 +304,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             upgrade(_migration_url(settings), settings.database.app_role)
             print("migrations applied")
             return 0
+        if args.command == "knowledge" or (args.command == "connection" and args.action == "test"):
+            return asyncio.run(_with_service(args, settings))
         return asyncio.run(_run(args, settings))
-    except (ConfigError, ValueError) as exc:
+    except (ConfigError, SecurityConfigError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 

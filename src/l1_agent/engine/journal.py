@@ -23,6 +23,8 @@ class StoredMatch:
     sop_version: str
     confidence: float
     rationale: str
+    # SHA-256 of the version's content, when it came from the version store.
+    sop_hash: str = ""
 
 
 class EventPublisher(Protocol):

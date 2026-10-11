@@ -15,6 +15,10 @@ logger = get_logger("autosys_adapter")
 
 # Read-only commands that are safe to execute
 SAFE_COMMANDS = frozenset({"autorep", "job_depends"})
+# Two-letter job states printed by autorep in the ST/Ex column.
+STATUS_CODES = frozenset(
+    {"AC", "FA", "IN", "NE", "OH", "OI", "PE", "QU", "RE", "RU", "RW", "ST", "SU", "TE"}
+)
 
 
 class AutosysAdapter(BaseAdapter):
@@ -141,8 +145,10 @@ class AutosysAdapter(BaseAdapter):
             parts = line.split()
             if len(parts) >= 4 and not line.startswith("_") and not line.startswith("Job Name"):
                 job_info: Dict[str, str] = {"job_name": parts[0]}
-                # Try to extract status (usually last or near-last field)
-                job_info["status"] = parts[-1] if parts else "UNKNOWN"
+                # The ST/Ex column is followed by Run/Ntry and Pri/Xit, so the status
+                # is not the last field. Take the first field that is a status code.
+                codes = [p.split("/")[0] for p in parts[1:] if p.split("/")[0] in STATUS_CODES]
+                job_info["status"] = codes[0] if codes else parts[-1]
                 jobs.append(job_info)
         return {"jobs": jobs, "raw_line_count": len(lines)}
 

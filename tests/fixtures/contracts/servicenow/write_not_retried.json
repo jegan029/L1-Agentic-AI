@@ -1,0 +1,24 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "status": 429,
+        "headers": {
+          "Retry-After": "0"
+        },
+        "json": {
+          "error": {
+            "message": "Rate limit exceeded",
+            "detail": ""
+          },
+          "status": "failure"
+        }
+      }
+    }
+  ]
+}

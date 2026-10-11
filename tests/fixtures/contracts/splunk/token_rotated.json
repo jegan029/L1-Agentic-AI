@@ -1,0 +1,78 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs",
+        "headers": {
+          "Authorization": "Bearer sp-one"
+        }
+      },
+      "response": {
+        "status": 401,
+        "json": {
+          "messages": [
+            {
+              "type": "WARN",
+              "text": "call not properly authenticated"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs",
+        "headers": {
+          "Authorization": "Bearer sp-two"
+        }
+      },
+      "response": {
+        "status": 201,
+        "json": {
+          "sid": "9"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/9",
+        "headers": {
+          "Authorization": "Bearer sp-two"
+        }
+      },
+      "response": {
+        "json": {
+          "entry": [
+            {
+              "name": "search",
+              "content": {
+                "isDone": true,
+                "dispatchState": "DONE"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/9/results"
+      },
+      "response": {
+        "json": {
+          "results": [
+            {
+              "_raw": "2026-03-01 09:00:00 ERROR PaymentService timeout",
+              "host": "app-01"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

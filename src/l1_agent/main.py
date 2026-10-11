@@ -3,22 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import httpx
 import uvicorn
 from fastapi import FastAPI
 
-from src.l1_agent.adapters.autosys_adapter import AutosysAdapter
-from src.l1_agent.adapters.base import BaseAdapter
-from src.l1_agent.adapters.dynatrace_adapter import DynatraceAdapter
-from src.l1_agent.adapters.ir360_adapter import IR360Adapter
-from src.l1_agent.adapters.mainframe_adapter import MainframeAdapter
-from src.l1_agent.adapters.splunk_adapter import SplunkAdapter
-from src.l1_agent.adapters.webui_scraper_adapter import WebUIScraperAdapter
-from src.l1_agent.adapters.windows_share_adapter import WindowsShareAdapter
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.llm_client import LLMClient
 from src.l1_agent.ai.mock_llm import MockLLMClient
@@ -28,15 +19,17 @@ from src.l1_agent.audit.log import Actor
 from src.l1_agent.auth.oidc import OidcClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
 from src.l1_agent.config.settings import ConfigError, ServiceNowSettings, Settings
+from src.l1_agent.connectors.catalog import connectors_for_adapters
+from src.l1_agent.connectors.hub import ConnectorHub, servicenow_secrets
+from src.l1_agent.connectors.sdk.secrets import SecretResolver
 from src.l1_agent.db.engine import Database
-from src.l1_agent.demo import MockServiceNowClient, build_mock_adapters
+from src.l1_agent.demo import MockServiceNowClient, build_mock_adapters, seed_demo_sops
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.sop_matcher import SOPMatcher
-from src.l1_agent.engine.sop_parser import SOPParser
 from src.l1_agent.escalation.l2_router import L2Router
 from src.l1_agent.service.runs import DbEventBus, RunService
-from src.l1_agent.sop.validator import validate_sop
+from src.l1_agent.sop import ingest
 from src.l1_agent.utils.logging import get_logger, setup_logging
 from src.l1_agent.utils.retry import CircuitBreaker
 from src.l1_agent.utils.secrets import SecretsProvider
@@ -46,22 +39,31 @@ logger = get_logger("main")
 POLLER = Actor.system("poller")
 
 
-def check_servicenow_config(snow: ServiceNowSettings) -> None:
+def check_servicenow_config(snow: ServiceNowSettings, references: tuple = ()) -> None:
     """Refuse a real ServiceNow connection that is incomplete or unscoped.
 
     Without an assignment group the poller would pick up every new incident on
-    the instance, write work notes to it and reassign it.
+    the instance, write work notes to it and reassign it. `references` names
+    the credentials that are supplied as references instead of values.
     """
-    missing = [
-        name
-        for name, value in (
-            ("SERVICENOW_BASE_URL", snow.base_url),
-            ("SERVICENOW_USERNAME", snow.username),
-            ("SERVICENOW_PASSWORD", snow.password),
-            ("SERVICENOW_ASSIGNMENT_GROUP", snow.assignment_group),
-        )
-        if not value
+    required = [
+        ("SERVICENOW_BASE_URL", snow.base_url),
+        ("SERVICENOW_ASSIGNMENT_GROUP", snow.assignment_group),
     ]
+    if snow.auth == "oauth":
+        required += [
+            ("SERVICENOW_OAUTH_CLIENT_ID", snow.oauth_client_id),
+            (
+                "SERVICENOW_OAUTH_CLIENT_SECRET",
+                snow.oauth_client_secret or "client_secret" in references,
+            ),
+        ]
+    else:
+        required += [
+            ("SERVICENOW_USERNAME", snow.username),
+            ("SERVICENOW_PASSWORD", snow.password or "password" in references),
+        ]
+    missing = [name for name, value in required if not value]
     if missing:
         raise ConfigError("ServiceNow connection needs: " + ", ".join(missing))
     if not snow.base_url.lower().startswith("https://"):
@@ -77,15 +79,18 @@ class L1AgentService:
 
         # Demo mode has no ServiceNow: notes and updates go to an in-memory stand-in.
         # SERVICENOW_LIVE_IN_DEMO connects demo mode to a real instance for testing.
+        # Credentials given as references are read when needed, so a rotation takes effect.
+        self._resolver = SecretResolver.from_settings(settings.secrets)
         self._live_servicenow = not settings.agent.demo_mode or settings.servicenow.live_in_demo
         if self._live_servicenow:
-            check_servicenow_config(settings.servicenow)
-        self._snow_client = (
-            ServiceNowClient(settings.servicenow)
-            if self._live_servicenow
-            else MockServiceNowClient()
-        )
-        self._adapters = self._build_adapters(settings)
+            itsm_secrets = servicenow_secrets(settings, self._resolver)
+            check_servicenow_config(settings.servicenow, itsm_secrets.slots if itsm_secrets else ())
+            self._snow_client = ServiceNowClient(
+                settings.servicenow, itsm_secrets, demo_mode=settings.agent.demo_mode
+            )
+        else:
+            self._snow_client = MockServiceNowClient()
+        self._hub: Optional[ConnectorHub] = None
 
         # The model only advises on SOP ranking; it never executes anything.
         self._llm_client: Optional[LLMClient] = None
@@ -106,68 +111,24 @@ class L1AgentService:
 
     # ── Engine ────────────────────────────────────────────────────────
 
-    def _load_demo_sops(self) -> list:
-        """Load the JSON SOPs from data/sample_sops/ for demo mode."""
-        from src.l1_agent.models.sop import SOP
-
-        sops: list = []
-        sop_dir = Path(__file__).resolve().parent.parent.parent / "data" / "sample_sops"
-        if not sop_dir.exists():
-            sop_dir = Path("data/sample_sops")
-        if not sop_dir.exists():
-            logger.warning("Demo SOP directory not found: %s", sop_dir)
-            return sops
-        for f in sorted(sop_dir.glob("*.json")):
-            try:
-                sop = SOP.from_dict(json.loads(f.read_text(encoding="utf-8")))
-            except Exception as exc:
-                logger.error("Failed to load demo SOP %s: %s", f.name, exc)
-                continue
-            problems = validate_sop(sop)
-            if problems:
-                logger.error("Demo SOP %s rejected: %s", f.name, "; ".join(problems[:5]))
-                continue
-            sops.append(sop)
-        logger.info("Demo mode: pre-loaded %d SOPs", len(sops))
-        return sops
-
-    def _build_adapters(self, settings: Settings) -> Dict[str, BaseAdapter]:
-        if settings.agent.demo_mode:
-            logger.info("Demo mode: using mock adapters")
-            return build_mock_adapters()
-        return {
-            "splunk": SplunkAdapter(settings.splunk),
-            "ir360": IR360Adapter(settings.ir360),
-            "windows_share": WindowsShareAdapter(settings.windows_share),
-            "autosys": AutosysAdapter(settings.autosys),
-            "dynatrace": DynatraceAdapter(settings.dynatrace),
-            "webui": WebUIScraperAdapter(settings.webui),
-            "mainframe": MainframeAdapter(settings.mainframe),
-        }
-
-    def _build_processor(self, db: Database) -> IncidentProcessor:
+    def _build_processor(self, db: Database, hub: ConnectorHub) -> IncidentProcessor:
         settings = self._settings
         agent = settings.agent
         events = DbEventBus(db)
-        breakers = {
-            name: CircuitBreaker(
-                failure_threshold=agent.circuit_breaker_failure_threshold,
-                reset_timeout_seconds=agent.circuit_breaker_reset_seconds,
-            )
-            for name in self._adapters
-        }
         return IncidentProcessor(
             snow_client=self._snow_client,  # type: ignore[arg-type]
             sop_matcher=SOPMatcher(agent.sop_confidence_threshold),
-            sop_parser=SOPParser(),
+            sop_parser=None,
             executor=SOPExecutor(
-                adapters=self._adapters,
-                circuit_breakers=breakers,
+                connectors=hub,
+                breaker_factory=lambda: CircuitBreaker(
+                    failure_threshold=agent.circuit_breaker_failure_threshold,
+                    reset_timeout_seconds=agent.circuit_breaker_reset_seconds,
+                ),
                 retry_max_attempts=agent.retry_max_attempts,
                 retry_base_delay=agent.retry_base_delay_seconds,
                 event_bus=events,
             ),
-            sop_cache=self._load_demo_sops() if agent.demo_mode else None,
             confidence_threshold=agent.sop_confidence_threshold,
             llm_client=self._llm_client,
             ai_analyzer=AIAnalyzer(self._llm_client) if self._llm_client else None,
@@ -199,12 +160,23 @@ class L1AgentService:
         else:
             await db.create_schema_for_demo()
             tenant_id = await db.ensure_tenant(settings.database.tenant_slug, "Demo tenant")
+        if demo:
+            # Demo mode starts with the sample SOPs published and one waiting for review.
+            await seed_demo_sops(db, tenant_id)
+            logger.info("Demo mode: mock connectors and the sample SOPs")
 
+        self._hub = ConnectorHub(
+            db,
+            settings,
+            self._resolver,
+            fixed=connectors_for_adapters(build_mock_adapters()) if demo else None,
+        )
         runs = RunService(
             db,
-            self._build_processor(db),
+            self._build_processor(db, self._hub),
             visibility_timeout_seconds=settings.worker.visibility_timeout_seconds,
             max_attempts=settings.worker.max_attempts,
+            sops_from_store=True,
         )
         oidc = saml = None
         if settings.auth.oidc_issuer:
@@ -223,6 +195,8 @@ class L1AgentService:
             saml=saml,
             demo_open=demo_open(settings),
             webhook_open=webhook_open(settings),
+            hub=self._hub,
+            itsm=self._snow_client,
         )
         return self._ctx
 
@@ -235,6 +209,8 @@ class L1AgentService:
             await self._llm_client.close()
         if self._http is not None:
             await self._http.aclose()
+        if self._hub is not None:
+            await self._hub.close()
         if self._db is not None:
             await self._db.close()
 
@@ -252,6 +228,23 @@ class L1AgentService:
                         logger.info("Polled incident %s queued", incident.number)
             except Exception as exc:
                 logger.error("Poll cycle error: %s", exc)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _knowledge_loop(self, ctx: AppContext) -> None:
+        """Pull changed articles from the knowledge sources and add them as drafts."""
+        interval = self._settings.knowledge.sync_interval_seconds
+        logger.info("Starting knowledge sync (interval=%ds)", interval)
+        while not self._stop.is_set():
+            try:
+                sources = await ctx.hub.knowledge_sources(ctx.tenant_id, ctx.itsm)
+                for result in await ingest.sync_all(ctx.db, ctx.tenant_id, sources):
+                    if result.drafts or result.errors:
+                        logger.info("Knowledge sync: %s", result.to_dict())
+            except Exception as exc:
+                logger.error("Knowledge sync error: %s", exc)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
@@ -279,6 +272,8 @@ class L1AgentService:
             tasks += self.start_workers(ctx)
         if self._live_servicenow:
             tasks.append(asyncio.create_task(self._poll_loop(ctx)))
+        if settings.knowledge.sync_interval_seconds > 0 and not settings.agent.demo_mode:
+            tasks.append(asyncio.create_task(self._knowledge_loop(ctx)))
 
         server = uvicorn.Server(
             uvicorn.Config(

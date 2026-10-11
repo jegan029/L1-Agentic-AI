@@ -189,6 +189,7 @@ def make_service(
     max_attempts: int = 3,
     worker_id: str = "",
     wrap: Optional[Callable[[IncidentProcessor], IncidentProcessor]] = None,
+    sops_from_store: bool = False,
 ) -> RunService:
     """A run service wired like the real one, with mock adapters and mock ServiceNow."""
     bus = DbEventBus(db)
@@ -202,7 +203,8 @@ def make_service(
             retry_base_delay=0,
             event_bus=bus,  # type: ignore[arg-type]
         ),
-        sop_cache=load_sample_sops(),
+        # With the version store, the processor has no SOPs of its own.
+        sop_cache=None if sops_from_store else load_sample_sops(),
         confidence_threshold=0.6,
         event_bus=bus,  # type: ignore[arg-type]
         l2_router=L2Router(),
@@ -215,6 +217,7 @@ def make_service(
         worker_id=worker_id,
         visibility_timeout_seconds=lease_seconds,
         max_attempts=max_attempts,
+        sops_from_store=sops_from_store,
     )
 
 

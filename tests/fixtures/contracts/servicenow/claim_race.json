@@ -1,0 +1,70 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/sys_user",
+        "query": {
+          "sysparm_query": "user_name=agent",
+          "sysparm_limit": "1"
+        }
+      },
+      "response": {
+        "json": {
+          "result": [
+            {
+              "sys_id": "dddddddddddddddddddddddddddddddd"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "json": {
+          "result": {
+            "state": "1",
+            "assigned_to": "",
+            "active": "true"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "json": {
+          "result": {
+            "sys_id": "00000000000000000000000000000001"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "json": {
+          "result": {
+            "state": "2",
+            "assigned_to": {
+              "link": "https://x/api/now/table/sys_user/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "value": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            },
+            "active": "true"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -11,8 +11,10 @@ from src.l1_agent.api import app as app_module
 from src.l1_agent.api.access import AccessKind, access_of
 from src.l1_agent.audit.log import Actor
 from src.l1_agent.auth import store
+from src.l1_agent.connectors import hub as connections
 from src.l1_agent.demo import DEMO_INCIDENTS
 from src.l1_agent.models.incident import Incident
+from src.l1_agent.sop import store as sop_store
 from tests.api.support import ADMIN, build, client, session, token_headers
 
 INTAKE = Actor.system("test-intake")
@@ -147,6 +149,20 @@ class TestTenantIsolationOverHttp:
         b_numbers = await run_incidents(ctx, b, [0, 3])
         await store.set_role_mapping(ctx.db, b, "b-admins", "tenant_admin", ADMIN, grant=True)
         await store.create_api_token(ctx.db, b, "b-token", ["incidents.read"], 1, ADMIN)
+        # An SOP version and a connection in each tenant. The run numbers index them, so
+        # the walk below asks tenant A for tenant B's version by its id.
+        self.versions = {}
+        for tenant_id, numbers, label in ((ctx.tenant_id, a_numbers, "a"), (b, b_numbers, "b")):
+            for number in numbers:
+                self.versions[number] = await sop_store.create_draft(
+                    ctx.db,
+                    tenant_id,
+                    ADMIN,
+                    {"sop_id": f"SOP-{label}-{number}", "title": f"{label}-only-sop", "steps": []},
+                )
+        await connections.set_connection(
+            ctx.db, b, ADMIN, "splunk", {"base_url": "https://b-splunk.example"}, {}
+        )
         return app, ctx, b, a_numbers, b_numbers
 
     async def test_every_read_route_returns_only_the_callers_tenant(self, two):
@@ -158,6 +174,8 @@ class TestTenantIsolationOverHttp:
             *b_numbers,
             "b-admins",
             "b-token",
+            "b-only-sop",
+            "b-splunk.example",
             str(b),
             DEMO_INCIDENTS[0]["short_description"],
         ]
@@ -172,6 +190,7 @@ class TestTenantIsolationOverHttp:
                     continue  # stream tested above; the others carry no tenant data
                 for number in [*b_numbers, a_numbers[0]]:
                     path = route.path.replace("{incident_number}", number)
+                    path = path.replace("{version_id}", str(self.versions[number]))
                     resp = await http.get(path, params={"limit": 500, "per_page": 100})
                     if "{" in route.path and number in b_numbers:
                         assert resp.status_code == 404, path

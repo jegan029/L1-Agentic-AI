@@ -1,0 +1,24 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/queuemanagers/QMPROD01/queues/ORDER.REQUEST/browse",
+        "query": {
+          "limit": "5"
+        }
+      },
+      "response": {
+        "json": {
+          "messages": [
+            {
+              "id": "m1",
+              "put_time": "09:00:01"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

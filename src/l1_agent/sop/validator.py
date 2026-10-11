@@ -10,10 +10,21 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Set, Tuple
 
-from src.l1_agent.adapters.schemas import validate_step_parameters
+from src.l1_agent.adapters.schemas import (
+    find_capability,
+    is_step_capability,
+    validate_step_parameters,
+)
+from src.l1_agent.connectors.sdk.manifest import Kind
 from src.l1_agent.engine import expressions
 from src.l1_agent.engine.parameters import spec_problems, undeclared_placeholders
-from src.l1_agent.models.sop import CHECK_STEP_TYPES, SOP, TERMINAL_STEP_TYPES, SOPStep, StepType
+from src.l1_agent.models.sop import (
+    CHECK_STEP_TYPES,
+    SOP,
+    TERMINAL_STEP_TYPES,
+    SOPStep,
+    StepType,
+)
 
 # The one pre-existing rule whose true branch is on_failure. Kept so that
 # existing SOPs do not silently change direction.
@@ -93,11 +104,15 @@ def _step_problems(step: SOPStep, index: Dict[str, SOPStep]) -> List[str]:
     if not step.on_success and not step.requires_approval:
         problems.append(f"{label}: on_success is required (end the run with ESCALATE or RESOLVE)")
 
+    if step.capability and step_type != StepType.CHECK.value:
+        problems.append(f"{label}: only a CHECK step names a capability")
     if step_type in CHECK_STEP_TYPES:
         problems += [
             f"{label}: {p}"
             for p in validate_step_parameters(step_type, step.parameters, allow_placeholders=True)
         ]
+    elif step_type == StepType.CHECK.value:
+        problems += _capability_problems(label, step.capability, step.parameters)
     elif step_type == StepType.DECISION.value:
         rule = step.parameters.get("rule", "")
         if rule != LEGACY_ANY_FAILED_RULE:
@@ -106,16 +121,18 @@ def _step_problems(step: SOPStep, index: Dict[str, SOPStep]) -> List[str]:
         extra = set(step.parameters) - {"check", "parameters", "assert", "retries", "wait_seconds"}
         if extra:
             problems.append(f"{label}: unknown VERIFY keys {sorted(extra)}")
-        check = str(step.parameters.get("check", "")).upper()
-        if check not in CHECK_STEP_TYPES:
-            problems.append(f"{label}: 'check' must be an adapter step type")
-        else:
+        check = str(step.parameters.get("check", ""))
+        if check.upper() in CHECK_STEP_TYPES:
             problems += [
                 f"{label}: {p}"
                 for p in validate_step_parameters(
-                    check, step.parameters.get("parameters", {}), allow_placeholders=True
+                    check.upper(), step.parameters.get("parameters", {}), allow_placeholders=True
                 )
             ]
+        elif find_capability(check) is not None and check == check.lower():
+            problems += _capability_problems(label, check, step.parameters.get("parameters", {}))
+        else:
+            problems.append(f"{label}: 'check' must be an adapter step type")
         problems += _expression_problems(
             f"{label} assert", step.parameters.get("assert"), VERIFY_ROOTS
         )
@@ -136,6 +153,22 @@ def _step_problems(step: SOPStep, index: Dict[str, SOPStep]) -> List[str]:
                 f"{label}: wait_seconds must be between 0 and {MAX_VERIFY_WAIT_SECONDS}"
             )
     return problems
+
+
+def _capability_problems(label: str, capability_id: str, parameters: object) -> List[str]:
+    """A check must name a read capability that exists, with parameters its schema accepts."""
+    capability = find_capability(capability_id) if capability_id else None
+    if capability is None or capability_id != capability.id:
+        return [f"{label}: unknown capability '{capability_id}'"]
+    if capability.kind is not Kind.READ:
+        return [f"{label}: '{capability_id}' is a write and cannot be used as a check"]
+    if not is_step_capability(capability_id):
+        # An ITSM or knowledge connector's capability is not something a step can call.
+        return [f"{label}: '{capability_id}' cannot be used in an SOP step"]
+    return [
+        f"{label}: {p}"
+        for p in validate_step_parameters(capability_id, parameters, allow_placeholders=True)
+    ]
 
 
 def _has_cycle(start: str, index: Dict[str, SOPStep]) -> bool:

@@ -1,0 +1,47 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs"
+      },
+      "response": {
+        "status": 201,
+        "json": {
+          "sid": "7"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/7"
+      },
+      "response": {
+        "json": {
+          "entry": [
+            {
+              "name": "search",
+              "content": {
+                "isDone": true,
+                "dispatchState": "DONE"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/7/results"
+      },
+      "response": {
+        "json": {
+          "results": []
+        }
+      }
+    }
+  ]
+}

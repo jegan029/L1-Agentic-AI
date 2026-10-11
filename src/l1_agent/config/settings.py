@@ -31,6 +31,30 @@ class ServiceNowSettings:
     # Demo mode normally uses an in-memory ServiceNow. Set this to connect demo
     # mode (mock tool adapters, sample SOPs) to a real instance for testing.
     live_in_demo: bool = False
+    # "basic", or "oauth" (client credentials; the password grant when a password is set too).
+    auth: str = "basic"
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+    oauth_token_url: str = ""  # default: <base_url>/oauth_token.do
+    # The user the agent assigns a ticket to when it claims it. Defaults to `username`.
+    agent_user: str = ""
+    claim: bool = True
+    page_size: int = 100
+    max_pages: int = 10
+    verify_ssl: bool = True
+
+
+@dataclass(frozen=True)
+class KnowledgeSettings:
+    """Where SOP source articles are pulled from. Everything pulled becomes a draft."""
+
+    sync_interval_seconds: int = 0  # 0: only when asked (`l1-agent knowledge sync`)
+    servicenow_kb: bool = False
+    servicenow_kb_query: str = "workflow_state=published"
+    git_url: str = ""
+    git_ref: str = "main"
+    git_path: str = ""
+    git_cache_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -223,6 +247,10 @@ class Settings:
     database: DatabaseSettings = field(default_factory=DatabaseSettings)
     auth: AuthSettings = field(default_factory=AuthSettings)
     worker: WorkerSettings = field(default_factory=WorkerSettings)
+    knowledge: KnowledgeSettings = field(default_factory=KnowledgeSettings)
+    # Credential references given as <NAME>_REF, for example
+    # SPLUNK_TOKEN_REF=file:/run/secrets/splunk-token. They take the place of <NAME>.
+    secret_refs: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_env(cls, secrets: Optional[Mapping[str, str]] = None) -> "Settings":
@@ -261,7 +289,32 @@ class Settings:
                 timeout_seconds=int(get("SERVICENOW_TIMEOUT", "30")),
                 close_code=get("SERVICENOW_CLOSE_CODE", ""),
                 live_in_demo=get("SERVICENOW_LIVE_IN_DEMO", "false").lower() == "true",
+                auth=get("SERVICENOW_AUTH", "basic").lower(),
+                oauth_client_id=get("SERVICENOW_OAUTH_CLIENT_ID", ""),
+                oauth_client_secret=get("SERVICENOW_OAUTH_CLIENT_SECRET", ""),
+                oauth_token_url=get("SERVICENOW_OAUTH_TOKEN_URL", ""),
+                agent_user=get("SERVICENOW_AGENT_USER", ""),
+                claim=get("SERVICENOW_CLAIM", "true").lower() == "true",
+                page_size=int(get("SERVICENOW_PAGE_SIZE", "100")),
+                max_pages=int(get("SERVICENOW_MAX_PAGES", "10")),
+                verify_ssl=demo_only_off("SERVICENOW_VERIFY_SSL"),
             ),
+            knowledge=KnowledgeSettings(
+                sync_interval_seconds=int(get("KNOWLEDGE_SYNC_INTERVAL", "0")),
+                servicenow_kb=get("KNOWLEDGE_SERVICENOW_KB", "false").lower() == "true",
+                servicenow_kb_query=get(
+                    "KNOWLEDGE_SERVICENOW_KB_QUERY", "workflow_state=published"
+                ),
+                git_url=get("KNOWLEDGE_GIT_URL", ""),
+                git_ref=get("KNOWLEDGE_GIT_REF", "main"),
+                git_path=get("KNOWLEDGE_GIT_PATH", ""),
+                git_cache_dir=get("KNOWLEDGE_GIT_CACHE_DIR", ""),
+            ),
+            secret_refs={
+                name[: -len("_REF")]: value
+                for name, value in os.environ.items()
+                if name.endswith("_REF") and name.isupper() and ":" in value
+            },
             splunk=SplunkSettings(
                 base_url=get("SPLUNK_BASE_URL", ""),
                 token=get("SPLUNK_TOKEN", ""),

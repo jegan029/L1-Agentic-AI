@@ -40,11 +40,14 @@ from src.l1_agent.audit.log import Actor
 from src.l1_agent.auth import breakglass, store
 from src.l1_agent.auth.oidc import OidcClient, SignInError
 from src.l1_agent.auth.permissions import Permission, Role
-from src.l1_agent.config.settings import Settings
+from src.l1_agent.config.settings import ConfigError, Settings
+from src.l1_agent.connectors import hub as connections
 from src.l1_agent.db.engine import Database
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.service import runs as run_service
 from src.l1_agent.service.runs import RunService
+from src.l1_agent.sop import ingest
+from src.l1_agent.sop import store as sop_store
 from src.l1_agent.store.sop_stats import compute_sop_stats
 from src.l1_agent.utils.logging import get_logger
 from src.l1_agent.utils.metrics import metrics
@@ -78,6 +81,8 @@ class AppContext:
     saml: Optional[Any] = None
     demo_open: bool = False
     webhook_open: bool = False
+    hub: Optional[Any] = None  # ConnectorHub: this tenant's connectors and knowledge sources
+    itsm: Optional[Any] = None  # the ITSM connector, which the ServiceNow KB source reads through
 
 
 class TokenRequest(BaseModel):
@@ -95,9 +100,30 @@ class BreakGlassRequest(BaseModel):
     password: str = Field(min_length=1, max_length=500)
 
 
+class SopContentRequest(BaseModel):
+    content: Dict[str, Any]
+
+
+class ApproveRequest(BaseModel):
+    # The hash of the content the reviewer looked at. Approval is of that content only.
+    content_hash: str = Field(min_length=64, max_length=64)
+
+
+class ChangesRequest(BaseModel):
+    note: str = Field(min_length=1, max_length=sop_store.MAX_NOTE)
+
+
+class ConnectionRequest(BaseModel):
+    config: Dict[str, Any] = Field(default_factory=dict)
+    # Slot name to a credential reference (vault:..., file:..., aws:..., env:...). Never a value.
+    secrets: Dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+
+
 def summarize(records: List[dict], processing: int, uptime: float) -> Dict[str, Any]:
     """Dashboard numbers for one tenant, from its recorded runs."""
     by_outcome = {"resolved": 0, "escalated": 0, "needs_human": 0}
+    skipped = 0  # tickets a person already held; the agent did nothing
     reasons: Dict[str, int] = {}
     durations: List[float] = []
     today = datetime.now(timezone.utc).date()
@@ -112,6 +138,9 @@ def summarize(records: List[dict], processing: int, uptime: float) -> Dict[str, 
     }
     for r in records:
         outcome = r.get("outcome", "")
+        if outcome == "aborted" and str(r.get("escalation_reason", "")).startswith("Not claimed"):
+            skipped += 1
+            continue
         key = outcome if outcome in ("resolved", "escalated") else "needs_human"
         by_outcome[key] += 1
         if outcome == "escalated":
@@ -123,7 +152,7 @@ def summarize(records: List[dict], processing: int, uptime: float) -> Dict[str, 
         if day:
             day["received"] += 1
             day["resolved" if outcome == "resolved" else "escalated"] += 1
-    received = len(records) + processing
+    received = len(records) - skipped + processing
     resolved = by_outcome["resolved"]
     return {
         "kpi": {
@@ -131,6 +160,7 @@ def summarize(records: List[dict], processing: int, uptime: float) -> Dict[str, 
             "incidents_resolved": resolved,
             "incidents_escalated": by_outcome["escalated"],
             "incidents_needs_human": by_outcome["needs_human"],
+            "incidents_skipped": skipped,
             "resolution_rate_pct": round(resolved / received * 100, 1) if received else 0.0,
             "avg_resolution_ms": round(sum(durations) / len(durations), 1) if durations else None,
             "currently_processing": processing,
@@ -517,6 +547,157 @@ def create_app(ctx: AppContext) -> FastAPI:
             return JSONResponse({"error": "Not found"}, status_code=404)
         return JSONResponse({"status": "removed"})
 
+    # ── SOPs: library, authoring and review ───────────────────────────
+
+    @routes.get("/api/sops", requires(Permission.INCIDENTS_READ))
+    async def list_sops(request: Request, status: str = "", sop_id: str = "") -> dict:
+        items = await sop_store.list_versions(
+            ctx.db, tenant(request), sop_key=sop_id[:100], status=status[:20]
+        )
+        return {"items": items}
+
+    @routes.get("/api/sop-versions/{version_id}", requires(Permission.INCIDENTS_READ))
+    async def sop_version(request: Request, version_id: uuid.UUID) -> dict:
+        return await sop_store.review(ctx.db, tenant(request), version_id)
+
+    @routes.post("/api/sops", requires(Permission.SOPS_AUTHOR), status_code=201)
+    async def create_sop_draft(request: Request, body: SopContentRequest) -> Response:
+        principal = current(request)
+        version_id = await sop_store.create_draft(
+            ctx.db, principal.tenant_id, principal.actor, body.content
+        )
+        return JSONResponse({"id": str(version_id)}, status_code=201)
+
+    @routes.put("/api/sop-versions/{version_id}", requires(Permission.SOPS_AUTHOR))
+    async def update_sop_draft(
+        request: Request, version_id: uuid.UUID, body: SopContentRequest
+    ) -> dict:
+        principal = current(request)
+        await sop_store.update_draft(
+            ctx.db, principal.tenant_id, principal.actor, version_id, body.content
+        )
+        return {"status": "saved"}
+
+    @routes.delete("/api/sop-versions/{version_id}", requires(Permission.SOPS_AUTHOR))
+    async def discard_sop_draft(request: Request, version_id: uuid.UUID) -> dict:
+        principal = current(request)
+        await sop_store.discard(ctx.db, principal.tenant_id, principal.actor, version_id)
+        return {"status": "discarded"}
+
+    @routes.post("/api/sop-versions/{version_id}/submit", requires(Permission.SOPS_AUTHOR))
+    async def submit_sop(request: Request, version_id: uuid.UUID) -> dict:
+        principal = current(request)
+        digest = await sop_store.submit(ctx.db, principal.tenant_id, principal.actor, version_id)
+        return {"status": "in_review", "content_hash": digest}
+
+    @routes.post("/api/sop-versions/{version_id}/approve", requires(Permission.SOPS_APPROVE))
+    async def approve_sop(request: Request, version_id: uuid.UUID, body: ApproveRequest) -> dict:
+        principal = current(request)
+        await sop_store.approve(
+            ctx.db, principal.tenant_id, principal.actor, version_id, body.content_hash
+        )
+        return {"status": "approved"}
+
+    @routes.post(
+        "/api/sop-versions/{version_id}/request-changes", requires(Permission.SOPS_APPROVE)
+    )
+    async def request_sop_changes(
+        request: Request, version_id: uuid.UUID, body: ChangesRequest
+    ) -> dict:
+        principal = current(request)
+        await sop_store.request_changes(
+            ctx.db, principal.tenant_id, principal.actor, version_id, body.note
+        )
+        return {"status": "draft"}
+
+    @routes.post("/api/sop-versions/{version_id}/publish", requires(Permission.SOPS_APPROVE))
+    async def publish_sop(request: Request, version_id: uuid.UUID) -> dict:
+        principal = current(request)
+        number = await sop_store.publish(ctx.db, principal.tenant_id, principal.actor, version_id)
+        return {"status": "published", "version": number}
+
+    @routes.post("/api/sops/{sop_id}/retire", requires(Permission.SOPS_APPROVE))
+    async def retire_sop(request: Request, sop_id: str) -> dict:
+        principal = current(request)
+        await sop_store.retire(ctx.db, principal.tenant_id, principal.actor, sop_id[:100])
+        return {"status": "retired"}
+
+    @routes.post("/api/knowledge/sync", requires(Permission.SOPS_AUTHOR))
+    async def knowledge_sync(request: Request) -> dict:
+        principal = current(request)
+        if ctx.hub is None:
+            return {"items": []}
+        sources = await ctx.hub.knowledge_sources(principal.tenant_id, ctx.itsm)
+        results = await ingest.sync_all(ctx.db, principal.tenant_id, sources, principal.actor)
+        return {"items": [r.to_dict() for r in results]}
+
+    # ── Connectors ────────────────────────────────────────────────────
+
+    @routes.get("/api/connectors", requires(Permission.SYSTEM_READ))
+    async def connectors(request: Request) -> dict:
+        if ctx.hub is None:
+            return {"items": []}
+        return {"items": await ctx.hub.describe(tenant(request))}
+
+    @routes.put("/api/connectors/{connector_id}/connection", requires(Permission.CONNECTORS_MANAGE))
+    async def set_connection(
+        request: Request, connector_id: str, body: ConnectionRequest
+    ) -> Response:
+        principal = current(request)
+        try:
+            await connections.set_connection(
+                ctx.db,
+                principal.tenant_id,
+                principal.actor,
+                connector_id[:64],
+                body.config,
+                body.secrets,
+                enabled=body.enabled,
+            )
+        except ConfigError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if ctx.hub is not None:
+            ctx.hub.forget(principal.tenant_id)
+        return JSONResponse({"status": "saved"})
+
+    @routes.delete(
+        "/api/connectors/{connector_id}/connection", requires(Permission.CONNECTORS_MANAGE)
+    )
+    async def remove_connection(request: Request, connector_id: str) -> Response:
+        principal = current(request)
+        removed = await connections.remove_connection(
+            ctx.db, principal.tenant_id, principal.actor, connector_id[:64]
+        )
+        if not removed:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        if ctx.hub is not None:
+            ctx.hub.forget(principal.tenant_id)
+        return JSONResponse({"status": "removed"})
+
+    @routes.post("/api/connectors/{connector_id}/test", requires(Permission.CONNECTORS_MANAGE))
+    async def test_connector(request: Request, connector_id: str) -> Response:
+        principal = current(request)
+        if ctx.hub is None:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        try:
+            checks = await ctx.hub.test(principal.tenant_id, connector_id[:64])
+        except LookupError:
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        async with ctx.db.tenant(principal.tenant_id) as conn:
+            await audit.append(
+                conn,
+                principal.tenant_id,
+                principal.actor,
+                "connection.tested",
+                {"connector": connector_id[:64], "ok": all(c.ok for c in checks)},
+            )
+        return JSONResponse(
+            {
+                "ok": all(c.ok for c in checks),
+                "checks": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in checks],
+            }
+        )
+
     # ── Audit ─────────────────────────────────────────────────────────
 
     @routes.get("/api/audit/events", requires(Permission.AUDIT_READ))
@@ -548,6 +729,10 @@ def create_app(ctx: AppContext) -> FastAPI:
     @routes.get("/api/openapi.json", requires(Permission.SYSTEM_READ))
     async def openapi() -> dict:
         return app.openapi()
+
+    @app.exception_handler(sop_store.SopError)
+    async def on_sop_error(request: Request, exc: sop_store.SopError) -> JSONResponse:
+        return JSONResponse({"error": str(exc), "problems": exc.problems}, status_code=exc.status)
 
     @app.exception_handler(Denied)
     async def on_denied(request: Request, exc: Denied) -> JSONResponse:

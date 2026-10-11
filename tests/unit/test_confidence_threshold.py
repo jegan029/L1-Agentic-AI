@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.l1_agent.connectors.itsm.base import ClaimResult
 from src.l1_agent.models.evidence import ExecutionOutcome, ExecutionSummary
 from src.l1_agent.models.incident import Incident
 
@@ -50,6 +51,7 @@ def processor(mock_escalate):
     snow.update_incident = AsyncMock()
     snow.resolve_incident = AsyncMock()
     snow.get_sops = AsyncMock(return_value=[])
+    snow.claim = AsyncMock(return_value=ClaimResult(True))  # the agent owns the ticket
 
     matcher = MagicMock()
     parser = MagicMock()

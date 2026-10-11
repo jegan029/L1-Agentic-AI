@@ -1,0 +1,8 @@
+ BEIM ASYNC STATUS                                         03/01/26 09:15:02
+
+ JOB        STATUS
+ PAYASYNC   INACT OK
+ LEDGASYN   INACT ERROR
+ RECONASY   ACTIVE
+
+ PF3=EXIT  PF8=FORWARD

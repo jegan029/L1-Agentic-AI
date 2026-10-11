@@ -1,0 +1,20 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/metrics/query"
+      },
+      "response": {
+        "status": 403,
+        "json": {
+          "error": {
+            "code": 403,
+            "message": "Token is missing required scope. Use one of: metrics.read"
+          }
+        }
+      }
+    }
+  ]
+}

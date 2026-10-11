@@ -78,10 +78,19 @@ READ = (
 )
 
 
+NO_SUCH_ID = "00000000-0000-0000-0000-000000000000"
+
+
 def concrete(path: str) -> str:
-    return path.replace("{incident_number}", "INC1").replace(
-        "{token_id}", "00000000-0000-0000-0000-000000000000"
-    )
+    for name, value in (
+        ("{incident_number}", "INC1"),
+        ("{token_id}", NO_SUCH_ID),
+        ("{version_id}", NO_SUCH_ID),
+        ("{connector_id}", "splunk"),
+        ("{sop_id}", "SOP-NONE"),
+    ):
+        path = path.replace(name, value)
+    return path
 
 
 async def run_count(ctx) -> int:

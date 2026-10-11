@@ -16,6 +16,8 @@ class StepType(Enum):
     DYNATRACE_METRICS = "DYNATRACE_METRICS"
     WEB_UI_CHECK = "WEB_UI_CHECK"
     MAINFRAME_CHECK = "MAINFRAME_CHECK"
+    # A read check that names a connector capability in `capability`.
+    CHECK = "CHECK"
     DECISION = "DECISION"
     NOTE = "NOTE"
     # Runs a read check and applies an assertion. The only route to RESOLVE.
@@ -38,6 +40,8 @@ CHECK_STEP_TYPES = frozenset(
         StepType.MAINFRAME_CHECK.value,
     }
 )
+# Every step type that calls a connector: the typed ones above and the generic CHECK.
+CONNECTOR_STEP_TYPES = CHECK_STEP_TYPES | {StepType.CHECK.value}
 TERMINAL_STEP_TYPES = frozenset({StepType.ESCALATE.value, StepType.RESOLVE.value})
 
 SOP_STATUS_PUBLISHED = "published"
@@ -57,10 +61,29 @@ class SOPStep:
     on_failure: str = ""
     requires_approval: bool = False
     timeout_seconds: int = 60
+    # For a CHECK step: the connector capability id, for example "splunk.search".
+    capability: str = ""
+
+    def to_dict(self) -> dict:
+        data = {
+            "step_id": self.step_id,
+            "step_type": self.step_type,
+            "description": self.description,
+            "parameters": self.parameters,
+            "expected_output": self.expected_output,
+            "on_success": self.on_success,
+            "on_failure": self.on_failure,
+            "requires_approval": self.requires_approval,
+            "timeout_seconds": self.timeout_seconds,
+        }
+        if self.capability:
+            data["capability"] = self.capability
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "SOPStep":
         return cls(
+            capability=data.get("capability", ""),
             step_id=data.get("step_id", ""),
             step_type=data.get("step_type", ""),
             description=data.get("description", ""),
@@ -155,6 +178,9 @@ class SOP:
     parameters: List[ParameterSpec] = field(default_factory=list)
     # A draft is never matched and never executed.
     status: str = SOP_STATUS_PUBLISHED
+    # SHA-256 of the published version's canonical content. Empty for an SOP that
+    # did not come from the version store (tests, files).
+    content_hash: str = ""
 
     @property
     def is_draft(self) -> bool:
@@ -188,20 +214,7 @@ class SOP:
             "applicable_assignment_groups": self.applicable_assignment_groups,
             "keywords": self.keywords,
             "parameters": [p.to_dict() for p in self.parameters],
-            "steps": [
-                {
-                    "step_id": s.step_id,
-                    "step_type": s.step_type,
-                    "description": s.description,
-                    "parameters": s.parameters,
-                    "expected_output": s.expected_output,
-                    "on_success": s.on_success,
-                    "on_failure": s.on_failure,
-                    "requires_approval": s.requires_approval,
-                    "timeout_seconds": s.timeout_seconds,
-                }
-                for s in self.steps
-            ],
+            "steps": [s.to_dict() for s in self.steps],
             "pre_checks": self.pre_checks,
             "tools_required": self.tools_required,
             "escalation_criteria": {

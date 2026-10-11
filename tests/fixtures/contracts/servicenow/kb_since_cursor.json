@@ -1,0 +1,19 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/kb_knowledge",
+        "query": {
+          "sysparm_query": "workflow_state=published^sys_updated_on>2026-03-03 08:00:00^ORDERBYsys_updated_on"
+        }
+      },
+      "response": {
+        "json": {
+          "result": []
+        }
+      }
+    }
+  ]
+}

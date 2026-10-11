@@ -10,11 +10,20 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.l1_agent.adapters.base import AdapterResult, BaseAdapter
 from src.l1_agent.adapters.schemas import STEP_ADAPTERS, validate_step_parameters
+from src.l1_agent.connectors.catalog import (
+    CONNECTOR_ADAPTERS,
+    STEP_CAPABILITIES,
+    connectors_for_adapters,
+    default_registry,
+)
+from src.l1_agent.connectors.sdk.base import Refused, StepContext
+from src.l1_agent.connectors.sdk.registry import ConnectorSet
 from src.l1_agent.engine import expressions
 from src.l1_agent.engine.parameters import ParameterError, bind_parameters, render
 from src.l1_agent.engine.state_machine import (
@@ -32,7 +41,7 @@ from src.l1_agent.models.evidence import (
     UnverifiedResolutionError,
 )
 from src.l1_agent.models.incident import Incident
-from src.l1_agent.models.sop import CHECK_STEP_TYPES, SOP, SOPStep, StepType
+from src.l1_agent.models.sop import CONNECTOR_STEP_TYPES, SOP, SOPStep, StepType
 from src.l1_agent.sop.validator import LEGACY_ANY_FAILED_RULE, validate_sop
 from src.l1_agent.utils.logging import get_logger, set_correlation_id
 from src.l1_agent.utils.metrics import metrics
@@ -44,6 +53,15 @@ if TYPE_CHECKING:
 logger = get_logger("executor")
 
 
+@dataclass
+class _Run:
+    """What a step needs to call a connector: the tenant's connectors and who is asking."""
+
+    connectors: ConnectorSet
+    tenant_id: Any = None
+    run_id: str = ""
+
+
 class _AdapterFailure(Exception):
     """Raised inside the retry closure when an adapter returns success=False."""
 
@@ -52,23 +70,41 @@ class _AdapterFailure(Exception):
         super().__init__(result.error or "adapter returned failure")
 
 
+class _FixedConnectors:
+    """The same connectors for every tenant: demo mode and tests."""
+
+    def __init__(self, connectors: ConnectorSet) -> None:
+        self._connectors = connectors
+
+    async def for_tenant(self, tenant_id: Any) -> ConnectorSet:
+        return self._connectors
+
+
 class SOPExecutor:
-    """Executes SOP steps, using the appropriate tool adapter for each check.
+    """Executes SOP steps, calling a connector capability for each check.
 
     Each step produces a StepResult with evidence. The executor tracks the
     entire run and produces an ExecutionSummary at the end.
+
+    `adapters` wraps ready adapters (the mocks) as connectors. `connectors`
+    is the service's hub, which builds each tenant's connectors from its
+    connections.
     """
 
     def __init__(
         self,
-        adapters: Dict[str, BaseAdapter],
+        adapters: Optional[Dict[str, BaseAdapter]] = None,
         circuit_breakers: Optional[Dict[str, CircuitBreaker]] = None,
         retry_max_attempts: int = 3,
         retry_base_delay: float = 1.0,
         event_bus: Optional["EventPublisher"] = None,
+        connectors: Any = None,
+        breaker_factory: Optional[Any] = None,
     ) -> None:
-        self._adapters = adapters
+        self._hub = connectors or _FixedConnectors(connectors_for_adapters(adapters or {}))
         self._circuit_breakers = circuit_breakers or {}
+        self._breaker_factory = breaker_factory
+        self._tenant_breakers: Dict[tuple, CircuitBreaker] = {}
         self._retry_max = retry_max_attempts
         self._retry_delay = retry_base_delay
         self._event_bus = event_bus
@@ -133,8 +169,14 @@ class SOPExecutor:
                         f"Steps available: {len(sop.steps)}",
                         "start",
                     )
+                tenant_id = getattr(journal, "tenant_id", None)
+                run = _Run(
+                    connectors=await self._hub.for_tenant(tenant_id),
+                    tenant_id=tenant_id,
+                    run_id=str(getattr(journal, "run_id", "") or incident.number),
+                )
                 state, reason, verified_by = await self._run_steps(
-                    incident, steps, values, summary, work_note_callback, journal
+                    incident, steps, values, summary, work_note_callback, journal, run
                 )
         except Exception as exc:  # engine fault: never leave a run without an outcome
             logger.error("SOP execution aborted by an internal error: %s", exc)
@@ -176,6 +218,7 @@ class SOPExecutor:
         summary: ExecutionSummary,
         work_note_callback: Any,
         journal: Optional["RunJournal"] = None,
+        run: Optional["_Run"] = None,
     ) -> tuple:
         """Walk the step graph. Returns (terminal state, reason, verified_by).
 
@@ -220,7 +263,7 @@ class SOPExecutor:
                 if journal:
                     await journal.step_started(step)
                 step_start = time.perf_counter()
-                result = await self._execute_step(step, incident, summary, values, state)
+                result = await self._execute_step(step, incident, summary, values, state, run)
                 result.duration_ms = (time.perf_counter() - step_start) * 1000
                 summary.step_results.append(result)
                 if journal:
@@ -302,6 +345,7 @@ class SOPExecutor:
             step_type=step.step_type,
             description=step.description,
             parameters=render(step.parameters, values),
+            capability=step.capability,
             expected_output=step.expected_output,
             on_success=step.on_success,
             on_failure=step.on_failure,
@@ -316,6 +360,7 @@ class SOPExecutor:
         summary: ExecutionSummary,
         values: Dict[str, Any],
         state: RunState,
+        run: Optional["_Run"] = None,
     ) -> StepResult:
         """Execute a single SOP step and return the result."""
         logger.info("Executing step %s (%s)", step.step_id, step.step_type)
@@ -339,7 +384,7 @@ class SOPExecutor:
             if step_type == StepType.DECISION.value:
                 return self._handle_decision_step(step, incident, summary, values)
             if step_type == StepType.VERIFY.value:
-                return await self._handle_verify_step(step, incident, summary, values)
+                return await self._handle_verify_step(step, incident, summary, values, run)
             if step_type == StepType.ESCALATE.value:
                 text = step.parameters.get("reason") or step.parameters.get("text")
                 text = text or step.description or "SOP routed this incident to L2"
@@ -366,8 +411,8 @@ class SOPExecutor:
                     input_summary=step.description,
                     output_summary=text[:200] if verified else "Refused: not verified",
                 )
-            if step_type in CHECK_STEP_TYPES:
-                return await self._handle_adapter_step(step)
+            if step_type in CONNECTOR_STEP_TYPES:
+                return await self._handle_adapter_step(step, run)
             return self._error(step, f"Unknown step type: {step.step_type}", "none")
         except Exception as exc:
             logger.error("Step %s raised: %s", step.step_id, exc)
@@ -385,28 +430,47 @@ class SOPExecutor:
             output_summary=f"Cannot continue: {message}"[:200],
         )
 
-    async def _call_adapter(self, step_type: str, parameters: Dict[str, Any]) -> tuple:
-        """Validate parameters and call the adapter with retry and breaker.
+    def _breaker(self, run: "_Run", connector_id: str) -> Optional[CircuitBreaker]:
+        """One breaker per connection: explicit ones first, else one per tenant and connector."""
+        explicit = self._circuit_breakers.get(connector_id) or self._circuit_breakers.get(
+            CONNECTOR_ADAPTERS.get(connector_id, "")
+        )
+        if explicit is not None or self._breaker_factory is None:
+            return explicit
+        key = (run.tenant_id, connector_id)
+        if key not in self._tenant_breakers:
+            self._tenant_breakers[key] = self._breaker_factory()
+        return self._tenant_breakers[key]
 
-        Returns (StepStatus, AdapterResult or None, adapter name, error text).
+    async def _call_adapter(
+        self, name: str, parameters: Dict[str, Any], run: Optional["_Run"], step_id: str = ""
+    ) -> tuple:
+        """Validate parameters and call the capability with retry and breaker.
+
+        `name` is a legacy step type or a capability id.
+        Returns (StepStatus, AdapterResult or None, tool name, error text).
         ERROR means the engine could not make the call at all.
         """
-        adapter_key = STEP_ADAPTERS.get(step_type)
-        if not adapter_key:
-            return StepStatus.ERROR, None, "none", f"Unknown step type: {step_type}"
+        capability_id = STEP_CAPABILITIES.get(name, name)
+        connector_id = default_registry().owner(capability_id)
+        if not connector_id:
+            return StepStatus.ERROR, None, "none", f"Unknown step type: {name}"
+        legacy_key = STEP_ADAPTERS.get(name, connector_id)
 
-        problems = validate_step_parameters(step_type, parameters)
+        problems = validate_step_parameters(name, parameters)
         if problems:
-            return StepStatus.ERROR, None, adapter_key, "; ".join(problems)
+            return StepStatus.ERROR, None, legacy_key, "; ".join(problems)
+        if run is None or run.connectors.connector(connector_id) is None:
+            return StepStatus.ERROR, None, legacy_key, f"Adapter '{legacy_key}' not configured"
+        refused = run.connectors.refusals(capability_id, parameters)
+        if refused:
+            return StepStatus.ERROR, None, legacy_key, "; ".join(refused)
 
-        adapter = self._adapters.get(adapter_key)
-        if not adapter:
-            return StepStatus.ERROR, None, adapter_key, f"Adapter '{adapter_key}' not configured"
-
-        cb = self._circuit_breakers.get(adapter_key)
+        tool = run.connectors.tool_name(capability_id)
+        context = StepContext(run.tenant_id, run.run_id, step_id)
 
         async def _run() -> AdapterResult:
-            result = await adapter.execute(parameters)
+            result = await run.connectors.invoke(capability_id, parameters, context)
             if not result.success:
                 # Raise so retry_with_backoff can see the failure and retry.
                 raise _AdapterFailure(result)
@@ -417,21 +481,24 @@ class SOPExecutor:
                 _run,
                 max_attempts=self._retry_max,
                 base_delay=self._retry_delay,
-                circuit_breaker=cb,
+                circuit_breaker=self._breaker(run, connector_id),
             )
         except RuntimeError as exc:
             # Circuit breaker open: the target is unavailable.
-            return StepStatus.ERROR, None, adapter.adapter_name, str(exc)
+            return StepStatus.ERROR, None, tool, str(exc)
         except _AdapterFailure as exc:
-            return StepStatus.FAIL, exc.result, adapter.adapter_name, exc.result.error
+            return StepStatus.FAIL, exc.result, tool, exc.result.error
+        except (Refused, LookupError, PermissionError) as exc:
+            return StepStatus.ERROR, None, tool, str(exc)
         except Exception as exc:
-            return StepStatus.FAIL, None, adapter.adapter_name, f"All retries exhausted: {exc}"
-        return StepStatus.SUCCESS, adapter_result, adapter.adapter_name, ""
+            return StepStatus.FAIL, None, tool, f"All retries exhausted: {exc}"
+        return StepStatus.SUCCESS, adapter_result, tool, ""
 
-    async def _handle_adapter_step(self, step: SOPStep) -> StepResult:
-        """Dispatch to the correct tool adapter based on step_type."""
+    async def _handle_adapter_step(self, step: SOPStep, run: Optional["_Run"]) -> StepResult:
+        """Call the capability the step names: its own, or its legacy step type's."""
+        name = step.capability or step.step_type.upper()
         status, adapter_result, tool, error = await self._call_adapter(
-            step.step_type.upper(), step.parameters
+            name, step.parameters, run, step.step_id
         )
         if status == StepStatus.ERROR:
             return self._error(step, error, tool)
@@ -455,9 +522,11 @@ class SOPExecutor:
         incident: Incident,
         summary: ExecutionSummary,
         values: Dict[str, Any],
+        run: Optional["_Run"] = None,
     ) -> StepResult:
         """Run the check and apply the assertion. Inconclusive counts as a fail."""
-        check = str(step.parameters.get("check", "")).upper()
+        check = str(step.parameters.get("check", ""))
+        check = check.upper() if check.upper() in STEP_CAPABILITIES else check
         check_params = step.parameters.get("parameters", {})
         assertion = step.parameters.get("assert", "")
         retries = int(step.parameters.get("retries", 0))
@@ -469,7 +538,9 @@ class SOPExecutor:
         for attempt in range(retries + 1):
             if attempt and wait_seconds:
                 await asyncio.sleep(wait_seconds)
-            status, adapter_result, tool, error = await self._call_adapter(check, check_params)
+            status, adapter_result, tool, error = await self._call_adapter(
+                check, check_params, run, step.step_id
+            )
             if status == StepStatus.ERROR:
                 return self._error(step, error, tool)
             if status != StepStatus.SUCCESS or adapter_result is None:
@@ -531,7 +602,7 @@ class SOPExecutor:
         checks = [
             r
             for r in summary.step_results
-            if r.step_type.upper() in CHECK_STEP_TYPES
+            if r.step_type.upper() in CONNECTOR_STEP_TYPES
             or r.step_type.upper() == StepType.VERIFY.value
         ]
         return {

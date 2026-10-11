@@ -1,0 +1,49 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/entities",
+        "query": {
+          "entitySelector": "type(\"HOST\"),entityName(\"app-server-01\")"
+        },
+        "headers": {
+          "Authorization": "Api-Token dt-one"
+        }
+      },
+      "response": {
+        "json": {
+          "totalCount": 1,
+          "pageSize": 50,
+          "entities": [
+            {
+              "entityId": "HOST-0001",
+              "displayName": "app-server-01",
+              "type": "HOST"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/problems",
+        "query": {
+          "entitySelector": "entityId(\"HOST-0001\")",
+          "status": "OPEN"
+        },
+        "headers": {
+          "Authorization": "Api-Token dt-one"
+        }
+      },
+      "response": {
+        "json": {
+          "totalCount": 0,
+          "problems": []
+        }
+      }
+    }
+  ]
+}

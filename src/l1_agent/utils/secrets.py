@@ -30,6 +30,7 @@ logger = get_logger("secrets")
 _SECRET_MAPPINGS: List[Dict[str, str]] = [
     # env_key           vault_path (relative to mount/prefix)
     {"env_key": "SERVICENOW_PASSWORD", "vault_key": "servicenow/password"},
+    {"env_key": "SERVICENOW_OAUTH_CLIENT_SECRET", "vault_key": "servicenow/oauth_client_secret"},
     {"env_key": "SPLUNK_TOKEN", "vault_key": "splunk/token"},
     {"env_key": "IR360_API_KEY", "vault_key": "ir360/api_key"},
     {"env_key": "DYNATRACE_API_TOKEN", "vault_key": "dynatrace/api_token"},

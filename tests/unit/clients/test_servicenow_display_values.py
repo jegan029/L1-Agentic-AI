@@ -154,7 +154,8 @@ class TestResolveAndErrors:
         client = ServiceNowClient(
             ServiceNowSettings(
                 base_url=str(server.make_url("")).rstrip("/"), username="u", password="p-secret"
-            )
+            ),
+            demo_mode=True,  # a plain-http test server; refused outside demo mode
         )
         try:
             with pytest.raises(ServiceNowError) as err:

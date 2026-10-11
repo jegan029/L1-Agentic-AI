@@ -1,0 +1,22 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/queuemanagers/QMPROD01/queues/ORDER.REQUEST/depth",
+        "headers": {
+          "X-API-Key": "ir-one"
+        }
+      },
+      "response": {
+        "json": {
+          "queue": "ORDER.REQUEST",
+          "current_depth": 12,
+          "max_depth": 5000,
+          "open_input_count": 3
+        }
+      }
+    }
+  ]
+}

@@ -167,6 +167,7 @@ runs = sa.Table(
     sa.Column("outcome", sa.String(20)),
     sa.Column("sop_id", sa.String(100), nullable=False, server_default=""),
     sa.Column("sop_version", sa.String(40), nullable=False, server_default=""),
+    sa.Column("sop_hash", sa.String(64), nullable=False, server_default=""),
     sa.Column("confidence", sa.Float()),
     sa.Column("match_rationale", sa.Text(), nullable=False, server_default=""),
     sa.Column("record", Json),
@@ -246,5 +247,132 @@ audit_events = sa.Table(
     sa.Index("ix_audit_correlation", "tenant_id", "correlation_id"),
 )
 
+# A tenant's connection to one connector: settings, and references to credentials.
+# A credential value is never stored here (ADR 0005).
+connections = sa.Table(
+    "connections",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("connector_id", sa.String(64), nullable=False),
+    sa.Column("config", Json, nullable=False),
+    sa.Column("secret_refs", Json, nullable=False),
+    sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.true()),
+    sa.Column("updated_by", sa.String(300), nullable=False),
+    sa.Column("updated_at", Timestamp, nullable=False),
+    sa.UniqueConstraint("tenant_id", "connector_id", name="uq_connections_connector"),
+)
+
+# How far each knowledge source has been read.
+knowledge_sources = sa.Table(
+    "knowledge_sources",
+    metadata,
+    sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id"), primary_key=True),
+    sa.Column("source_id", sa.String(64), primary_key=True),
+    sa.Column("cursor", sa.String(200), nullable=False, server_default=""),
+    sa.Column("last_synced_at", Timestamp),
+    sa.Column("last_error", sa.Text(), nullable=False, server_default=""),
+)
+
+sops = sa.Table(
+    "sops",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("sop_key", sa.String(100), nullable=False),
+    sa.Column("title", sa.String(300), nullable=False, server_default=""),
+    sa.Column("created_at", Timestamp, nullable=False),
+    sa.UniqueConstraint("tenant_id", "sop_key", name="uq_sops_key"),
+)
+
+SOP_DRAFT = "draft"
+SOP_IN_REVIEW = "in_review"
+SOP_APPROVED = "approved"
+SOP_PUBLISHED = "published"
+SOP_SUPERSEDED = "superseded"
+SOP_RETIRED = "retired"
+# From approval onwards the content cannot change and an approver is on record.
+SOP_FROZEN = (SOP_APPROVED, SOP_PUBLISHED, SOP_SUPERSEDED, SOP_RETIRED)
+_FROZEN_SQL = ", ".join(f"'{s}'" for s in SOP_FROZEN)
+
+sop_versions = sa.Table(
+    "sop_versions",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("sop_id", sa.Uuid(), sa.ForeignKey("sops.id"), nullable=False),
+    sa.Column("version", sa.Integer()),  # assigned at publication
+    sa.Column("status", sa.String(20), nullable=False),
+    sa.Column("content", Json, nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False, server_default=""),
+    sa.Column("origin", sa.String(20), nullable=False),  # authored | ingested | seed
+    sa.Column("source_id", sa.String(64), nullable=False, server_default=""),
+    sa.Column("source_article", sa.String(500), nullable=False, server_default=""),
+    sa.Column("source_revision", sa.String(200), nullable=False, server_default=""),
+    sa.Column("source_text", sa.Text(), nullable=False, server_default=""),
+    sa.Column("author_id", sa.String(300), nullable=False),
+    sa.Column("approver_id", sa.String(300)),
+    sa.Column("review_note", sa.Text(), nullable=False, server_default=""),
+    sa.Column("created_at", Timestamp, nullable=False),
+    sa.Column("updated_at", Timestamp, nullable=False),
+    sa.Column("submitted_at", Timestamp),
+    sa.Column("approved_at", Timestamp),
+    sa.Column("published_at", Timestamp),
+    sa.Column("retired_at", Timestamp),
+    # The person who approves a version is never the person who wrote it.
+    sa.CheckConstraint(
+        "approver_id IS NULL OR approver_id <> author_id", name="ck_sop_versions_two_people"
+    ),
+    # Nothing is approved, published or retired without an approver and a content hash.
+    sa.CheckConstraint(
+        f"status NOT IN ({_FROZEN_SQL}) OR (approver_id IS NOT NULL AND content_hash <> '')",
+        name="ck_sop_versions_approved_by_someone",
+    ),
+    sa.CheckConstraint(
+        "status IN ('draft', 'in_review', " + _FROZEN_SQL + ")", name="ck_sop_versions_status"
+    ),
+    sa.UniqueConstraint("sop_id", "version", name="uq_sop_versions_number"),
+    # One published version per SOP.
+    sa.Index(
+        "uq_sop_versions_one_published",
+        "sop_id",
+        unique=True,
+        postgresql_where=sa.text("status = 'published'"),
+        sqlite_where=sa.text("status = 'published'"),
+    ),
+    # An article revision is turned into a draft once.
+    sa.Index(
+        "uq_sop_versions_source",
+        "tenant_id",
+        "source_id",
+        "source_article",
+        "source_revision",
+        unique=True,
+        postgresql_where=sa.text("source_id <> ''"),
+        sqlite_where=sa.text("source_id <> ''"),
+    ),
+    sa.Index("ix_sop_versions_status", "tenant_id", "status"),
+)
+
 TENANT_TABLES = tuple(t for t in metadata.sorted_tables if t.name != "tenants")
 APPEND_ONLY_TABLES = ("audit_events",)
+
+# The only SOPs the engine may match and run. A view, so the rule is in the database
+# and not only in a query someone could write differently (docs/target-architecture.md §5).
+PUBLISHED_SOPS_VIEW = "published_sops"
+PUBLISHED_SOPS_SELECT = (
+    "SELECT v.id AS id, v.tenant_id AS tenant_id, s.sop_key AS sop_key, v.version AS version, "
+    "v.content AS content, v.content_hash AS content_hash "
+    "FROM sop_versions v JOIN sops s ON s.id = v.sop_id WHERE v.status = 'published'"
+)
+_views = sa.MetaData()
+published_sops = sa.Table(
+    PUBLISHED_SOPS_VIEW,
+    _views,
+    sa.Column("id", sa.Uuid()),
+    sa.Column("tenant_id", sa.Uuid()),
+    sa.Column("sop_key", sa.String(100)),
+    sa.Column("version", sa.Integer()),
+    sa.Column("content", Json),
+    sa.Column("content_hash", sa.String(64)),
+)

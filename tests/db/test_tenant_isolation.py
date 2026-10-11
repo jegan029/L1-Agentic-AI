@@ -14,6 +14,7 @@ import pytest
 import sqlalchemy as sa
 
 from src.l1_agent.audit.log import Actor, append
+from src.l1_agent.connectors import hub as connections
 from src.l1_agent.db.engine import Database, UnsafeDatabaseRole, utcnow
 from src.l1_agent.db.models import (
     TENANT_TABLES,
@@ -30,6 +31,8 @@ from src.l1_agent.db.models import (
 from src.l1_agent.demo import DEMO_INCIDENTS
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.service.runs import recent_records, record_by_number
+from src.l1_agent.sop import ingest
+from src.l1_agent.sop import store as sop_store
 from tests.conftest import make_service
 
 INTAKE = Actor.system("test-intake")
@@ -96,6 +99,11 @@ async def seed(pg, tenant: uuid.UUID, incident_index: int) -> str:
                 tenant_id=tenant, signature_hash=uuid.uuid4().hex * 2, expires_at=later
             )
         )
+    await connections.set_connection(
+        pg.db, tenant, INTAKE, "splunk", {"base_url": "https://splunk.example"}, {}
+    )
+    await sop_store.create_draft(pg.db, tenant, INTAKE, {"sop_id": "SOP-ISO", "steps": []})
+    await ingest._record(pg.db, tenant, INTAKE, ingest.SyncResult("git"), "0" * 40)
     return incident.number
 
 

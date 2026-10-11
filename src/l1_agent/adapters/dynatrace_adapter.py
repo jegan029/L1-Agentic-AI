@@ -23,6 +23,11 @@ from src.l1_agent.utils.metrics import metrics
 
 logger = get_logger("dynatrace_adapter")
 
+# A name is placed inside a quoted selector; a quote or backslash would end the quoting.
+_UNSAFE_IN_SELECTOR = ('"', "\\")
+MAX_ENTITY_PAGES = 20
+PROBLEM_BATCH = 20
+
 
 class DynatraceAdapter(BaseAdapter):
     """Adapter for Dynatrace REST API v2.
@@ -94,6 +99,11 @@ class DynatraceAdapter(BaseAdapter):
         """Check VM/host health via Entities API + Problems API."""
         host_name = parameters.get("host_name", "")
         host_group = parameters.get("host_group", "")
+        for value in (host_name, host_group):
+            if any(ch in value for ch in _UNSAFE_IN_SELECTOR):
+                return AdapterResult(
+                    success=False, error="Host and host group names cannot contain quotes"
+                )
 
         # Build entity selector
         selector_parts = ['type("HOST")']
@@ -262,20 +272,34 @@ class DynatraceAdapter(BaseAdapter):
     # ── Internal helpers ──────────────────────────────────────────────
 
     async def _get_entities(self, entity_selector: str, page_size: int = 50) -> list:
-        """Fetch entities from the Dynatrace Entities API."""
+        """Fetch every matching entity, following nextPageKey.
+
+        A host on a later page still counts: stopping at the first page could
+        report a group as healthy while a host that was never read has a problem.
+        """
         url = f"{self._base_url}/api/v2/entities"
         params = {"entitySelector": entity_selector, "pageSize": str(page_size)}
+        entities: list = []
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url,
-                headers=self._headers,
-                params=params,
-                ssl=self._settings.verify_ssl,
-            ) as resp:
-                resp.raise_for_status()
-                data = await resp.json()
-                return data.get("entities", [])
+            for _ in range(MAX_ENTITY_PAGES):
+                async with session.get(
+                    url,
+                    headers=self._headers,
+                    params=params,
+                    ssl=self._settings.verify_ssl,
+                ) as resp:
+                    resp.raise_for_status()
+                    data = await resp.json()
+                entities.extend(data.get("entities", []))
+                next_key = data.get("nextPageKey")
+                if not next_key:
+                    return entities
+                # With a page key, the API accepts no other query parameter.
+                params = {"nextPageKey": str(next_key)}
+        raise RuntimeError(
+            f"More than {MAX_ENTITY_PAGES * page_size} hosts match; narrow the host filter"
+        )
 
     async def _get_problems_for_entities(
         self,
@@ -286,26 +310,28 @@ class DynatraceAdapter(BaseAdapter):
         if not entity_ids:
             return []
 
-        entity_selector = ",".join(f'entityId("{eid}")' for eid in entity_ids[:20])
-
         url = f"{self._base_url}/api/v2/problems"
-        params: Dict[str, str] = {
-            "entitySelector": entity_selector,
-            "from": time_range,
-            "status": "OPEN",
-        }
-
+        problems: list = []
         async with aiohttp.ClientSession() as session:
-            async with session.get(
-                url,
-                headers=self._headers,
-                params=params,
-                ssl=self._settings.verify_ssl,
-            ) as resp:
-                # A failed lookup must not read as "no problems".
-                resp.raise_for_status()
-                data = await resp.json()
-                return data.get("problems", [])
+            # Every host is asked about, a batch at a time; none is left unchecked.
+            for start in range(0, len(entity_ids), PROBLEM_BATCH):
+                batch = entity_ids[start : start + PROBLEM_BATCH]
+                params: Dict[str, str] = {
+                    "entitySelector": ",".join(f'entityId("{eid}")' for eid in batch),
+                    "from": time_range,
+                    "status": "OPEN",
+                }
+                async with session.get(
+                    url,
+                    headers=self._headers,
+                    params=params,
+                    ssl=self._settings.verify_ssl,
+                ) as resp:
+                    # A failed lookup must not read as "no problems".
+                    resp.raise_for_status()
+                    data = await resp.json()
+                problems.extend(data.get("problems", []))
+        return problems
 
 
 def _latest_by_metric(metric_data: list) -> Dict[str, Any]:

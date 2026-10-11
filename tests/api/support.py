@@ -24,6 +24,8 @@ from src.l1_agent.audit.log import Actor, events_for
 from src.l1_agent.auth import store
 from src.l1_agent.auth.oidc import OidcClient
 from src.l1_agent.config.settings import AgentSettings, AuthSettings, LLMSettings, Settings
+from src.l1_agent.connectors.hub import ConnectorHub
+from src.l1_agent.connectors.sdk.secrets import SecretResolver
 from tests.conftest import Backend, make_service
 
 SECRET = "s" * 40
@@ -57,8 +59,10 @@ async def build(
 ) -> Tuple[FastAPI, AppContext]:
     """The real application, on the test database, for one deployment tenant."""
     tenant_id = tenant_id or await backend.new_tenant()
+    settings = make_settings(agent, auth)
     ctx = AppContext(
-        settings=make_settings(agent, auth),
+        settings=settings,
+        hub=ConnectorHub(backend.db, settings, SecretResolver({}), refresh_seconds=0),
         db=backend.db,
         runs=make_service(backend.db),
         tenant_id=tenant_id,

@@ -28,11 +28,12 @@ class Permission(str, Enum):
     AUDIT_READ = "audit.read"
     TOKENS_MANAGE = "tokens.manage"
     ROLES_MANAGE = "roles.manage"
-    # Declared now so the role table is complete; their routes arrive in Phases 3 and 4.
-    RUNS_OPERATE = "runs.operate"
-    ACTIONS_APPROVE = "actions.approve"
+    CONNECTORS_MANAGE = "connectors.manage"
     SOPS_AUTHOR = "sops.author"
     SOPS_APPROVE = "sops.approve"
+    # Declared now so the role table is complete; their routes arrive in Phase 4.
+    RUNS_OPERATE = "runs.operate"
+    ACTIONS_APPROVE = "actions.approve"
 
 
 P = Permission
@@ -46,7 +47,14 @@ ROLE_PERMISSIONS: Dict[Role, FrozenSet[Permission]] = {
     # An administrator manages access. Reading the audit log is the auditor's job,
     # and approving actions or SOPs is not an administrator's by default.
     Role.TENANT_ADMIN: frozenset(
-        {P.INCIDENTS_READ, P.SYSTEM_READ, P.METRICS_READ, P.TOKENS_MANAGE, P.ROLES_MANAGE}
+        {
+            P.INCIDENTS_READ,
+            P.SYSTEM_READ,
+            P.METRICS_READ,
+            P.TOKENS_MANAGE,
+            P.ROLES_MANAGE,
+            P.CONNECTORS_MANAGE,
+        }
     ),
     Role.AUDITOR: frozenset({P.INCIDENTS_READ, P.AUDIT_READ}),
 }

@@ -34,6 +34,7 @@ class RunState(str, Enum):
 
 class RunEvent(str, Enum):
     START = "start"
+    CLAIM_LOST = "claim_lost"  # someone else already holds the ticket
     SOP_MATCHED = "sop_matched"
     NO_SOP = "no_sop"
     LOW_CONFIDENCE = "low_confidence"
@@ -60,6 +61,8 @@ _S, _E = RunState, RunEvent
 
 TRANSITIONS: Dict[Tuple[RunState, RunEvent], RunState] = {
     (_S.RECEIVED, _E.START): _S.MATCHING,
+    # A ticket a person already holds is left alone: the run stops having done nothing.
+    (_S.RECEIVED, _E.CLAIM_LOST): _S.ABORTED,
     (_S.MATCHING, _E.SOP_MATCHED): _S.BINDING,
     (_S.MATCHING, _E.NO_SOP): _S.ESCALATED,
     (_S.MATCHING, _E.LOW_CONFIDENCE): _S.ESCALATED,

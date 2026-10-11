@@ -1,0 +1,18 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/oauth_token.do"
+      },
+      "response": {
+        "status": 401,
+        "json": {
+          "error_description": "access_denied",
+          "error": "server_error"
+        }
+      }
+    }
+  ]
+}

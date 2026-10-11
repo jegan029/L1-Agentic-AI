@@ -21,7 +21,12 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from src.l1_agent.config.settings import ConfigError
-from src.l1_agent.db.models import metadata, tenants
+from src.l1_agent.db.models import (
+    PUBLISHED_SOPS_SELECT,
+    PUBLISHED_SOPS_VIEW,
+    metadata,
+    tenants,
+)
 
 DEMO_TENANT_SLUG = "demo"
 
@@ -115,6 +120,9 @@ class Database:
             raise ConfigError("Use `l1-agent migrate` to create a PostgreSQL schema")
         async with self.engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
+            await conn.exec_driver_sql(
+                f"CREATE VIEW IF NOT EXISTS {PUBLISHED_SOPS_VIEW} AS {PUBLISHED_SOPS_SELECT}"
+            )
 
     async def ensure_tenant(self, slug: str, name: str = "") -> uuid.UUID:
         """Return the tenant's id, creating the row if this role is allowed to."""

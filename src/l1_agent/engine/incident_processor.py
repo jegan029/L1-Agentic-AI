@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, List, Optional, Set
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.llm_client import LLMClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
+from src.l1_agent.connectors.itsm.base import ItsmUnavailable
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.resolution_memory import ResolutionMemory
 from src.l1_agent.engine.sop_matcher import MatchResult, SOPMatcher
@@ -68,7 +69,7 @@ class IncidentProcessor:
         self,
         snow_client: ServiceNowClient,
         sop_matcher: SOPMatcher,
-        sop_parser: SOPParser,
+        sop_parser: Optional[SOPParser],  # no longer used: articles are ingested as drafts
         executor: SOPExecutor,
         sop_cache: Optional[List[SOP]] = None,
         confidence_threshold: float = 0.6,
@@ -80,7 +81,6 @@ class IncidentProcessor:
     ) -> None:
         self._snow = snow_client
         self._matcher = sop_matcher
-        self._parser = sop_parser
         self._executor = executor
         self._sop_cache = sop_cache or []
         self._threshold = confidence_threshold
@@ -127,16 +127,24 @@ class IncidentProcessor:
         return ProcessResult(ProcessStatus.PROCESSED, incident.number, summary)
 
     async def run_once(
-        self, incident: Incident, journal: Optional["RunJournal"] = None
+        self,
+        incident: Incident,
+        journal: Optional["RunJournal"] = None,
+        sops: Optional[List[SOP]] = None,
     ) -> ExecutionSummary:
         """Take one incident to a terminal outcome. No duplicate check is made here.
 
         With a journal the run is durable: called again after a crash, it reuses
         the recorded SOP choice and step results instead of repeating them.
+
+        `sops` is the tenant's published SOPs, read from the version store by the
+        service. Without it the processor uses the list it was built with.
         """
         set_correlation_id(incident.number)
         try:
-            return await self._run(incident, journal)
+            return await self._run(incident, journal, sops)
+        except ItsmUnavailable:
+            raise  # nothing was done; the job is tried again
         except Exception as exc:
             # Nothing may leave an incident without an outcome a person can see.
             logger.error("Unhandled error processing %s: %s", incident.number, exc)
@@ -152,15 +160,52 @@ class IncidentProcessor:
 
     # ── Run ───────────────────────────────────────────────────────────
 
+    async def _claim(self, incident: Incident) -> Optional[ExecutionSummary]:
+        """Take the ticket before doing anything. Returns a summary when it is not ours.
+
+        Claiming again for a ticket the agent already holds succeeds, so a
+        resumed run passes through here unchanged.
+        """
+        claim = getattr(self._snow, "claim", None)
+        if claim is None:
+            return None  # an ITSM stand-in with no notion of ownership
+        try:
+            result = await claim(incident)
+        except Exception as exc:
+            metrics.increment("incidents.claim_errors")
+            raise ItsmUnavailable(
+                f"could not claim {incident.number}: {type(exc).__name__}: {exc}"
+            ) from exc
+        if result.claimed:
+            return None
+        metrics.increment("incidents.claim_lost")
+        logger.info("Incident %s not claimed: %s", incident.number, result.reason)
+        return ExecutionSummary(
+            incident_number=incident.number,
+            sop_id="",
+            sop_title="",
+            outcome=outcome_of(transition(RunState.RECEIVED, RunEvent.CLAIM_LOST)),
+            escalation_reason=f"Not claimed: {result.reason}",
+        )
+
     async def _run(
-        self, incident: Incident, journal: Optional["RunJournal"] = None
+        self,
+        incident: Incident,
+        journal: Optional["RunJournal"] = None,
+        sops: Optional[List[SOP]] = None,
     ) -> ExecutionSummary:
+        sops = self._sop_cache if sops is None else sops
+        # No note, no reassignment: a ticket someone else holds is not touched.
+        lost = await self._claim(incident)
+        if lost is not None:
+            return lost
+
         state = transition(RunState.RECEIVED, RunEvent.START)
         stored = journal.match if journal else None
         if stored:
             # A resumed run keeps the SOP it started with. Matching again could
             # pick a different one, and model advice is not repeatable.
-            match = await self._stored_match(incident, stored)
+            match = self._stored_match(sops, stored)
             if match is None:
                 summary = ExecutionSummary(
                     incident_number=incident.number,
@@ -180,7 +225,7 @@ class IncidentProcessor:
                 "[L1 Agent] Incident received. Searching for applicable SOP...\n"
                 f"Category: {incident.category} | CI: {incident.cmdb_ci}",
             )
-            match = await self._match_sop(incident)
+            match = await self._match_sop(incident, sops)
 
         if not match.sop:
             state = transition(state, RunEvent.NO_SOP)
@@ -247,10 +292,10 @@ class IncidentProcessor:
 
     # ── Matching ──────────────────────────────────────────────────────
 
-    def _executable_sops(self) -> List[SOP]:
+    def _executable_sops(self, sops: List[SOP]) -> List[SOP]:
         """Published SOPs that pass validation. Anything else is never matched."""
         usable: List[SOP] = []
-        for sop in self._sop_cache:
+        for sop in sops:
             try:
                 problems = validate_sop(sop)
             except Exception as exc:  # malformed object: treat as not executable
@@ -262,11 +307,9 @@ class IncidentProcessor:
                 logger.warning("SOP %s is not executable: %s", sop.sop_id, "; ".join(problems[:5]))
         return usable
 
-    async def _match_sop(self, incident: Incident) -> MatchResult:
-        """Match the incident to an SOP from the cache or ServiceNow."""
-        if not self._sop_cache:
-            await self._refresh_sop_cache()
-        candidates = self._executable_sops()
+    async def _match_sop(self, incident: Incident, sops: List[SOP]) -> MatchResult:
+        """Match the incident to one of the published SOPs."""
+        candidates = self._executable_sops(sops)
         rule_match = self._matcher.match(incident, candidates)
 
         if not self._ai_enabled or not candidates:
@@ -294,31 +337,15 @@ class IncidentProcessor:
             rationale=f"{own_score.rationale} | Model-drafted rationale: {rationale}",
         )
 
-    async def _stored_match(
-        self, incident: Incident, stored: "StoredMatch"
-    ) -> Optional[MatchResult]:
+    def _stored_match(self, sops: List[SOP], stored: "StoredMatch") -> Optional[MatchResult]:
         """The SOP an earlier attempt chose, if that exact version can still run."""
-        if not self._sop_cache:
-            await self._refresh_sop_cache()
-        for sop in self._executable_sops():
-            if sop.sop_id == stored.sop_id and str(sop.version) == stored.sop_version:
-                return MatchResult(
-                    sop=sop, confidence=stored.confidence, rationale=stored.rationale
-                )
+        for sop in self._executable_sops(sops):
+            if sop.sop_id != stored.sop_id or str(sop.version) != stored.sop_version:
+                continue
+            if stored.sop_hash and sop.content_hash != stored.sop_hash:
+                continue  # same number, different content: not the version that started
+            return MatchResult(sop=sop, confidence=stored.confidence, rationale=stored.rationale)
         return None
-
-    async def _refresh_sop_cache(self) -> None:
-        """Reload SOPs from ServiceNow."""
-        try:
-            records = await self._snow.get_sops()
-            self._sop_cache = []
-            for record in records:
-                sop = self._parser.parse_from_servicenow(record)
-                if sop:
-                    self._sop_cache.append(sop)
-            logger.info("Loaded %d SOP record(s) from ServiceNow", len(self._sop_cache))
-        except Exception as exc:
-            logger.error("Failed to refresh SOP cache: %s", exc)
 
     # ── Conclusions ───────────────────────────────────────────────────
 

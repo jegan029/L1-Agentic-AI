@@ -23,6 +23,7 @@ from src.l1_agent.adapters.mock_adapters import (
 )
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.mock_llm import MockLLMClient
+from src.l1_agent.connectors.itsm.base import ClaimResult
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.sop_matcher import SOPMatcher
@@ -36,6 +37,7 @@ from src.l1_agent.utils.logging import get_logger, setup_logging
 logger = get_logger("demo")
 
 SAMPLE_SOP_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "sample_sops"
+SAMPLE_DRAFT_DIR = SAMPLE_SOP_DIR.parent / "sample_drafts"
 
 # ── Sample data ───────────────────────────────────────────────────────
 
@@ -125,14 +127,49 @@ DEMO_INCIDENTS: List[dict] = [
 ]
 
 
+def sample_sop_contents() -> List[dict]:
+    """The sample SOP files as they are on disk."""
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(SAMPLE_SOP_DIR.glob("*.json"))
+    ]
+
+
+def sample_draft_contents() -> List[dict]:
+    """Sample SOPs that are waiting for review, so the review screen has something in it."""
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(SAMPLE_DRAFT_DIR.glob("*.json"))
+    ]
+
+
 def load_sample_sops() -> List[SOP]:
     """Load and validate every sample SOP. An invalid sample is a bug, so raise."""
     sops: List[SOP] = []
-    for path in sorted(SAMPLE_SOP_DIR.glob("*.json")):
-        sop = SOP.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    for content in sample_sop_contents():
+        sop = SOP.from_dict(content)
         ensure_valid(sop)
         sops.append(sop)
     return sops
+
+
+async def seed_demo_sops(db, tenant_id) -> None:
+    """Publish the sample SOPs, and leave the sample drafts in review, for a demo tenant.
+
+    They go through the same lifecycle as any SOP, written and approved by two
+    named system actors, so the audit log shows where they came from.
+    """
+    from src.l1_agent.sop import store
+
+    await store.seed_published(db, tenant_id, sample_sop_contents())
+    known = {v["sop_id"] for v in await store.list_versions(db, tenant_id)}
+    for content in sample_draft_contents():
+        if content.get("sop_id") in known:
+            continue
+        version_id = await store.create_draft(
+            db, tenant_id, store.SAMPLE_AUTHOR, content, origin=store.ORIGIN_SEED
+        )
+        await store.submit(db, tenant_id, store.SAMPLE_AUTHOR, version_id)
 
 
 def build_mock_adapters() -> dict:
@@ -165,6 +202,9 @@ class MockServiceNowClient:
     async def resolve_incident(self, sys_id: str, close_notes: str) -> dict:
         return await self.update_incident(sys_id, {"state": "6", "close_notes": close_notes})
 
+    async def claim(self, incident: Incident) -> ClaimResult:
+        return ClaimResult(True)
+
     async def get_sops(self, query: str = "", limit: int = 50) -> list:
         return []
 
@@ -176,7 +216,11 @@ class MockServiceNowClient:
 
 
 def build_demo_processor(snow: MockServiceNowClient, event_bus=None) -> IncidentProcessor:
-    """The same processor the service uses, wired to mocks."""
+    """The same processor the service uses, wired to mocks.
+
+    It is built with no SOPs of its own: the run service hands it the
+    tenant's published versions for each run.
+    """
     llm = MockLLMClient()
     return IncidentProcessor(
         snow_client=snow,  # type: ignore[arg-type]
@@ -188,7 +232,6 @@ def build_demo_processor(snow: MockServiceNowClient, event_bus=None) -> Incident
             retry_base_delay=0,
             event_bus=event_bus,
         ),
-        sop_cache=load_sample_sops(),
         confidence_threshold=0.6,
         llm_client=llm,
         ai_analyzer=AIAnalyzer(llm_client=llm),
@@ -219,7 +262,8 @@ async def run_demo() -> List[dict]:
     try:
         await db.create_schema_for_demo()
         tenant_id = await db.ensure_tenant(DEMO_TENANT_SLUG, "Demo tenant")
-        service = RunService(db, build_demo_processor(snow, DbEventBus(db)))
+        await seed_demo_sops(db, tenant_id)
+        service = RunService(db, build_demo_processor(snow, DbEventBus(db)), sops_from_store=True)
         intake = Actor.system("demo")
         for payload in DEMO_INCIDENTS:
             incident = Incident.from_servicenow(payload)

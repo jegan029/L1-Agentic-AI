@@ -32,6 +32,7 @@ from src.l1_agent.engine.journal import StoredMatch
 from src.l1_agent.models.evidence import ExecutionOutcome, ExecutionSummary, StepResult
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.models.sop import SOP, SOPStep
+from src.l1_agent.sop import store as sop_store
 from src.l1_agent.utils.logging import get_logger
 from src.l1_agent.utils.metrics import metrics
 
@@ -185,7 +186,11 @@ class DbJournal:
         match = None
         if run.sop_id:
             match = StoredMatch(
-                run.sop_id, run.sop_version, float(run.confidence or 0.0), run.match_rationale
+                run.sop_id,
+                run.sop_version,
+                float(run.confidence or 0.0),
+                run.match_rationale,
+                run.sop_hash,
             )
         completed = {
             r.step_id: StepResult.from_dict(r.result)
@@ -193,6 +198,14 @@ class DbJournal:
             if r.status == "completed" and r.result
         }
         return cls(db, tenant_id, run_id, match, completed, len(rows))
+
+    @property
+    def tenant_id(self) -> uuid.UUID:
+        return self._tenant_id
+
+    @property
+    def run_id(self) -> uuid.UUID:
+        return self._run_id
 
     @property
     def resumed(self) -> bool:
@@ -213,6 +226,7 @@ class DbJournal:
                 .values(
                     sop_id=sop.sop_id,
                     sop_version=str(sop.version),
+                    sop_hash=sop.content_hash,
                     confidence=confidence,
                     match_rationale=rationale,
                     state="executing",
@@ -226,6 +240,7 @@ class DbJournal:
                 {
                     "sop_id": sop.sop_id,
                     "sop_version": str(sop.version),
+                    "sop_sha256": sop.content_hash,
                     "confidence": round(confidence, 4),
                     "rationale": rationale,
                 },
@@ -316,9 +331,13 @@ class RunService:
         worker_id: str = "",
         visibility_timeout_seconds: int = 300,
         max_attempts: int = 3,
+        sops_from_store: bool = False,
     ) -> None:
         self._db = db
         self._processor = processor
+        # True in the service: each run matches against the tenant's published versions.
+        # False leaves the processor with the SOP list it was built with (unit tests).
+        self._sops_from_store = sops_from_store
         self._worker_id = (
             worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
         )
@@ -487,14 +506,29 @@ class RunService:
         if journal.resumed:
             metrics.increment("runs.resumed")
             logger.info("Resuming run %s for %s", job.run_id, incident.number)
+        sops = await self._published(tenant_id, journal) if self._sops_from_store else None
         token = _current_run.set((tenant_id, job.run_id))
         heartbeat = asyncio.create_task(self._heartbeat(tenant_id, job.id))
         try:
-            summary = await self._processor.run_once(incident, journal)
+            summary = await self._processor.run_once(incident, journal, sops)
         finally:
             heartbeat.cancel()
             _current_run.reset(token)
         await self._conclude(tenant_id, job, incident, summary, "done")
+
+    async def _published(self, tenant_id: uuid.UUID, journal: DbJournal) -> List[SOP]:
+        """The tenant's published SOPs, plus the exact version a resumed run started with."""
+        sops = await sop_store.published(self._db, tenant_id)
+        stored = journal.match
+        if stored and not any(
+            s.sop_id == stored.sop_id and s.content_hash == stored.sop_hash for s in sops
+        ):
+            earlier = await sop_store.version_for_resume(
+                self._db, tenant_id, stored.sop_id, stored.sop_version, stored.sop_hash
+            )
+            if earlier is not None:
+                sops.append(earlier)
+        return sops
 
     async def _abandon(self, tenant_id: uuid.UUID, job: ClaimedJob, incident: Incident) -> None:
         """A run that keeps dying is stopped and given to a person."""
@@ -653,7 +687,7 @@ async def record_by_number(db: Database, tenant_id: uuid.UUID, number: str) -> O
     async with db.tenant(tenant_id) as conn:
         row = (
             await conn.execute(
-                sa.select(runs.c.id, runs.c.record)
+                sa.select(runs.c.id, runs.c.record, runs.c.sop_version, runs.c.sop_hash)
                 .where(
                     runs.c.tenant_id == tenant_id,
                     runs.c.number == number,
@@ -663,4 +697,11 @@ async def record_by_number(db: Database, tenant_id: uuid.UUID, number: str) -> O
                 .limit(1)
             )
         ).first()
-    return {**row.record, "run_id": str(row.id)} if row else None
+    if row is None:
+        return None
+    return {
+        **row.record,
+        "run_id": str(row.id),
+        "sop_version": row.sop_version,
+        "sop_hash": row.sop_hash,
+    }

@@ -1,115 +1,167 @@
-import { useState } from 'react'
-import { useAgent } from '../context/AgentContext'
+import { useState, useMemo } from 'react'
+import { useSops } from '../context/AgentContext'
+import DataNotice from './DataNotice'
+import Icon from './Icon'
 import { formatDuration } from '../utils/formatters'
 
-export default function SopPerformance() {
-  const { sops: { items, loading } } = useAgent()
-  const [sortKey, setSortKey] = useState('total_runs')
-  const [sortAsc, setSortAsc] = useState(false)
+function rateColor(pct) {
+  if (pct >= 80) return 'var(--resolved-solid)'
+  if (pct >= 50) return 'var(--partial-solid)'
+  return 'var(--failed-solid)'
+}
 
-  const sorted = [...items].sort((a, b) => {
-    const diff = a[sortKey] < b[sortKey] ? -1 : a[sortKey] > b[sortKey] ? 1 : 0
-    return sortAsc ? diff : -diff
-  })
+const SORT_OPTIONS = [
+  ['total_runs', 'Runs'],
+  ['success_rate_pct', 'Resolution rate'],
+  ['resolved_count', 'Resolved'],
+  ['escalated_count', 'Escalated'],
+  ['avg_duration_ms', 'Avg duration'],
+  ['sop_id', 'SOP'],
+]
 
-  const toggleSort = key => {
-    if (sortKey === key) setSortAsc(a => !a)
-    else { setSortKey(key); setSortAsc(false) }
-  }
-
-  const Th = ({ col, label }) => (
-    <th onClick={() => toggleSort(col)} style={{
-      padding: '10px 14px', textAlign: 'left', cursor: 'pointer',
-      fontSize: 11, fontWeight: 600,
-      color: sortKey === col ? 'var(--ss-blue)' : 'var(--text-muted)',
-      textTransform: 'uppercase', letterSpacing: '0.05em',
-      whiteSpace: 'nowrap', userSelect: 'none',
-    }}>
-      {label}{sortKey === col ? (sortAsc ? ' ↑' : ' ↓') : ''}
+function SortHeader({ col, label, sortKey, asc, onSort, className }) {
+  const active = sortKey === col
+  const ariaSort = active ? (asc ? 'ascending' : 'descending') : 'none'
+  return (
+    <th role="columnheader" scope="col" aria-sort={ariaSort} className={className}>
+      <button type="button" className="th-sort" onClick={() => onSort(col)}>
+        {label}
+        {active && <Icon name={asc ? 'arrow-up' : 'arrow-down'} />}
+      </button>
     </th>
   )
+}
+
+export default function SopPerformance() {
+  const { items, hasData, loading, error, updatedAt, refresh } = useSops()
+  const [sortKey, setSortKey] = useState('total_runs')
+  const [asc, setAsc] = useState(false)
+
+  const sorted = useMemo(() => {
+    const dir = asc ? 1 : -1
+    return [...items].sort((a, b) => {
+      const av = a[sortKey]
+      const bv = b[sortKey]
+      if (typeof av === 'string' || typeof bv === 'string') {
+        return String(av ?? '').localeCompare(String(bv ?? '')) * dir
+      }
+      return ((av ?? 0) - (bv ?? 0)) * dir
+    })
+  }, [items, sortKey, asc])
+
+  const summary = useMemo(() => {
+    const runs = items.reduce((s, i) => s + (i.total_runs || 0), 0)
+    const resolved = items.reduce((s, i) => s + (i.resolved_count || 0), 0)
+    return { runs, resolved, rate: runs ? Math.round((resolved / runs) * 100) : null }
+  }, [items])
+
+  const onSort = col => {
+    if (col === sortKey) setAsc(a => !a)
+    else { setSortKey(col); setAsc(col === 'sop_id') }
+  }
+  const pending = loading && !hasData
+  const sortProps = { sortKey, asc, onSort }
 
   return (
-    <div style={{ padding: '28px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
+    <div className="page">
+      <header className="page-header">
+        <div>
+          <h1 id="page-title" tabIndex={-1} className="page-title">SOP performance</h1>
+          <p className="page-sub">
+            How each Standard Operating Procedure has fared across processed incidents.
+            {hasData && ` ${items.length} ${items.length === 1 ? 'SOP has' : 'SOPs have'} been used.`}
+          </p>
+        </div>
+      </header>
 
-      {/* Header */}
-      <div>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--ss-navy)' }}>SOP Performance</h1>
-        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>
-          Resolution statistics per Standard Operating Procedure — {items.length} SOP{items.length !== 1 ? 's' : ''} used
-        </p>
-      </div>
+      <DataNotice error={error} hasData={hasData} updatedAt={updatedAt} onRetry={refresh} what="SOP statistics" />
 
-      {/* Summary strip — mirrors State Street's "In focus" section style */}
-      {items.length > 0 && (() => {
-        const totalRuns = items.reduce((s, i) => s + i.total_runs, 0)
-        const totalResolved = items.reduce((s, i) => s + i.resolved_count, 0)
-        const overallRate = totalRuns ? Math.round(totalResolved / totalRuns * 100) : 0
-        return (
-          <div style={{
-            background: 'var(--ss-light-blue)', border: '1px solid var(--ss-mid-blue)',
-            borderRadius: 'var(--radius-md)', padding: '16px 24px',
-            display: 'flex', gap: 32, flexWrap: 'wrap',
-          }}>
-            {[['Total SOP Executions', totalRuns], ['Auto-Resolved', totalResolved], ['Overall Success Rate', `${overallRate}%`], ['SOPs in Use', items.length]].map(([l, v]) => (
-              <div key={l}>
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{l}</div>
-                <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--ss-navy)', marginTop: 2 }}>{v}</div>
-              </div>
-            ))}
+      {hasData && items.length > 0 && (
+        <dl className="summary">
+          <div><dt>SOP runs</dt><dd>{summary.runs}</dd></div>
+          <div><dt>Resolved</dt><dd>{summary.resolved}</dd></div>
+          <div><dt>Resolution rate</dt><dd>{summary.rate === null ? '—' : `${summary.rate}%`}</dd></div>
+          <div><dt>SOPs used</dt><dd>{items.length}</dd></div>
+        </dl>
+      )}
+
+      {hasData && sorted.length > 1 && (
+        <div className="toolbar sort-bar">
+          <div className="field-group">
+            <label className="field-label" htmlFor="sop-sort">Sort by</label>
+            <select id="sop-sort" className="field" value={sortKey} onChange={e => { setSortKey(e.target.value); setAsc(e.target.value === 'sop_id') }}>
+              {SORT_OPTIONS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
           </div>
-        )
-      })()}
+          <button
+            type="button" className="btn btn--icon" onClick={() => setAsc(a => !a)}
+            aria-label={asc ? 'Sorted ascending, switch to descending' : 'Sorted descending, switch to ascending'}
+          >
+            <Icon name={asc ? 'arrow-up' : 'arrow-down'} />
+          </button>
+        </div>
+      )}
 
-      {/* Table */}
-      <div style={{
-        background: '#fff', border: '1px solid var(--border-subtle)',
-        borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-card)', overflow: 'hidden',
-      }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: 'var(--bg-1)', borderBottom: '2px solid var(--border-subtle)' }}>
-              <Th col="sop_id" label="SOP ID" />
-              <th style={{ padding: '10px 14px', textAlign: 'left', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Title</th>
-              <Th col="total_runs"     label="Runs" />
-              <Th col="resolved_count" label="Resolved" />
-              <Th col="escalated_count" label="Escalated" />
-              <Th col="success_rate_pct" label="Success Rate" />
-              <Th col="avg_duration_ms" label="Avg Duration" />
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={7} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>Loading…</td></tr>
-            ) : sorted.length === 0 ? (
-              <tr><td colSpan={7} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
-                No SOP execution data yet. Process incidents to see performance metrics.
-              </td></tr>
-            ) : sorted.map((r, i) => (
-              <tr key={r.sop_id} style={{ borderBottom: '1px solid var(--border-subtle)', background: i % 2 === 0 ? '#fff' : 'var(--bg-1)' }}>
-                <td style={{ padding: '12px 14px', fontFamily: 'monospace', fontSize: 12, color: 'var(--ss-blue)', fontWeight: 600, whiteSpace: 'nowrap' }}>{r.sop_id}</td>
-                <td style={{ padding: '12px 14px', color: 'var(--text-secondary)', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.sop_title}</td>
-                <td style={{ padding: '12px 14px', fontWeight: 600, color: 'var(--ss-navy)', textAlign: 'center' }}>{r.total_runs}</td>
-                <td style={{ padding: '12px 14px', fontWeight: 600, color: '#00875A', textAlign: 'center' }}>{r.resolved_count}</td>
-                <td style={{ padding: '12px 14px', fontWeight: 600, color: '#C35109', textAlign: 'center' }}>{r.escalated_count}</td>
-                <td style={{ padding: '12px 14px', minWidth: 160 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <div style={{ flex: 1, height: 5, background: 'var(--bg-3)', borderRadius: 2, overflow: 'hidden' }}>
-                      <div style={{
-                        height: '100%', borderRadius: 2,
-                        width: `${r.success_rate_pct}%`,
-                        background: r.success_rate_pct >= 80 ? '#00875A' : r.success_rate_pct >= 50 ? '#E6A817' : '#D32F2F',
-                        transition: 'width 0.6s ease',
-                      }} />
-                    </div>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ss-navy)', width: 36, textAlign: 'right', flexShrink: 0 }}>{r.success_rate_pct}%</span>
-                  </div>
-                </td>
-                <td style={{ padding: '12px 14px', color: 'var(--text-muted)' }}>{formatDuration(r.avg_duration_ms)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="table-wrap">
+        {pending ? (
+          <div style={{ padding: 16, display: 'grid', gap: 14 }} aria-hidden="true">
+            {[0, 1, 2].map(i => <span key={i} className="skel skel--block" />)}
+          </div>
+        ) : !hasData ? (
+          <div className="state">
+            <Icon name="wifi-off" />
+            <p className="state__title">SOP statistics unavailable</p>
+            <p className="state__body">Nothing is shown here until the agent API responds.</p>
+          </div>
+        ) : sorted.length === 0 ? (
+          <div className="state">
+            <Icon name="book" />
+            <p className="state__title">No SOP has run yet</p>
+            <p className="state__body">Statistics appear after the agent executes its first SOP against an incident.</p>
+          </div>
+        ) : (
+          <div className="table-scroll" tabIndex={0} role="region" aria-label="SOP performance table">
+            <table className="dtable dtable--sops" role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <SortHeader col="sop_id" label="SOP" {...sortProps} />
+                  <SortHeader col="sop_title" label="Title" {...sortProps} />
+                  <SortHeader col="total_runs" label="Runs" className="num" {...sortProps} />
+                  <SortHeader col="resolved_count" label="Resolved" className="num" {...sortProps} />
+                  <SortHeader col="escalated_count" label="Escalated" className="num" {...sortProps} />
+                  <SortHeader col="success_rate_pct" label="Resolution rate" {...sortProps} />
+                  <SortHeader col="avg_duration_ms" label="Avg duration" className="num" {...sortProps} />
+                </tr>
+              </thead>
+              <tbody role="rowgroup">
+                {sorted.map(r => (
+                  <tr role="row" key={r.sop_id}>
+                    <td role="cell" className="mono" data-label="SOP" style={{ fontWeight: 600, color: 'var(--ss-blue)', whiteSpace: 'nowrap' }}>{r.sop_id}</td>
+                    <td role="cell" className="c-title clip" data-label="Title" title={r.sop_title}>{r.sop_title}</td>
+                    <td role="cell" className="num" data-label="Runs">{r.total_runs}</td>
+                    <td role="cell" className="num" data-label="Resolved">{r.resolved_count}</td>
+                    <td role="cell" className="num" data-label="Escalated">{r.escalated_count}</td>
+                    <td role="cell" className="c-rate" data-label="Resolution rate">
+                      <div className="progress">
+                        <div className="progress__track" aria-hidden="true">
+                          <div
+                            className="progress__fill"
+                            style={{
+                              transform: `scaleX(${Math.min(Math.max(r.success_rate_pct, 0), 100) / 100})`,
+                              background: rateColor(r.success_rate_pct),
+                            }}
+                          />
+                        </div>
+                        <span className="progress__value">{r.success_rate_pct}%</span>
+                      </div>
+                    </td>
+                    <td role="cell" className="num" data-label="Avg duration">{formatDuration(r.avg_duration_ms)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </div>
   )

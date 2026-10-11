@@ -1,69 +1,129 @@
 export function formatDuration(ms) {
-  if (!ms && ms !== 0) return '—'
-  if (ms < 1000) return `${Math.round(ms)}ms`
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+  if (ms === null || ms === undefined || Number.isNaN(ms)) return '—'
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)} s`
   const m = Math.floor(ms / 60000)
   const s = Math.round((ms % 60000) / 1000)
-  return `${m}m ${s}s`
+  return `${m} m ${s} s`
+}
+
+export function formatUptime(seconds) {
+  if (seconds === null || seconds === undefined || Number.isNaN(seconds)) return '—'
+  const s = Math.max(0, Math.floor(seconds))
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (d > 0) return `${d} d ${h} h`
+  if (h > 0) return `${h} h ${m} m`
+  if (m > 0) return `${m} m`
+  return `${s} s`
+}
+
+const PRIORITY_NAMES = { 1: 'Critical', 2: 'High', 3: 'Moderate', 4: 'Low', 5: 'Planning' }
+
+export function priorityNumber(n) {
+  const p = Number(n)
+  return Number.isInteger(p) && p >= 1 && p <= 5 ? p : null
 }
 
 export function formatPriority(n) {
-  const map = { 1: 'P1 Critical', 2: 'P2 High', 3: 'P3 Moderate', 4: 'P4 Low', 5: 'P5 Planning' }
-  return map[n] || `P${n}`
-}
-
-export function priorityColor(n) {
-  const map = { 1: '#ef4444', 2: '#f97316', 3: '#facc15', 4: '#22c55e', 5: '#8b9cc8' }
-  return map[n] || '#8b9cc8'
+  const p = priorityNumber(n)
+  return p ? `P${p} ${PRIORITY_NAMES[p]}` : n ? `P${n}` : '—'
 }
 
 export function formatRelativeTime(ts) {
   if (!ts) return ''
-  const diff = (Date.now() - new Date(ts).getTime()) / 1000
-  if (diff < 5)  return 'just now'
-  if (diff < 60) return `${Math.round(diff)}s ago`
-  if (diff < 3600) return `${Math.round(diff / 60)}m ago`
-  if (diff < 86400) return `${Math.round(diff / 3600)}h ago`
+  const t = new Date(ts).getTime()
+  if (Number.isNaN(t)) return ''
+  const diff = (Date.now() - t) / 1000
+  if (diff < 5) return 'just now'
+  if (diff < 60) return `${Math.round(diff)} s ago`
+  if (diff < 3600) return `${Math.round(diff / 60)} min ago`
+  if (diff < 86400) return `${Math.round(diff / 3600)} h ago`
   return new Date(ts).toLocaleDateString()
 }
 
 export function formatTimestamp(ts) {
   if (!ts) return '—'
-  return new Date(ts).toLocaleString()
+  const d = new Date(ts)
+  return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString()
+}
+
+export function formatClock(ms) {
+  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+}
+
+const OUTCOME_LABELS = {
+  resolved: 'Resolved',
+  escalated: 'Escalated',
+  failed: 'Failed',
+  partial: 'Partial',
+}
+
+export function outcomeTone(s) {
+  const key = (s || '').toLowerCase()
+  return OUTCOME_LABELS[key] ? key : 'neutral'
 }
 
 export function outcomeLabel(s) {
-  return (s || '').toUpperCase()
+  const key = (s || '').toLowerCase()
+  return OUTCOME_LABELS[key] || (s ? String(s) : 'Unknown')
 }
 
-export function outcomeColor(s) {
-  switch ((s || '').toLowerCase()) {
-    case 'resolved':  return { bg: '#e8f5ee', text: '#00875A', border: '#b2dfcb' }
-    case 'escalated': return { bg: '#fff3e0', text: '#C35109', border: '#ffd5a8' }
-    case 'partial':   return { bg: '#fff8e1', text: '#b45309', border: '#fde68a' }
-    case 'failed':    return { bg: '#fdecea', text: '#D32F2F', border: '#f5b8b2' }
-    default:          return { bg: '#eceef5', text: '#3a4470', border: '#dde0ec' }
-  }
+const STEP_LABELS = {
+  SPLUNK_SEARCH: 'Splunk search',
+  MQ_CHECK: 'MQ check',
+  FILE_CHECK: 'File check',
+  AUTOSYS_STATUS: 'Autosys status',
+  DYNATRACE_VM_CHECK: 'Dynatrace VM check',
+  DYNATRACE_METRICS: 'Dynatrace metrics',
+  WEB_UI_CHECK: 'Web UI check',
+  MAINFRAME_CHECK: 'Mainframe check',
+  DECISION: 'Decision',
+  NOTE: 'Note',
 }
 
-export function eventIcon(type) {
-  switch (type) {
-    case 'incident_received':  return 'inbox'
-    case 'sop_matched':        return 'auto_awesome'
-    case 'step_executing':     return 'play_circle'
-    case 'step_done':          return 'check_circle'
-    case 'incident_resolved':  return 'verified'
-    case 'incident_escalated': return 'escalator_warning'
-    default:                   return 'bolt'
-  }
+function sentenceCase(s) {
+  const t = String(s).replace(/[_-]+/g, ' ').trim().toLowerCase()
+  return t ? t[0].toUpperCase() + t.slice(1) : ''
 }
 
-export function eventColor(type) {
-  switch (type) {
-    case 'incident_resolved':  return '#22c55e'
-    case 'incident_escalated': return '#f97316'
-    case 'step_done':          return '#22d3ee'
-    case 'sop_matched':        return '#6366f1'
-    default:                   return '#8b9cc8'
-  }
+export function stepLabel(type) {
+  const key = (type || '').toUpperCase()
+  return STEP_LABELS[key] || sentenceCase(type || 'Step')
+}
+
+const STEP_STATUS_LABELS = { success: 'Passed', fail: 'Failed', skip: 'Skipped', escalated: 'Escalated' }
+export function stepStatusLabel(status) {
+  const key = (status || '').toLowerCase()
+  return STEP_STATUS_LABELS[key] || sentenceCase(status || 'unknown')
+}
+export function stepStatusTone(status) {
+  const key = (status || '').toLowerCase()
+  return STEP_STATUS_LABELS[key] ? key : 'skip'
+}
+
+const REASON_LABELS = {
+  no_sop: 'No SOP matched',
+  no_sop_ai: 'No SOP matched (AI)',
+  low_confidence: 'Low SOP confidence',
+  low_confidence_ai: 'Low SOP confidence (AI)',
+  sop_execution: 'SOP step failed',
+}
+
+/** For metric label keys such as `no_sop`. */
+export function reasonLabel(key) {
+  return REASON_LABELS[key] || sentenceCase(key || 'unknown')
+}
+
+/** For event payloads, where `reason` may be a key or already free text; free text is left as written. */
+export function escalationReasonText(reason) {
+  return REASON_LABELS[reason] || reason || 'no reason given'
+}
+
+/** CSV field with RFC 4180 quoting; leading = + - @ are neutralised to stop spreadsheet formula injection. */
+export function csvField(value) {
+  let s = value === null || value === undefined ? '' : String(value)
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`
+  return `"${s.replace(/"/g, '""')}"`
 }

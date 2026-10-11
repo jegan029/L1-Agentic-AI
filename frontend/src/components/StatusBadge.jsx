@@ -1,23 +1,18 @@
-import { outcomeColor, outcomeLabel } from '../utils/formatters'
+import { outcomeLabel, outcomeTone, priorityNumber, formatPriority } from '../utils/formatters'
 
 export default function StatusBadge({ outcome }) {
-  const { bg, text, border } = outcomeColor(outcome)
+  return <span className={`badge badge--${outcomeTone(outcome)}`}>{outcomeLabel(outcome)}</span>
+}
+
+/** "P2" with the full priority name available to assistive tech and on hover. */
+export function PriorityBadge({ value }) {
+  const p = priorityNumber(value)
+  if (!p) return <span className="muted">—</span>
+  const full = formatPriority(p)
   return (
-    <span style={{
-      display: 'inline-flex',
-      alignItems: 'center',
-      padding: '2px 8px',
-      borderRadius: 2,
-      fontSize: 10,
-      fontWeight: 700,
-      letterSpacing: '0.07em',
-      background: bg,
-      color: text,
-      border: `1px solid ${border}`,
-      whiteSpace: 'nowrap',
-      textTransform: 'uppercase',
-    }}>
-      {outcomeLabel(outcome)}
+    <span className={`prio prio--${p}`} title={full}>
+      P{p}
+      <span className="sr-only"> {full.slice(3)}</span>
     </span>
   )
 }

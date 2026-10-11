@@ -1,11 +1,11 @@
 import { useState, useLayoutEffect, useId } from 'react'
 
 // Series are told apart by line pattern and marker shape as well as colour (WCAG 1.4.1).
-// "Escalated" here is the backend's bucket: escalated + partial + failed.
+// "Escalated" here is the backend's bucket: every outcome that needed a person.
 const SERIES = [
-  { key: 'received',  label: 'Received',            color: 'var(--ss-blue)',          dash: null,  marker: 'circle' },
+  { key: 'received',  label: 'Received',            color: 'var(--brand-blue)',          dash: null,  marker: 'circle' },
   { key: 'resolved',  label: 'Resolved',            color: 'var(--resolved-solid)',   dash: '7 5', marker: 'square' },
-  { key: 'escalated', label: 'Escalated or failed', color: 'var(--escalated-solid)',  dash: '2 5', marker: 'diamond' },
+  { key: 'escalated', label: 'Escalated or needs human', color: 'var(--escalated-solid)',  dash: '2 5', marker: 'diamond' },
 ]
 
 const H = 190
@@ -134,7 +134,7 @@ export default function TrendChart({ data }) {
       <details className="chart-table">
         <summary>View as table</summary>
         <table>
-          <caption>Daily incidents, UTC. “Escalated or failed” also counts partial outcomes.</caption>
+          <caption>Daily incidents, UTC. “Escalated or needs human” counts every incident a person had to pick up.</caption>
           <thead>
             <tr>
               <th scope="col">Day</th>

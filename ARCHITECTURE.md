@@ -1,5 +1,13 @@
 # L1 Virtual Engineer Agent — Architecture & Design Document
 
+> **Notice.** This document predates Phase 1 of the product work and is only partly
+> current. The CrewAI pipeline and the LLM tool-calling executor it describes have been
+> removed; there is one deterministic engine, and a model can only help rank SOP
+> candidates. Outcomes are now `resolved` (requires a passed VERIFY step), `escalated`,
+> `needs_human` and `aborted`. Every route except `/health` needs credentials, and the
+> SOP editor exists only in demo mode. Where this document disagrees with
+> [README.md](README.md) or [docs/](docs/), those are correct.
+
 ## 1. Overview
 
 The L1 Virtual Engineer Agent automates L1 incident triage and resolution by:
@@ -345,13 +353,13 @@ All escalation paths funnel through a single `escalate_to_l2()` coroutine
 
 ```json
 {
-  "default_team": { "name": "L2-General", "email": "l2-general@statestreet.com" },
+  "default_team": { "name": "L2-General", "email": "l2-general@example.com" },
   "ci_mappings": {
-    "DB*":      { "name": "L2-Database",     "email": "l2-database@statestreet.com" },
-    "MQ*":      { "name": "L2-Middleware",   "email": "l2-middleware@statestreet.com" },
-    "APP*":     { "name": "L2-AppSupport",   "email": "l2-appsupport@statestreet.com" },
-    "MF*":      { "name": "L2-Mainframe",    "email": "l2-mainframe@statestreet.com" },
-    "AUTOSYS*": { "name": "L2-BatchScheduling", "email": "l2-batch@statestreet.com" }
+    "DB*":      { "name": "L2-Database",     "email": "l2-database@example.com" },
+    "MQ*":      { "name": "L2-Middleware",   "email": "l2-middleware@example.com" },
+    "APP*":     { "name": "L2-AppSupport",   "email": "l2-appsupport@example.com" },
+    "MF*":      { "name": "L2-Mainframe",    "email": "l2-mainframe@example.com" },
+    "AUTOSYS*": { "name": "L2-BatchScheduling", "email": "l2-batch@example.com" }
   }
 }
 ```
@@ -375,7 +383,7 @@ Checks performed:
   [FAIL] step-3: Autosys job status - Connection timeout
 
 Action needed: Verify Autosys connectivity; review job BATCH_PAYMENT_001
-Routed to: L2-Middleware (l2-middleware@statestreet.com)
+Routed to: L2-Middleware (l2-middleware@example.com)
 ```
 
 ## 8. SOP Schema

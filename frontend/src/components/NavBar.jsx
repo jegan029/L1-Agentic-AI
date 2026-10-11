@@ -23,7 +23,7 @@ export default function NavBar({ activePage }) {
   return (
     <>
       <div className="utilbar">
-        <span className="utilbar__org">{brand.orgBanner}</span>
+        <span className="utilbar__org">{brand.orgBanner || brand.product}</span>
         <ConnectionStatus />
       </div>
 

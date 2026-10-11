@@ -53,16 +53,28 @@ export function formatClock(ms) {
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+// Terminal outcomes of a run. `failed` and `partial` only appear in history recorded
+// before outcomes became explicit; both meant a person had to pick the incident up.
 const OUTCOME_LABELS = {
   resolved: 'Resolved',
   escalated: 'Escalated',
-  failed: 'Failed',
-  partial: 'Partial',
+  needs_human: 'Needs human',
+  aborted: 'Stopped',
+  failed: 'Needs human',
+  partial: 'Needs human',
+}
+
+const OUTCOME_TONES = {
+  resolved: 'resolved',
+  escalated: 'escalated',
+  needs_human: 'failed',
+  aborted: 'failed',
+  failed: 'failed',
+  partial: 'failed',
 }
 
 export function outcomeTone(s) {
-  const key = (s || '').toLowerCase()
-  return OUTCOME_LABELS[key] ? key : 'neutral'
+  return OUTCOME_TONES[(s || '').toLowerCase()] || 'neutral'
 }
 
 export function outcomeLabel(s) {
@@ -93,7 +105,7 @@ export function stepLabel(type) {
   return STEP_LABELS[key] || sentenceCase(type || 'Step')
 }
 
-const STEP_STATUS_LABELS = { success: 'Passed', fail: 'Failed', skip: 'Skipped', escalated: 'Escalated' }
+const STEP_STATUS_LABELS = { success: 'Passed', fail: 'Failed', skip: 'Skipped', escalated: 'Escalated', error: 'Could not run' }
 export function stepStatusLabel(status) {
   const key = (status || '').toLowerCase()
   return STEP_STATUS_LABELS[key] || sentenceCase(status || 'unknown')

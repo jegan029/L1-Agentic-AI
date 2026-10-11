@@ -11,8 +11,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.txt requirements-connectors.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-connectors.txt
 
 # Copy application code
 COPY src/ src/
@@ -27,6 +27,10 @@ USER l1agent
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
+
+# The listener binds to loopback unless told otherwise. In a container it must
+# accept connections from the pod network; credentials are still mandatory.
+ENV AGENT_WEBHOOK_HOST=0.0.0.0
 
 # Default entry point
 ENTRYPOINT ["python", "-m", "src.l1_agent.main"]

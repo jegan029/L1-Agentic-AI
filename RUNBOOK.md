@@ -1,4 +1,12 @@
-# State Street L1 Engineer Agent — Operational Runbook
+# L1 Engineer Agent — Operational Runbook
+
+> **Notice.** This document predates Phase 1 of the product work and is only partly
+> current. The CrewAI pipeline and the LLM tool-calling executor it describes have been
+> removed; there is one deterministic engine, and a model can only help rank SOP
+> candidates. Outcomes are now `resolved` (requires a passed VERIFY step), `escalated`,
+> `needs_human` and `aborted`. Every route except `/health` needs credentials, and the
+> SOP editor exists only in demo mode. Where this document disagrees with
+> [README.md](README.md) or [docs/](docs/), those are correct.
 
 ## 1. Deployment
 

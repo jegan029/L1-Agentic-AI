@@ -229,3 +229,35 @@ There is no live ServiceNow, Autosys, Splunk, Dynatrace, IBM MQ, mainframe, iden
 - Real identity provider behaviour for OIDC and SAML, including group claim formats.
 - PostgreSQL row level security under the customer's chosen connection pooler.
 - Performance and queue behaviour at production incident volumes.
+
+## 5. Phase 1 record
+
+Delivered on branch `phase-1/correctness-and-safety`, based on `master`.
+
+Decisions applied (the recommendations in section 2 were accepted): D1 base on `master` with the local frontend redesign committed first on `wip/frontend-redesign`; D2 history left untouched; D3 CrewAI removed.
+
+Deviations from the plan above
+
+| Item | What happened |
+|---|---|
+| `thilak-feature-branch` (`db38e1f`) | Not merged. Its backend changes were NVIDIA endpoint logging and a keyword-matcher override inside the AI path, neither of which survives ADR 0001. Its frontend changes (AI reasoning tab, terminal-style activity feed, a different navigation bar) overlap the redesign in five files and were left for a human to reconcile. |
+| Legacy `ARCHITECTURE.md` and `RUNBOOK.md` | Customer name removed and a currency notice added. They were not rewritten and still describe removed modes in places. `README.md` was rewritten. |
+| Requirements | Split into `requirements.txt` (runtime), `requirements-dev.txt` and `requirements-connectors.txt` instead of one file. |
+| Demo mode ServiceNow | Demo mode now uses an in-memory ServiceNow stand-in; before, it called the real client with an empty URL and logged an error per note. |
+| Polling in demo mode | Disabled, for the same reason. |
+
+Test expectations changed, as announced
+
+| Test | Before | Now | Reason |
+|---|---|---|---|
+| `test_executor.py`: note, MQ, Splunk, Autosys, file, decision, multi-step | RESOLVED after check-only steps | ESCALATED, through an explicit terminal step | Defect 5: nothing was verified |
+| `test_executor.py::test_missing_adapter_*` | ESCALATED | NEEDS_HUMAN | A missing connector is an engine condition, not an SOP routing decision |
+| `test_executor.py::test_unknown_step_type_*` | FAILED | NEEDS_HUMAN | FAILED no longer exists; the SOP is rejected before it starts |
+| `test_incident_lifecycle.py::test_ai_mode_processes_incident` | RESOLVED, ESCALATED or PARTIAL | ESCALATED | Tightened; PARTIAL no longer exists |
+| `test_dynatrace_memory_scenario.py` step count | 8 | 10 | Sample SOP gained VERIFY and explicit terminals |
+| `test_confidence_threshold.py`, `test_models.py` | Built RESOLVED summaries with no verification | Supply `verified_by` | The summary type now refuses the old construction |
+| `test_analyzer.py` | unchanged | unchanged | The rationale text was reworded to keep the assertion true without echoing model output |
+
+Tests removed with the code they covered: `tests/unit/ai/test_ai_executor.py` (7 tests), nine investigation-tool cases in `test_tool_definitions.py`, one in `test_mock_llm.py` (replaced by a test that the mock makes no operational tool call).
+
+Not done in Phase 1, by design: persistence, tenancy, SSO and roles, audit log, connector SDK, SOP review workflow, write actions, redaction evaluation corpus. See phases 2 to 5.

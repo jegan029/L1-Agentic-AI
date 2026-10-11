@@ -132,7 +132,7 @@ export default function IncidentFeed() {
               <option value="">All outcomes</option>
               <option value="resolved">Resolved</option>
               <option value="escalated">Escalated</option>
-              <option value="failed">Failed</option>
+              <option value="needs_human">Needs human</option>
               <option value="partial">Partial</option>
             </select>
           </div>

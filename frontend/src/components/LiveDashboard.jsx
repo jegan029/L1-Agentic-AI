@@ -100,7 +100,7 @@ export default function LiveDashboard() {
     () => [
       { label: 'Resolved', value: kpi?.incidents_resolved ?? 0, color: 'var(--resolved-solid)' },
       { label: 'Escalated', value: kpi?.incidents_escalated ?? 0, color: 'var(--escalated-solid)' },
-      { label: 'Failed', value: kpi?.incidents_failed ?? 0, color: 'var(--failed-solid)' },
+      { label: 'Needs human', value: kpi?.incidents_needs_human ?? 0, color: 'var(--failed-solid)' },
     ],
     [kpi],
   )
@@ -148,10 +148,10 @@ export default function LiveDashboard() {
           note="Needs a person" href="#/incidents" onClick={showOutcome('escalated')}
         />
         <KpiCard
-          label="Failed" icon="x-circle" tone="failed"
-          value={val('incidents_failed')} loading={pending}
-          active={hasData && kpi.incidents_failed > 0}
-          note="Execution errors" href="#/incidents" onClick={showOutcome('failed')}
+          label="Needs human" icon="x-circle" tone="failed"
+          value={val('incidents_needs_human')} loading={pending}
+          active={hasData && kpi.incidents_needs_human > 0}
+          note="Agent could not continue" href="#/incidents" onClick={showOutcome('needs_human')}
         />
         <KpiCard
           label="Auto-resolved" icon="check-circle"

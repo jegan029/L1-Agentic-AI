@@ -2,7 +2,7 @@
 
 > **Engineering input for review by a compliance professional.** This document is written by engineering. It is not legal advice, not an audit opinion, and not a claim of certification, attestation or conformity with any framework named here. The product holds no certification. Framework references are given at criterion, control or article level from engineering's reading and must be checked against the current published texts by a qualified reviewer before any customer relies on them.
 
-Status: Phase 0. **No control in this matrix is implemented and evidenced today.** Every row is a planned control with the code and test location it will have. A row moves to "Implemented" only when the code exists and the named test passes in CI; from Phase 6 a CI job enforces that rule by parsing this file.
+Status: after Phase 1. Thirteen rows record what Phase 1 delivered, with the code and test that exist now; most are partial or interim and say so. **Every other row is still a planned control** with the location it will have. All evidence is from mocks and hand-written fixtures. A row moves to "Implemented" only when the code exists and the named test passes in CI; from Phase 6 a CI job enforces that rule by parsing this file.
 
 Related: [target architecture](target-architecture.md), [threat model](threat-model.md), [delivery plan](delivery-plan.md).
 
@@ -19,13 +19,13 @@ Related: [target architecture](target-architecture.md), [threat model](threat-mo
 | Id | Control | Maps to | Code | Test | Status |
 |---|---|---|---|---|---|
 | AC-01 | Users authenticate through the customer's identity provider (OIDC, SAML); no local passwords except one audited break-glass account | SOC 2 CC6.1; ISO A.5.16, A.5.17, A.8.5; ASVS Authentication; SOX logical access | `src/l1_agent/auth/` | `tests/security/test_authn.py` | Planned (2) |
-| AC-02 | Every route, including SSE, metrics and health detail, declares a permission; start-up fails otherwise | SOC 2 CC6.1, CC6.3; ISO A.5.15, A.8.3; ASVS Access Control | `src/l1_agent/api/registry.py` | `tests/security/test_route_permissions.py` | Planned (2) |
+| AC-02 | Every route, including SSE, metrics and health detail, declares a permission; start-up fails otherwise | SOC 2 CC6.1, CC6.3; ISO A.5.15, A.8.3; ASVS Access Control | `src/l1_agent/api/security.py` | `tests/unit/security/test_http_access.py` | Interim (1): shared bearer tokens on every route, no roles. Planned (2) |
 | AC-03 | Seven roles with a fixed role-to-permission table; role assignment from identity provider groups | SOC 2 CC6.2, CC6.3; ISO A.5.18, A.8.2; SOX logical access | `src/l1_agent/auth/rbac.py` | `tests/security/test_rbac_matrix.py` | Planned (2) |
 | AC-04 | Scoped, expiring, hashed API tokens for machine callers | SOC 2 CC6.1; ISO A.5.17; ASVS API | `src/l1_agent/auth/tokens.py` | `tests/security/test_api_tokens.py` | Planned (2) |
 | AC-05 | Tenant isolation by row level security with a non-owner application role | SOC 2 CC6.1, C1.1; ISO A.8.3, A.5.23; ASVS Access Control | `src/l1_agent/db/migrations/`, `src/l1_agent/tenancy/` | `tests/security/test_tenant_isolation.py` | Planned (2) |
-| AC-06 | Webhooks authenticated by HMAC with timestamp and replay protection | SOC 2 CC6.6; ISO A.8.21; ASVS API | `src/l1_agent/connectors/itsm/servicenow/webhook.py` | `tests/security/test_webhook_signature.py` | Planned (1 interim, 3) |
+| AC-06 | Webhooks authenticated by HMAC with timestamp and replay protection | SOC 2 CC6.6; ISO A.8.21; ASVS API | `src/l1_agent/api/security.py` | `tests/unit/security/test_http_access.py` | Interim (1): one shared secret per deployment. Planned (3) |
 | AC-07 | Sessions are server-side with secure cookie attributes; CSRF tokens on state-changing requests | ASVS Session Management; ISO A.8.26 | `src/l1_agent/auth/sessions.py` | `tests/security/test_csrf.py` | Planned (2) |
-| AC-08 | Rate limits, body size limits, strict CORS, security headers | SOC 2 CC6.6; ISO A.8.20, A.8.26; ASVS Configuration | `src/l1_agent/api/middleware.py` | `tests/security/test_http_hardening.py` | Planned (2) |
+| AC-08 | Rate limits, body size limits, strict CORS, security headers | SOC 2 CC6.6; ISO A.8.20, A.8.26; ASVS Configuration | `src/l1_agent/api/security.py`, `src/l1_agent/main.py` | `tests/unit/security/test_http_access.py` | Partial (1): body size limit, listed-origin CORS, response headers. No rate limiting. Planned (2) |
 
 ### Segregation of duties and change management
 
@@ -42,22 +42,22 @@ Related: [target architecture](target-architecture.md), [threat model](threat-mo
 
 | Id | Control | Maps to | Code | Test | Status |
 |---|---|---|---|---|---|
-| EX-01 | No outcome defaults; RESOLVED requires a passed verification after the last action | SOC 2 PI1.2, PI1.4; AI Act Art. 15; RMF Measure | `src/l1_agent/engine/state_machine.py` | `tests/engine/test_no_unverified_resolve.py` | Planned (1) |
-| EX-02 | SOPs are statically validated before publication and before load | SOC 2 PI1.2; ISO A.8.26 | `src/l1_agent/sop/validator.py` | `tests/sop/test_validator_properties.py` | Planned (1) |
+| EX-01 | No outcome defaults; RESOLVED requires a passed verification after the last action | SOC 2 PI1.2, PI1.4; AI Act Art. 15; RMF Measure | `src/l1_agent/engine/state_machine.py`, `src/l1_agent/engine/executor.py`, `src/l1_agent/models/evidence.py` | `tests/unit/engine/test_no_unverified_resolve.py` | Implemented (1), in memory. Database constraint Planned (2) |
+| EX-02 | SOPs are statically validated before publication and before load | SOC 2 PI1.2; ISO A.8.26 | `src/l1_agent/sop/validator.py` | `tests/unit/engine/test_expressions_and_parameters.py`, `tests/unit/engine/test_no_unverified_resolve.py` | Implemented (1) at load and before execution. At publication Planned (3) |
 | EX-03 | Idempotent intake: one run per incident enforced by unique constraint | SOC 2 PI1.3; ISO A.8.26 | `src/l1_agent/db/models.py` | `tests/engine/test_concurrent_claim.py` | Planned (2) |
 | EX-04 | Every write requires a policy decision; the write entry point cannot be called without a grant | SOC 2 CC6.1, CC8.1; ISO A.8.2; LLM06; AI Act Art. 14 | `src/l1_agent/actions/policy.py`, `src/l1_agent/connectors/sdk/base.py` | `tests/actions/test_no_write_without_decision.py` | Planned (4) |
 | EX-05 | Approvals bound to action and parameter hash, with expiry and approver identity | SOC 2 CC8.1; ISO A.5.3; AI Act Art. 14; SOX change management | `src/l1_agent/actions/approvals.py` | `tests/actions/test_approval_binding.py` | Planned (4) |
 | EX-06 | Autonomy levels per tenant and SOP; new tenants start in shadow | AI Act Art. 14; RMF Manage; 42001 Annex A (use of AI systems) | `src/l1_agent/actions/autonomy.py` | `tests/actions/test_autonomy_levels.py` | Planned (4) |
 | EX-07 | Kill switch, global and per tenant, checked in policy, worker and runner | AI Act Art. 14; RMF Manage 2.4; DORA Art. 11 | `src/l1_agent/actions/killswitch.py` | `tests/actions/test_kill_switch.py` | Planned (4) |
 | EX-08 | Action pipeline: pre-checks, dry run, execute, verify, rollback | SOC 2 PI1.4, CC7.4; ISO A.8.32 | `src/l1_agent/actions/pipeline.py` | `tests/actions/test_autosys_force_start.py` | Planned (4) |
-| EX-09 | Connector parameters validated against closed schemas and allow lists; empty list denies | ISO A.8.26, A.8.28; ASVS Validation; LLM05 | `src/l1_agent/connectors/sdk/validation.py` | `tests/connectors/test_allowlist_empty_denies.py` | Planned (1, 3) |
+| EX-09 | Connector parameters validated against closed schemas and allow lists; empty list denies | ISO A.8.26, A.8.28; ASVS Validation; LLM05 | `src/l1_agent/adapters/schemas.py`, `src/l1_agent/engine/parameters.py`, adapters | `tests/unit/security/test_hardening.py`, `tests/unit/engine/test_expressions_and_parameters.py` | Partial (1): closed schemas, typed parameters, deployment-level allow lists. Tenant allow lists Planned (3) |
 | EX-10 | Connector manifest lint: write capabilities declare tier, scopes, verify and rollback | SOC 2 CC8.1; ISO A.8.25 | `src/l1_agent/connectors/sdk/lint.py` | `tests/connectors/test_manifest_lint.py` | Planned (3) |
 
 ### Model governance
 
 | Id | Control | Maps to | Code | Test | Status |
 |---|---|---|---|---|---|
-| ML-01 | The model has no tool access; output is parsed against a closed schema into one of four advisor results | LLM01, LLM05, LLM06; AI Act Art. 14, 15; RMF Manage | `src/l1_agent/advisor/` | `evals/injection/`, `tests/advisor/test_output_schema.py` | Planned (1, 5) |
+| ML-01 | The model has no tool access; output is parsed against a closed schema into one of four advisor results | LLM01, LLM05, LLM06; AI Act Art. 14, 15; RMF Manage | `src/l1_agent/ai/`, `src/l1_agent/engine/incident_processor.py` | `tests/unit/test_incident_processor.py`, `tests/unit/ai/test_tool_definitions.py`, `tests/unit/security/test_hardening.py` | Implemented (1) for SOP ranking, the only model task. Other advisor tasks and the injection corpus Planned (5) |
 | ML-02 | Redaction of secrets and personal data before any provider request | LLM02; GDPR Art. 5(1)(c), 25, 32; ISO A.8.11, A.8.12 | `src/l1_agent/advisor/redaction.py` | `tests/advisor/test_redaction_corpus.py` | Planned (5) |
 | ML-03 | Per-tenant provider allow list, region and retention settings enforced in code | GDPR Art. 28, 44 to 49; DORA Art. 28; ISO A.5.19, A.5.23; LLM03 | `src/l1_agent/advisor/provider.py` | `tests/advisor/test_provider_allowlist.py` | Planned (5) |
 | ML-04 | Token and cost budgets per incident and tenant | LLM10 | `src/l1_agent/advisor/budgets.py` | `tests/advisor/test_budgets.py` | Planned (5) |
@@ -75,7 +75,7 @@ Related: [target architecture](target-architecture.md), [threat model](threat-mo
 | AU-03 | One run can be reconstructed from the audit log alone | SOC 2 CC7.3; ISO A.5.28; DORA Art. 17 | `src/l1_agent/audit/reconstruct.py` | `tests/audit/test_reconstruct_without_ops_tables.py` | Planned (2) |
 | AU-04 | Export to SIEM (Splunk HEC, syslog, OpenTelemetry) with gap detection | SOC 2 CC7.2; ISO A.8.16; DORA Art. 10 | `src/l1_agent/audit/export/` | `tests/audit/test_export_contract.py` | Planned (2) |
 | AU-05 | Per-tenant retention, legal hold, write-once evidence store | SOC 2 C1.2; ISO A.5.33, A.8.10; GDPR Art. 5(1)(e) | `src/l1_agent/audit/retention.py`, `evidence_store.py` | `tests/audit/test_retention_and_hold.py` | Planned (2) |
-| AU-06 | Operational logs redact message text and exclude secrets and model output | SOC 2 CC6.7; ISO A.8.11, A.8.15; ASVS Logging; LLM02 | `src/l1_agent/utils/logging.py` | `tests/security/test_log_redaction.py` | Partial; Planned (1) |
+| AU-06 | Operational logs redact message text and exclude secrets and model output | SOC 2 CC6.7; ISO A.8.11, A.8.15; ASVS Logging; LLM02 | `src/l1_agent/utils/logging.py` | `tests/unit/security/test_hardening.py` | Implemented (1). Pattern based |
 | AU-07 | Audit viewer restricted to the auditor role; summary mirrored to ITSM work notes | SOC 2 CC6.3; ISO A.8.3 | `src/l1_agent/api/audit.py`, `frontend/src/` | `tests/security/test_rbac_matrix.py` | Planned (2, 4) |
 
 ### Cryptography, secrets and transport
@@ -83,7 +83,7 @@ Related: [target architecture](target-architecture.md), [threat model](threat-mo
 | Id | Control | Maps to | Code | Test | Status |
 |---|---|---|---|---|---|
 | CR-01 | Credentials held as references into a secrets manager; never in the database or process environment; rotation without restart | SOC 2 CC6.1, CC6.7; ISO A.5.17, A.8.24; ASVS Configuration | `src/l1_agent/connectors/sdk/secrets.py` | `tests/connectors/test_secret_rotation.py` | Planned (3) |
-| CR-02 | TLS verification on for all connectors; cannot be disabled outside demo mode | SOC 2 CC6.7; ISO A.8.24, A.8.21; ASVS Communications | `src/l1_agent/connectors/sdk/http.py` | `tests/connectors/test_tls_enforced.py` | Planned (1) |
+| CR-02 | TLS verification on for all connectors; cannot be disabled outside demo mode | SOC 2 CC6.7; ISO A.8.24, A.8.21; ASVS Communications | `src/l1_agent/config/settings.py`, adapters | `tests/unit/security/test_hardening.py` | Implemented (1) for the existing adapters. Moves into the SDK HTTP client in Phase 3 |
 | CR-03 | Mutual TLS and signed, single-use action grants between control plane and runner | SOC 2 CC6.6, CC6.7; ISO A.8.24 | `src/l1_agent/runner/` | `tests/runner/test_grant_verification.py` | Planned (4, 6) |
 | CR-04 | Encryption at rest for database, evidence and backups | SOC 2 CC6.1, C1.1; ISO A.8.24, A.8.13; GDPR Art. 32 | `deploy/helm/`, `src/l1_agent/audit/evidence_store.py` | `tests/deploy/test_chart_defaults.py`; platform configuration evidence from the customer | Planned (6) |
 
@@ -93,24 +93,24 @@ Related: [target architecture](target-architecture.md), [threat model](threat-mo
 |---|---|---|---|---|---|
 | SC-01 | Dependencies pinned with hashes | SOC 2 CC8.1; ISO A.8.25, A.8.28; LLM03 | `requirements.lock` | CI job `deps` | Planned (6) |
 | SC-02 | SBOM generated per build | ISO A.8.8, A.5.21; DORA Art. 28 | `.github/workflows/` | CI job `sbom` | Planned (6) |
-| SC-03 | Secret scanning, static analysis, dependency and image scanning as blocking gates | SOC 2 CC7.1; ISO A.8.8, A.8.29; ASVS Malicious Code | `.github/workflows/` | CI jobs | Partial; Planned (1, 6) |
+| SC-03 | Secret scanning, static analysis, dependency and image scanning as blocking gates | SOC 2 CC7.1; ISO A.8.8, A.8.29; ASVS Malicious Code | `.github/workflows/ci.yml` | CI jobs `security-scan` | Partial (1): blocking static analysis and a secret scan are defined. Not yet observed running on the hosted runner. Dependency and image scanning Planned (6) |
 | SC-04 | Signed images; non-root; read-only root filesystem | SOC 2 CC6.8; ISO A.8.9 | `Dockerfile`, `deploy/helm/` | `tests/deploy/test_chart_defaults.py` | Partial; Planned (6) |
-| SC-05 | CI runs on the default branch and on every pull request | SOC 2 CC8.1; ISO A.8.25, A.8.29 | `.github/workflows/ci.yml` | CI itself | Planned (1) |
-| SC-06 | No customer names or real personal data in code, fixtures or tests | ISO A.8.33, A.5.34 | CI deny-list check | CI job `hygiene` | Planned (1) |
+| SC-05 | CI runs on the default branch and on every pull request | SOC 2 CC8.1; ISO A.8.25, A.8.29 | `.github/workflows/ci.yml` | CI itself | Changed (1). Not yet observed running on the hosted runner |
+| SC-06 | No customer names or real personal data in code, fixtures or tests | ISO A.8.33, A.5.34 | `.github/workflows/ci.yml` job `hygiene` | CI job `hygiene` | Implemented (1); needs the `BRANDING_DENYLIST` repository secret. Git history is not covered |
 
 ### Resilience
 
 | Id | Control | Maps to | Code | Test | Status |
 |---|---|---|---|---|---|
 | RS-01 | Durable queue; accepted work survives restart; steps resume without repeating a completed write | SOC 2 A1.2, PI1.3; ISO A.8.14; DORA Art. 11, 12 | `src/l1_agent/queue/` | `tests/engine/test_crash_recovery.py` | Planned (2) |
-| RS-02 | Connector health reports honestly; errors are never reported as healthy | SOC 2 CC7.2; ISO A.8.16 | `src/l1_agent/connectors/sdk/health.py` | `tests/connectors/test_health_honest.py` | Planned (1, 3) |
+| RS-02 | Connector health reports honestly; errors are never reported as healthy | SOC 2 CC7.2; ISO A.8.16 | `src/l1_agent/adapters/dynatrace_adapter.py` | `tests/unit/security/test_hardening.py` | Partial (1): the Dynatrace false-healthy path is fixed. Uniform health reporting Planned (3) |
 | RS-03 | Timeouts, safe retries and circuit breakers on every connector | SOC 2 A1.1; ISO A.8.6 | `src/l1_agent/connectors/sdk/` | `tests/connectors/test_retry_policy.py` | Partial; Planned (3) |
 | RS-04 | Documented backup and restore, including audit chain verification after restore | SOC 2 A1.2, A1.3; ISO A.8.13; DORA Art. 12 | `docs/operator-guide.md` | Restore drill script | Planned (6) |
 | RS-05 | Data export for exit and portability: SOPs, configuration, run history, audit log in documented formats | DORA Art. 28(8), 30; UK PRA SS2/21 exit planning; GDPR Art. 20 where applicable | `src/l1_agent/api/export.py` | `tests/api/test_tenant_export.py` | Planned (6) |
 
-## 3. What exists today
+## 3. What existed before Phase 1
 
-Verified at commit `db38e1f`. None of these is sufficient to mark a row implemented.
+Verified at commit `db38e1f`, kept for the record. Section 2 shows the current position of each of these rows.
 
 | Row | What exists | Why it is only partial |
 |---|---|---|

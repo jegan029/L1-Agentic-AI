@@ -136,7 +136,7 @@ export default function SopPerformance() {
               <tbody role="rowgroup">
                 {sorted.map(r => (
                   <tr role="row" key={r.sop_id}>
-                    <td role="cell" className="mono" data-label="SOP" style={{ fontWeight: 600, color: 'var(--ss-blue)', whiteSpace: 'nowrap' }}>{r.sop_id}</td>
+                    <td role="cell" className="mono" data-label="SOP" style={{ fontWeight: 600, color: 'var(--brand-blue)', whiteSpace: 'nowrap' }}>{r.sop_id}</td>
                     <td role="cell" className="c-title clip" data-label="Title" title={r.sop_title}>{r.sop_title}</td>
                     <td role="cell" className="num" data-label="Runs">{r.total_runs}</td>
                     <td role="cell" className="num" data-label="Resolved">{r.resolved_count}</td>

@@ -43,6 +43,7 @@ from src.l1_agent.api.sops import make_sops_handler
 from src.l1_agent.api.stream import handle_stream
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
 from src.l1_agent.config.settings import Settings
+from src.l1_agent.demo import MockServiceNowClient
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.resolution_memory import ResolutionMemory
@@ -70,7 +71,12 @@ class L1AgentService:
     def __init__(self, settings: Settings) -> None:
         validate_security_config(settings.agent)
         self._settings = settings
-        self._snow_client = ServiceNowClient(settings.servicenow)
+        # Demo mode has no ServiceNow: notes and updates go to an in-memory stand-in.
+        self._snow_client = (
+            MockServiceNowClient()
+            if settings.agent.demo_mode
+            else ServiceNowClient(settings.servicenow)
+        )
         self._sop_matcher = SOPMatcher(settings.agent.sop_confidence_threshold)
         self._sop_parser = SOPParser()
         self._adapters = self._build_adapters(settings)

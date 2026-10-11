@@ -1,0 +1,6 @@
+# Needed only by the real (non-mock) connectors and secrets backends.
+# Install alongside requirements.txt for a non-demo deployment.
+selenium>=4.18.0      # web UI check (also needs Chrome and chromedriver)
+py3270>=0.3.11        # mainframe TN3270 (also needs the x3270 emulator)
+hvac>=2.1.0           # SECRETS_BACKEND=vault
+boto3>=1.34.0         # SECRETS_BACKEND=aws

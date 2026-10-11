@@ -1,0 +1,11 @@
+# Findings reviewed and accepted, one fingerprint per line.
+# Each of these is a made-up value that the log-redaction and settings tests
+# feed in on purpose. Add a line here only after reading the flagged value;
+# do not exclude a path or a rule.
+82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:aws-access-token:245
+82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:generic-api-key:241
+82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:generic-api-key:269
+82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:generic-api-key:294
+82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:generic-api-key:295
+82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:generic-api-key:316
+82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:jwt:247

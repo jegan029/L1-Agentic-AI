@@ -7,7 +7,6 @@ name = "l1-virtual-engineer-agent"
 version = "1.0.0"
 description = "L1 Virtual Engineer Agent - Automated incident triage and resolution using SOPs"
 requires-python = ">=3.11"
-license = {text = "MIT"}
 
 dependencies = [
     "aiohttp>=3.9.0",
@@ -26,7 +25,7 @@ dev = [
 ]
 connectors = [
     "selenium>=4.18.0",
-    "py3270>=0.3.11",
+    "py3270>=0.3.5",
     "hvac>=2.1.0",
     "boto3>=1.34.0",
 ]

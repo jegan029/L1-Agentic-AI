@@ -20,9 +20,18 @@ COPY data/ data/
 
 ENV PYTHONPATH=/app
 
-# Create non-root user
-RUN groupadd -r l1agent && useradd -r -g l1agent -d /app l1agent
+# Create non-root user. It owns data/ because run history is written there.
+RUN groupadd -r l1agent && useradd -r -g l1agent -d /app l1agent && \
+    chown -R l1agent:l1agent /app/data
 USER l1agent
+
+# ─── Demo mode target (docker build --target demo) ───────────────────
+FROM base AS demo
+ENV AGENT_DEMO_MODE=true
+ENTRYPOINT ["python", "-m", "src.l1_agent.demo"]
+
+# ─── Production target. Last, so a plain `docker build .` produces it ─
+FROM base AS production
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
@@ -32,10 +41,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # accept connections from the pod network; credentials are still mandatory.
 ENV AGENT_WEBHOOK_HOST=0.0.0.0
 
-# Default entry point
 ENTRYPOINT ["python", "-m", "src.l1_agent.main"]
-
-# ─── Demo mode target ────────────────────────────────────────────────
-FROM base AS demo
-ENV AGENT_DEMO_MODE=true
-ENTRYPOINT ["python", "-m", "src.l1_agent.demo"]

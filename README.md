@@ -174,7 +174,7 @@ The `/sop-editor/` pages exist only in demo mode. They write SOP files with no r
 ## Tests
 
 ```bash
-pytest tests/ -v
+pytest tests/ -v                         # live model tests are excluded by default
 pytest tests/unit/ --cov=src/l1_agent
 ruff check src/ tests/ && ruff format --check src/ tests/
 ```

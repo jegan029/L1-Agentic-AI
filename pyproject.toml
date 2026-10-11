@@ -38,8 +38,12 @@ l1-agent-demo = "src.l1_agent.demo:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Live provider tests cost money and need a key: run them on purpose with
+#   pytest tests/live -m live_llm -v -s
+addopts = "-m 'not live_llm'"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "live_llm: calls the configured model provider; skipped unless LLM_API_KEY, LLM_ENDPOINT and LLM_MODEL are set",
 ]
 
 [tool.ruff]

@@ -11,9 +11,8 @@ import uvicorn
 from fastapi import FastAPI
 
 from src.l1_agent.actions.service import ActionService
-from src.l1_agent.ai.analyzer import AIAnalyzer
-from src.l1_agent.ai.llm_client import LLMClient
-from src.l1_agent.ai.mock_llm import MockLLMClient
+from src.l1_agent.ai.gateway import ModelGateway
+from src.l1_agent.ai.providers import Provider, build_provider
 from src.l1_agent.api.app import AppContext, create_app
 from src.l1_agent.api.security import demo_open, validate_security_config, webhook_open
 from src.l1_agent.audit.log import Actor
@@ -27,6 +26,7 @@ from src.l1_agent.db.engine import Database
 from src.l1_agent.demo import (
     MockServiceNowClient,
     build_mock_adapters,
+    seed_demo_model_policy,
     seed_demo_policy,
     seed_demo_sops,
 )
@@ -98,17 +98,15 @@ class L1AgentService:
             self._snow_client = MockServiceNowClient()
         self._hub: Optional[ConnectorHub] = None
 
-        # The model only advises on SOP ranking; it never executes anything.
-        self._llm_client: Optional[LLMClient] = None
-        if settings.llm.enabled:
-            if settings.agent.demo_mode and not settings.llm.api_key:
-                self._llm_client = MockLLMClient()
-                logger.info("Model advice enabled (demo: deterministic mock)")
-            elif settings.llm.endpoint and settings.llm.api_key:
-                self._llm_client = LLMClient(settings.llm)
-                logger.info("Model advice enabled (model=%s)", settings.llm.model)
-            else:
-                logger.warning("LLM_ENABLED is true but no endpoint or key is set; model disabled")
+        # The model provider this deployment has, if any (ADR 0009). It only advises,
+        # and whether a tenant uses it at all is that tenant's model policy.
+        key_ref = settings.secret_refs.get("LLM_API_KEY", "")
+
+        async def api_key() -> str:
+            return await self._resolver.get(key_ref)
+
+        self._provider: Optional[Provider] = build_provider(settings, api_key if key_ref else None)
+        self._model: Optional[ModelGateway] = None
 
         self._db: Optional[Database] = None
         self._http: Optional[httpx.AsyncClient] = None
@@ -118,7 +116,7 @@ class L1AgentService:
     # ── Engine ────────────────────────────────────────────────────────
 
     def _build_processor(
-        self, db: Database, hub: ConnectorHub, actions: ActionService
+        self, db: Database, hub: ConnectorHub, actions: ActionService, model: ModelGateway
     ) -> IncidentProcessor:
         settings = self._settings
         agent = settings.agent
@@ -139,8 +137,7 @@ class L1AgentService:
                 actions=actions,
             ),
             confidence_threshold=agent.sop_confidence_threshold,
-            llm_client=self._llm_client,
-            ai_analyzer=AIAnalyzer(self._llm_client) if self._llm_client else None,
+            advisors=model if model.provider is not None else None,
             event_bus=events,
             l2_router=L2Router(Path(agent.l2_routing_path))
             if agent.l2_routing_path
@@ -173,6 +170,7 @@ class L1AgentService:
             # Demo mode starts with the sample SOPs published and one waiting for review.
             await seed_demo_sops(db, tenant_id)
             await seed_demo_policy(db, tenant_id)
+            await seed_demo_model_policy(db, tenant_id)
             logger.info("Demo mode: mock connectors and the sample SOPs")
 
         self._hub = ConnectorHub(
@@ -183,9 +181,15 @@ class L1AgentService:
         )
         # Every write goes through this: policy, approvals, change record, kill switch.
         actions = ActionService(db, self._snow_client, settings.actions)
+        # Every model request goes through this: model policy, redaction, budgets, audit.
+        self._model = ModelGateway(db, self._provider, timeout_seconds=settings.llm.timeout_seconds)
+        if self._provider is not None:
+            logger.info(
+                "Model provider configured: %s (%s)", self._provider.id, self._provider.model
+            )
         runs = RunService(
             db,
-            self._build_processor(db, self._hub, actions),
+            self._build_processor(db, self._hub, actions, self._model),
             actions=actions,
             visibility_timeout_seconds=settings.worker.visibility_timeout_seconds,
             max_attempts=settings.worker.max_attempts,
@@ -211,6 +215,7 @@ class L1AgentService:
             hub=self._hub,
             itsm=self._snow_client,
             actions=actions,
+            model=self._model,
         )
         return self._ctx
 
@@ -219,8 +224,8 @@ class L1AgentService:
 
     async def close(self) -> None:
         await self._snow_client.close()
-        if self._llm_client is not None:
-            await self._llm_client.close()
+        if self._provider is not None:
+            await self._provider.close()
         if self._http is not None:
             await self._http.aclose()
         if self._hub is not None:
@@ -254,7 +259,13 @@ class L1AgentService:
         while not self._stop.is_set():
             try:
                 sources = await ctx.hub.knowledge_sources(ctx.tenant_id, ctx.itsm)
-                for result in await ingest.sync_all(ctx.db, ctx.tenant_id, sources):
+                for result in await ingest.sync_all(
+                    ctx.db,
+                    ctx.tenant_id,
+                    sources,
+                    drafter=ingest.model_drafter(ctx.model, ctx.tenant_id, ctx.hub.registry),
+                    registry=ctx.hub.registry,
+                ):
                     if result.drafts or result.errors:
                         logger.info("Knowledge sync: %s", result.to_dict())
             except Exception as exc:

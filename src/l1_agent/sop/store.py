@@ -45,6 +45,9 @@ from src.l1_agent.sop.validator import validate_sop
 ORIGIN_AUTHORED = "authored"
 ORIGIN_INGESTED = "ingested"
 ORIGIN_SEED = "seed"
+# Steps drafted by a model from a prose article (ADR 0009). Like every draft, it
+# runs only after one person submits it and a different person approves it.
+ORIGIN_MODEL_DRAFTED = "model_drafted"
 MAX_SOURCE_TEXT = 200_000
 MAX_NOTE = 2000
 _KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,99}$")

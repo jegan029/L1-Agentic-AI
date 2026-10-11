@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from enum import Enum
-from typing import TYPE_CHECKING, List, Optional, Set
+from typing import TYPE_CHECKING, Any, List, Optional, Set
 
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.llm_client import LLMClient
@@ -25,7 +25,7 @@ from src.l1_agent.escalation.escalator import escalate_to_l2
 from src.l1_agent.escalation.l2_router import L2Router
 from src.l1_agent.models.evidence import ExecutionOutcome, ExecutionSummary
 from src.l1_agent.models.incident import Incident
-from src.l1_agent.models.sop import SOP
+from src.l1_agent.models.sop import SOP, StepType
 from src.l1_agent.sop.validator import validate_sop
 from src.l1_agent.utils.logging import get_logger, set_correlation_id
 from src.l1_agent.utils.metrics import metrics
@@ -79,7 +79,11 @@ class IncidentProcessor:
         memory: Optional[ResolutionMemory] = None,
         event_bus: Optional["EventPublisher"] = None,
         l2_router: Optional[L2Router] = None,
+        advisors: Any = None,
     ) -> None:
+        # The model gateway (ADR 0009). The service passes one; with it, every model
+        # request for a run goes through the tenant's model policy, redaction and budgets.
+        self._advisors = advisors
         self._snow = snow_client
         self._matcher = sop_matcher
         self._executor = executor
@@ -97,7 +101,19 @@ class IncidentProcessor:
 
     @property
     def ai_enabled(self) -> bool:
-        return self._ai_enabled
+        return self._ai_enabled or self._advisors is not None
+
+    def _advisor(self, incident: Incident, journal: Optional["RunJournal"]) -> Any:
+        """The advisor for this run, when there is a gateway and a run record to count against."""
+        tenant_id = getattr(journal, "tenant_id", None)
+        if self._advisors is None or tenant_id is None:
+            return None
+        return self._advisors.advisor(
+            tenant_id,
+            getattr(journal, "run_id", None),
+            incident.number,
+            personal=[incident.caller],
+        )
 
     async def process_incident(self, incident: Incident) -> ProcessResult:
         """Process a single incident end-to-end."""
@@ -204,6 +220,7 @@ class IncidentProcessor:
             return lost
 
         state = transition(RunState.RECEIVED, RunEvent.START)
+        advisor = self._advisor(incident, journal)
         stored = journal.match if journal else None
         if stored:
             # A resumed run keeps the SOP it started with. Matching again could
@@ -228,7 +245,7 @@ class IncidentProcessor:
                 "[L1 Agent] Incident received. Searching for applicable SOP...\n"
                 f"Category: {incident.category} | CI: {incident.cmdb_ci}",
             )
-            match = await self._match_sop(incident, sops)
+            match = await self._match_sop(incident, sops, advisor)
 
         if not match.sop:
             state = transition(state, RunEvent.NO_SOP)
@@ -290,8 +307,11 @@ class IncidentProcessor:
             sop,
             work_note_callback=self._snow.add_work_note,
             journal=journal,
+            advisor=advisor,
         )
-        return await self._post_conclusion(incident, summary, confidence=match.confidence)
+        return await self._post_conclusion(
+            incident, summary, confidence=match.confidence, advisor=advisor
+        )
 
     # ── Matching ──────────────────────────────────────────────────────
 
@@ -310,23 +330,37 @@ class IncidentProcessor:
                 logger.warning("SOP %s is not executable: %s", sop.sop_id, "; ".join(problems[:5]))
         return usable
 
-    async def _match_sop(self, incident: Incident, sops: List[SOP]) -> MatchResult:
+    async def _match_sop(
+        self, incident: Incident, sops: List[SOP], advisor: Any = None
+    ) -> MatchResult:
         """Match the incident to one of the published SOPs."""
         candidates = self._executable_sops(sops)
         rule_match = self._matcher.match(incident, candidates)
 
-        if not self._ai_enabled or not candidates:
+        if not candidates or (advisor is None and not self._ai_enabled):
             return rule_match
 
         # Model advice. The pick must be one of the candidates and must clear
         # the deterministic threshold on its own score; otherwise it is ignored.
         try:
-            advice = await self._ai_analyzer.select_sop(incident, candidates)
+            if advisor is not None:
+                advice = await advisor.rank(incident, candidates)
+            else:
+                advice = await self._ai_analyzer.select_sop(incident, candidates)
         except Exception as exc:
             logger.warning("Model ranking unavailable; using keyword match: %s", type(exc).__name__)
             return rule_match
+        if advice is None:
+            return rule_match
         picked = advice.sop
         if picked is None or all(picked is not c for c in candidates):
+            return rule_match
+        if picked is not rule_match.sop and any(
+            step.step_type.upper() == StepType.ACTION.value for step in picked.steps
+        ):
+            # A model cannot steer a run into a procedure that changes something. Such an
+            # SOP runs only when it is the best match by the rules alone (ADR 0009).
+            metrics.increment("advisor.rank_ignored", labels={"reason": "sop_makes_a_change"})
             return rule_match
         own_score = self._matcher.match(incident, [picked])
         if own_score.sop is None or own_score.confidence is None:
@@ -385,8 +419,32 @@ class IncidentProcessor:
         )
         return summary
 
+    async def _model_note(
+        self, incident: Incident, summary: ExecutionSummary, advisor: Any
+    ) -> ExecutionSummary:
+        """Add a model-drafted hand-over summary for the engineer who takes over.
+
+        It is written after the outcome is settled and changes nothing about it.
+        """
+        if advisor is None or not summary.step_results:
+            return summary
+        try:
+            drafted = await advisor.interpret(incident, summary)
+        except Exception as exc:
+            logger.warning("Model summary unavailable: %s", type(exc).__name__)
+            return summary
+        if drafted is None:
+            return summary
+        note = drafted.to_note()
+        await self._post_note(incident, note)
+        return replace(summary, model_note=note)
+
     async def _post_conclusion(
-        self, incident: Incident, summary: ExecutionSummary, confidence: float = 0.0
+        self,
+        incident: Incident,
+        summary: ExecutionSummary,
+        confidence: float = 0.0,
+        advisor: Any = None,
     ) -> ExecutionSummary:
         """Update the ITSM, post the final work note and record the outcome.
 
@@ -431,6 +489,7 @@ class IncidentProcessor:
                 f"[L1 Agent] Escalation packet:\n{_format_escalation(packet)}",
             )
             metrics.increment("incidents.escalated", labels={"reason": "sop_execution"})
+            summary = await self._model_note(incident, summary, advisor)
             await escalate_to_l2(
                 incident=incident,
                 summary=summary,
@@ -441,6 +500,8 @@ class IncidentProcessor:
                 snow_client=self._snow,
             )
         else:
+            if summary.outcome == ExecutionOutcome.NEEDS_HUMAN:
+                summary = await self._model_note(incident, summary, advisor)
             await self._hand_to_human(incident, summary)
         return summary
 

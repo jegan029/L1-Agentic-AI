@@ -84,6 +84,7 @@ def build_record(incident: Incident, summary: ExecutionSummary) -> Dict[str, Any
         "completed_at": summary.completed_at or utcnow().isoformat(),
         "step_count": len(summary.step_results),
         "step_results": [r.to_audit_dict() for r in summary.step_results],
+        "model_note": summary.model_note,
     }
 
 
@@ -159,10 +160,12 @@ class DbJournal:
         match: Optional[StoredMatch],
         completed: Dict[str, StepResult],
         steps_seen: int,
+        advised: Optional[Dict[str, str]] = None,
     ) -> None:
         self._db = db
         self._tenant_id = tenant_id
         self._run_id = run_id
+        self._advised = dict(advised or {})
         self._match = match
         self._completed = completed
         self._seq = steps_seen
@@ -197,7 +200,7 @@ class DbJournal:
             for r in rows
             if r.status == "completed" and r.result
         }
-        return cls(db, tenant_id, run_id, match, completed, len(rows))
+        return cls(db, tenant_id, run_id, match, completed, len(rows), run.advised_parameters)
 
     @property
     def tenant_id(self) -> uuid.UUID:
@@ -217,6 +220,32 @@ class DbJournal:
 
     def completed(self, step_id: str) -> Optional[StepResult]:
         return self._completed.get(step_id)
+
+    @property
+    def advised_parameters(self) -> Dict[str, str]:
+        """Parameter values a model located on an earlier attempt of this run."""
+        return dict(self._advised)
+
+    async def record_advised(self, values: Dict[str, str]) -> None:
+        """Keep the values a model located, so that a resumed run does not ask again."""
+        self._advised.update(values)
+        async with self._db.tenant(self._tenant_id) as conn:
+            await conn.execute(
+                sa.update(runs)
+                .where(runs.c.tenant_id == self._tenant_id, runs.c.id == self._run_id)
+                .values(advised_parameters=dict(self._advised))
+            )
+            await audit.append(
+                conn,
+                self._tenant_id,
+                WORKER,
+                "run.parameters_advised",
+                {
+                    "parameters": sorted(values),
+                    "values_sha256": {k: audit.digest(v) for k, v in sorted(values.items())},
+                },
+                correlation_id=str(self._run_id),
+            )
 
     async def record_match(self, sop: SOP, confidence: float, rationale: str) -> None:
         async with self._db.tenant(self._tenant_id) as conn:

@@ -1,0 +1,35 @@
+{
+  "note": "Seeded secrets and personal data. Every value here is made up for this file. Each one is placed in a ticket, in tool output and in an article, all four advisor tasks are run through both provider clients against a local HTTP server, and none of the values may appear in any request the server receives. The 'not_found' list states what pattern matching does not catch; the test asserts those too, so the list cannot drift from the code.",
+  "items": [
+    {"kind": "secret", "value": "Hunter2!Winter", "text": "the service account password=Hunter2!Winter was reset"},
+    {"kind": "secret", "value": "s3cr3t-Value-99", "text": "config has client_secret: s3cr3t-Value-99 in it"},
+    {"kind": "secret", "value": "Zx81-Passw0rd", "text": "the password is Zx81-Passw0rd for now"},
+    {"kind": "secret", "value": "abcDEF123456ghiJKL789", "text": "curl -H 'Authorization: Bearer abcDEF123456ghiJKL789' failed"},
+    {"kind": "secret", "value": "dXNlcjpwYXNzd29yZDEyMw==", "text": "header was Basic dXNlcjpwYXNzd29yZDEyMw== at the time"},
+    {"kind": "secret", "value": "dbuser:Db-Pa55word", "text": "DSN postgresql://dbuser:Db-Pa55word@db01.internal:5432/payments"},
+    {"kind": "secret", "value": "sk-eval0123456789abcdefEVAL", "text": "key sk-eval0123456789abcdefEVAL was pasted in"},
+    {"kind": "secret", "value": "AKIAEVALEXAMPLE12345", "text": "AWS key AKIAEVALEXAMPLE12345 found in the log"},
+    {"kind": "secret", "value": "ghp_EvalExampleTokenValue0123456789ab", "text": "pushed with ghp_EvalExampleTokenValue0123456789ab"},
+    {"kind": "secret", "value": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJldmFsLXVzZXIifQ.c2lnbmF0dXJlLWV2YWw", "text": "token eyJhbGciOiJub25lIn0.eyJzdWIiOiJldmFsLXVzZXIifQ.c2lnbmF0dXJlLWV2YWw expired"},
+    {"kind": "secret", "value": "MIIEvalExampleKeyMaterialNotARealKey0123456789", "text": "-----BEGIN PRIVATE KEY-----\nMIIEvalExampleKeyMaterialNotARealKey0123456789\n-----END PRIVATE KEY-----"},
+    {"kind": "secret", "value": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "text": "session 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08 was reused"},
+    {"kind": "secret", "value": "Qw7rT9yUi2oP4aS6dF8gH1jK3lZ5xC", "text": "the value Qw7rT9yUi2oP4aS6dF8gH1jK3lZ5xC was in the env file"},
+    {"kind": "email", "value": "jane.doe@example.com", "text": "reported by jane.doe@example.com this morning"},
+    {"kind": "email", "value": "ops+oncall@corp.example.org", "text": "cc ops+oncall@corp.example.org"},
+    {"kind": "phone", "value": "+44 20 7946 0958", "text": "call the desk on +44 20 7946 0958"},
+    {"kind": "phone", "value": "(212) 555-0147", "text": "or (212) 555-0147 after hours"},
+    {"kind": "card", "value": "4111 1111 1111 1111", "text": "customer card 4111 1111 1111 1111 was declined"},
+    {"kind": "card", "value": "5500005555555559", "text": "PAN 5500005555555559 in the payload"},
+    {"kind": "iban", "value": "GB82 WEST 1234 5698 7654 32", "text": "refund to GB82 WEST 1234 5698 7654 32"},
+    {"kind": "iban", "value": "DE89370400440532013000", "text": "debtor account DE89370400440532013000"},
+    {"kind": "national_id", "value": "078-05-1120", "text": "SSN on file 078-05-1120"},
+    {"kind": "ip", "value": "10.20.30.44", "text": "client 10.20.30.44 kept reconnecting"},
+    {"kind": "person", "value": "Alexandra Papadopoulos", "text": "Alexandra Papadopoulos raised this and asked for a call back"}
+  ],
+  "caller": "Alexandra Papadopoulos",
+  "not_found": [
+    {"kind": "person", "value": "Bartholomew Quince", "text": "ask Bartholomew Quince in settlements", "why": "A name in running text that is not the ticket's caller has no shape to match."},
+    {"kind": "secret", "value": "correct horse battery", "text": "the passphrase we agreed was correct horse battery staple", "why": "Ordinary words with no key name before them are not recognisable as a secret."},
+    {"kind": "address", "value": "221B Baker Street", "text": "ship the token to 221B Baker Street", "why": "Postal addresses are not matched."}
+  ]
+}

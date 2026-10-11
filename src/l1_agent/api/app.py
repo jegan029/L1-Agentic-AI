@@ -18,6 +18,8 @@ from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
 from src.l1_agent.actions import store as action_store
+from src.l1_agent.ai import policy as model_policy
+from src.l1_agent.ai.prompts import PROMPTS, TASKS
 from src.l1_agent.api.access import (
     Denied,
     Routes,
@@ -85,6 +87,7 @@ class AppContext:
     hub: Optional[Any] = None  # ConnectorHub: this tenant's connectors and knowledge sources
     itsm: Optional[Any] = None  # the ITSM connector, which the ServiceNow KB source reads through
     actions: Optional[Any] = None  # ActionService: the kill switches it sees, for display
+    model: Optional[Any] = None  # ModelGateway: the provider and the tenant's model policy
 
 
 class TokenRequest(BaseModel):
@@ -123,6 +126,11 @@ class ActionDecisionRequest(BaseModel):
 
 class PolicyRequest(BaseModel):
     autonomy: Optional[str] = Field(default=None, max_length=20)
+    rules: Optional[Dict[str, Any]] = None
+
+
+class ModelPolicyRequest(BaseModel):
+    enabled: Optional[bool] = None
     rules: Optional[Dict[str, Any]] = None
 
 
@@ -645,7 +653,14 @@ def create_app(ctx: AppContext) -> FastAPI:
         if ctx.hub is None:
             return {"items": []}
         sources = await ctx.hub.knowledge_sources(principal.tenant_id, ctx.itsm)
-        results = await ingest.sync_all(ctx.db, principal.tenant_id, sources, principal.actor)
+        results = await ingest.sync_all(
+            ctx.db,
+            principal.tenant_id,
+            sources,
+            principal.actor,
+            drafter=ingest.model_drafter(ctx.model, principal.tenant_id, ctx.hub.registry),
+            registry=ctx.hub.registry,
+        )
         return {"items": [r.to_dict() for r in results]}
 
     # ── Connectors ────────────────────────────────────────────────────
@@ -800,6 +815,41 @@ def create_app(ctx: AppContext) -> FastAPI:
         )
         return {"kill_switch": False}
 
+    # ── Model use (ADR 0009) ──────────────────────────────────────────
+
+    async def model_view(tenant_id: uuid.UUID) -> dict:
+        policy = await model_policy.get_model_policy(ctx.db, tenant_id)
+        provider = ctx.model.describe() if ctx.model else {"configured": False}
+        reason = None
+        if ctx.model and ctx.model.provider is not None:
+            # Why each task would be refused right now, or null when it would be sent.
+            reason = {
+                task: model_policy.permits(policy, ctx.model.provider, task) for task in TASKS
+            }
+        return {
+            **policy.to_dict(),
+            "provider": provider,
+            "refused": reason,
+            "prompts": {p.task: p.version for p in PROMPTS.values()},
+            "usage_today": await model_policy.usage(ctx.db, tenant_id),
+        }
+
+    @routes.get("/api/model", requires(Permission.SYSTEM_READ))
+    async def get_model(request: Request) -> dict:
+        return await model_view(tenant(request))
+
+    @routes.put("/api/model", requires(Permission.POLICY_MANAGE))
+    async def set_model(request: Request, body: ModelPolicyRequest) -> dict:
+        principal = current(request)
+        await model_policy.set_model_policy(
+            ctx.db, principal.tenant_id, principal.actor, enabled=body.enabled, rules=body.rules
+        )
+        return await model_view(principal.tenant_id)
+
+    @routes.get("/api/model/calls", requires(Permission.AUDIT_READ))
+    async def model_calls(request: Request, limit: int = 100) -> dict:
+        return {"items": await model_policy.recent_calls(ctx.db, tenant(request), limit)}
+
     # ── Audit ─────────────────────────────────────────────────────────
 
     @routes.get("/api/audit/events", requires(Permission.AUDIT_READ))
@@ -835,6 +885,12 @@ def create_app(ctx: AppContext) -> FastAPI:
     @app.exception_handler(sop_store.SopError)
     async def on_sop_error(request: Request, exc: sop_store.SopError) -> JSONResponse:
         return JSONResponse({"error": str(exc), "problems": exc.problems}, status_code=exc.status)
+
+    @app.exception_handler(model_policy.ModelPolicyError)
+    async def on_model_policy_error(
+        request: Request, exc: model_policy.ModelPolicyError
+    ) -> JSONResponse:
+        return JSONResponse({"error": str(exc), "problems": exc.problems[:50]}, status_code=400)
 
     @app.exception_handler(action_store.ActionError)
     async def on_action_error(request: Request, exc: action_store.ActionError) -> JSONResponse:

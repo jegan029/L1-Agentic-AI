@@ -157,6 +157,15 @@ class LLMSettings:
     max_tokens: int = 4096
     timeout_seconds: int = 60
     enabled: bool = True
+    # Which kind of endpoint this is: "openai_compatible" or "anthropic" (ADR 0009).
+    provider: str = "openai_compatible"
+    # What the operator states about the endpoint. A tenant's model policy is checked
+    # against these; the product cannot verify them with the provider.
+    region: str = ""
+    retention_days: Optional[int] = None  # None: not stated
+    # Prices in US dollars per million tokens, for cost budgets. Zero means not priced.
+    input_price_per_mtok: float = 0.0
+    output_price_per_mtok: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -401,6 +410,13 @@ class Settings:
                 max_tokens=int(get("LLM_MAX_TOKENS", "4096")),
                 timeout_seconds=int(get("LLM_TIMEOUT_SECONDS", "60")),
                 enabled=get("LLM_ENABLED", "true").lower() == "true",
+                provider=get("LLM_PROVIDER", "openai_compatible").strip().lower(),
+                region=get("LLM_REGION", "").strip().lower(),
+                retention_days=(
+                    int(get("LLM_RETENTION_DAYS")) if get("LLM_RETENTION_DAYS") else None
+                ),
+                input_price_per_mtok=float(get("LLM_INPUT_PRICE_PER_MTOK", "0")),
+                output_price_per_mtok=float(get("LLM_OUTPUT_PRICE_PER_MTOK", "0")),
             ),
             agent=AgentSettings(
                 sop_confidence_threshold=float(get("AGENT_SOP_CONFIDENCE_THRESHOLD", "0.6")),

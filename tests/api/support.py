@@ -13,6 +13,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 
+from src.l1_agent.ai.gateway import ModelGateway
 from src.l1_agent.api.app import AppContext, create_app
 from src.l1_agent.api.security import (
     SESSION_COOKIE,
@@ -56,6 +57,7 @@ async def build(
     saml: Any = None,
     demo_open: bool = False,
     webhook_open: bool = False,
+    provider: Any = None,
 ) -> Tuple[FastAPI, AppContext]:
     """The real application, on the test database, for one deployment tenant."""
     tenant_id = tenant_id or await backend.new_tenant()
@@ -70,6 +72,7 @@ async def build(
         saml=saml,
         demo_open=demo_open,
         webhook_open=webhook_open,
+        model=ModelGateway(backend.db, provider),
     )
     return create_app(ctx), ctx
 
@@ -102,6 +105,46 @@ def signed_headers(body: bytes, secret: str = SECRET, ts: Optional[int] = None) 
         SIGNATURE_HEADER: sign_webhook(secret, timestamp, body),
         "Content-Type": "application/json",
     }
+
+
+async def seed_model(db, tenant_id, number: str, region: str) -> None:
+    """A model policy for the tenant and one recorded model call for the run of `number`."""
+    import sqlalchemy as sa
+
+    from src.l1_agent.ai import policy as model_policy
+    from src.l1_agent.db.models import runs
+
+    await model_policy.set_model_policy(
+        db,
+        tenant_id,
+        ADMIN,
+        enabled=True,
+        rules={"providers": ["deterministic"], "tasks": ["rank"], "regions": [region]},
+    )
+    async with db.tenant(tenant_id) as conn:
+        run_id = (
+            await conn.execute(
+                sa.select(runs.c.id).where(runs.c.tenant_id == tenant_id, runs.c.number == number)
+            )
+        ).scalar_one()
+        await model_policy.record_call(
+            conn,
+            tenant_id,
+            ADMIN,
+            run_id=run_id,
+            subject=number,
+            task="rank",
+            provider="deterministic",
+            model=f"model-of-{region}",
+            prompt_version="rank/2",
+            prompt_digest="0" * 64,
+            input_digest="1" * 64,
+            output_digest="2" * 64,
+            input_tokens=10,
+            output_tokens=5,
+            cost_micros=0,
+            outcome="ok",
+        )
 
 
 async def seed_action(db, tenant_id, number: str, job: str, **overrides: Any) -> uuid.UUID:

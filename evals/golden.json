@@ -1,0 +1,315 @@
+{
+  "note": "Incidents with the outcome and the capability calls expected of them when no model is involved. The expectations were produced by running each incident with the model off and were then reviewed by hand. A model that is off, failing, hostile or returning garbage must leave every one of them unchanged.",
+  "cases": [
+    {
+      "id": "INC0012345",
+      "why": "MQ backlog that does not drain: every check runs, verification fails, escalate.",
+      "incident": {
+        "sys_id": "demo-inc-001",
+        "number": "INC0012345",
+        "short_description": "MQ queue depth high on PAYMENT.REQUEST - messages not being consumed",
+        "description": "The PAYMENT.REQUEST queue on queue manager QMPROD01 has been building up since 09:00. Consumer application PaymentService appears to be not processing messages. Priority: High.",
+        "category": "Middleware",
+        "subcategory": "MQ",
+        "cmdb_ci": "PaymentService",
+        "assignment_group": "L1-Middleware-Support",
+        "priority": "2",
+        "state": "1",
+        "caller_id": "auto-monitor",
+        "sys_created_on": "2026-04-14T09:10:00Z"
+      },
+      "expect": {
+        "outcome": "escalated",
+        "sop_id": "SOP-MQ-001",
+        "verified_by": "",
+        "calls": [
+          "ibm_mq.queue.check",
+          "ibm_mq.queue.check",
+          "splunk.search",
+          "autosys.job.status",
+          "ibm_mq.queue.check"
+        ],
+        "writes": 0
+      }
+    },
+    {
+      "id": "INC0009005",
+      "why": "MQ backlog that has drained: verification passes, resolve.",
+      "incident": {
+        "sys_id": "demo-mq-002",
+        "number": "INC0009005",
+        "short_description": "MQ queue depth high on ORDER.REQUEST",
+        "description": "Queue depth alert for ORDER.REQUEST on queue manager QMPROD01. Consumers were restarted by the application team at 09:20.",
+        "category": "Middleware",
+        "subcategory": "MQ",
+        "cmdb_ci": "OrderService",
+        "assignment_group": "L1-Middleware-Support",
+        "priority": "3",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "resolved",
+        "sop_id": "SOP-MQ-001",
+        "verified_by": "step-verify",
+        "calls": [
+          "ibm_mq.queue.check",
+          "ibm_mq.queue.check",
+          "splunk.search",
+          "autosys.job.status",
+          "ibm_mq.queue.check"
+        ],
+        "writes": 0
+      }
+    },
+    {
+      "id": "INC0009003",
+      "why": "Autosys job still failed after investigation: escalate.",
+      "incident": {
+        "sys_id": "demo-autosys-001",
+        "number": "INC0009003",
+        "short_description": "Autosys batch job failure - ETL pipeline job BATCH_PAYMENT_PROCESS status FA",
+        "description": "The Autosys job BATCH_PAYMENT_PROCESS has entered FA state. Job ran at 02:00 but failed with exit code 1.",
+        "category": "Batch",
+        "subcategory": "Scheduling",
+        "cmdb_ci": "ETL-Pipeline",
+        "assignment_group": "L1-Batch-Support",
+        "priority": "3",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "escalated",
+        "sop_id": "SOP-AUTOSYS-001",
+        "verified_by": "",
+        "calls": [
+          "autosys.job.status",
+          "autosys.job.status",
+          "splunk.search",
+          "fileshare.file.read",
+          "autosys.job.status"
+        ],
+        "writes": 0
+      }
+    },
+    {
+      "id": "INC0009004",
+      "why": "Memory still high: verification fails, escalate.",
+      "incident": {
+        "sys_id": "demo-mem-001",
+        "number": "INC0009004",
+        "short_description": "High memory usage alert on app-server-prod01 - memory at 92%",
+        "description": "Dynatrace has triggered a memory saturation alert for app-server-prod01. Memory usage is at 92% of total 32GB. OOM risk detected.",
+        "category": "Infrastructure",
+        "subcategory": "Server",
+        "cmdb_ci": "AppServerProd01",
+        "assignment_group": "L1-Infra-Support",
+        "priority": "2",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "escalated",
+        "sop_id": "SOP-INFRA-001",
+        "verified_by": "",
+        "calls": [
+          "dynatrace.host.health",
+          "dynatrace.metrics.query",
+          "dynatrace.host.health",
+          "splunk.search",
+          "dynatrace.metrics.query"
+        ],
+        "writes": 0
+      }
+    },
+    {
+      "id": "INC0009002",
+      "why": "No SOP fits a certificate expiry: escalate, nothing is called.",
+      "incident": {
+        "sys_id": "demo-esc-001",
+        "number": "INC0009002",
+        "short_description": "SSL certificate expiring in 3 days on payments-api.internal",
+        "description": "SSL certificate for payments-api.internal expires in 72 hours. Automated renewal failed.",
+        "category": "Security",
+        "subcategory": "Certificates",
+        "cmdb_ci": "payments-api.internal",
+        "assignment_group": "L1-Security-Support",
+        "priority": "1",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "escalated",
+        "sop_id": "SOP-AUTOSYS-001",
+        "verified_by": "",
+        "calls": [],
+        "writes": 0
+      }
+    },
+    {
+      "id": "INC0009006",
+      "why": "Restart of a nightly job on the automatic list: one write, verified, resolve.",
+      "incident": {
+        "sys_id": "demo-restart-001",
+        "number": "INC0009006",
+        "short_description": "Nightly settlement job NIGHTLY_SETTLEMENT_LOAD failed - restart required",
+        "description": "The nightly settlement run stopped at job NIGHTLY_SETTLEMENT_LOAD. A rerun is usually enough.",
+        "category": "Batch",
+        "subcategory": "Scheduling",
+        "cmdb_ci": "Settlement",
+        "assignment_group": "L1-Batch-Support",
+        "priority": "3",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "resolved",
+        "sop_id": "SOP-AUTOSYS-002",
+        "verified_by": "step-verify",
+        "calls": [
+          "autosys.job.status",
+          "splunk.search",
+          "autosys.job.status",
+          "autosys.job.force_start",
+          "autosys.job.status",
+          "autosys.job.status",
+          "autosys.job.status"
+        ],
+        "writes": 1
+      }
+    },
+    {
+      "id": "INC0009007",
+      "why": "Restart of a payroll job: raised to tier 2, approved, one write, resolve.",
+      "incident": {
+        "sys_id": "demo-restart-002",
+        "number": "INC0009007",
+        "short_description": "Nightly settlement job PAYROLL_GL_POST failed - restart required",
+        "description": "The nightly settlement run stopped at job PAYROLL_GL_POST. This job posts to the ledger.",
+        "category": "Batch",
+        "subcategory": "Scheduling",
+        "cmdb_ci": "Settlement",
+        "assignment_group": "L1-Batch-Support",
+        "priority": "3",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "resolved",
+        "sop_id": "SOP-AUTOSYS-002",
+        "verified_by": "step-verify",
+        "calls": [
+          "autosys.job.status",
+          "splunk.search",
+          "autosys.job.status",
+          "autosys.job.force_start",
+          "autosys.job.status",
+          "autosys.job.status",
+          "autosys.job.status"
+        ],
+        "writes": 1
+      }
+    },
+    {
+      "id": "INC0009008",
+      "why": "Restart that fails again: one write, verification fails, escalate.",
+      "incident": {
+        "sys_id": "demo-restart-003",
+        "number": "INC0009008",
+        "short_description": "Nightly settlement job NIGHTLY_RECON_LOAD failed - restart required",
+        "description": "The nightly settlement run stopped at job NIGHTLY_RECON_LOAD. It failed on its input file.",
+        "category": "Batch",
+        "subcategory": "Scheduling",
+        "cmdb_ci": "Settlement",
+        "assignment_group": "L1-Batch-Support",
+        "priority": "3",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "escalated",
+        "sop_id": "SOP-AUTOSYS-002",
+        "verified_by": "",
+        "calls": [
+          "autosys.job.status",
+          "splunk.search",
+          "autosys.job.status",
+          "autosys.job.force_start",
+          "autosys.job.status",
+          "autosys.job.status"
+        ],
+        "writes": 1
+      }
+    },
+    {
+      "id": "INC0009101",
+      "why": "The author's pattern does not find the queue manager. Without help: needs a person.",
+      "incident": {
+        "sys_id": "golden-assist-001",
+        "number": "INC0009101",
+        "short_description": "Broker backlog on ORDER.REQUEST",
+        "description": "Backlog is building on the broker. QMPROD01 is the manager for ORDER.REQUEST.",
+        "category": "Middleware",
+        "subcategory": "MQ",
+        "cmdb_ci": "",
+        "assignment_group": "L1-Middleware-Support",
+        "priority": "3",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "needs_human",
+        "sop_id": "SOP-EVAL-ASSIST",
+        "verified_by": "",
+        "calls": [],
+        "writes": 0
+      },
+      "expect_with_help": {
+        "outcome": "resolved",
+        "sop_id": "SOP-EVAL-ASSIST",
+        "advised": {
+          "queue_manager": "QMPROD01"
+        },
+        "writes": 0
+      }
+    },
+    {
+      "id": "INC0009102",
+      "why": "The ticket names no queue manager at all: needs a person.",
+      "incident": {
+        "sys_id": "golden-unbound-001",
+        "number": "INC0009102",
+        "short_description": "MQ queue depth high on ORDER.REQUEST",
+        "description": "",
+        "category": "Middleware",
+        "subcategory": "MQ",
+        "cmdb_ci": "",
+        "assignment_group": "L1-Middleware-Support",
+        "priority": "3",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "needs_human",
+        "sop_id": "SOP-MQ-001",
+        "verified_by": "",
+        "calls": [],
+        "writes": 0
+      }
+    },
+    {
+      "id": "INC0009103",
+      "why": "Nothing fits: escalate, nothing is called.",
+      "incident": {
+        "sys_id": "golden-nomatch-001",
+        "number": "INC0009103",
+        "short_description": "Printer on floor 3 is out of toner",
+        "description": "Please replace the toner cartridge.",
+        "category": "Hardware",
+        "subcategory": "Printer",
+        "cmdb_ci": "",
+        "assignment_group": "L1-Middleware-Support",
+        "priority": "4",
+        "state": "1"
+      },
+      "expect": {
+        "outcome": "escalated",
+        "sop_id": "SOP-MQ-001",
+        "verified_by": "",
+        "calls": [],
+        "writes": 0
+      }
+    }
+  ]
+}

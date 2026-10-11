@@ -28,10 +28,10 @@ jobs:
         run: pip install ruff
 
       - name: Check formatting
-        run: ruff format --check src/ tests/
+        run: ruff format --check src/ tests/ evals/
 
       - name: Check lint rules
-        run: ruff check src/ tests/
+        run: ruff check src/ tests/ evals/
 
   tests:
     name: Tests
@@ -70,8 +70,8 @@ jobs:
       - name: Run all tests with coverage (SQLite and PostgreSQL)
         run: |
           pytest tests/ -v --timeout=180 --cov=src/l1_agent --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=75 | tee result.txt
-          if grep -E "tests/(db|api|contract)/.*SKIPPED" result.txt; then
-            echo "A database, sign-in or connector contract test was skipped" >&2
+          if grep -E "tests/(db|api|contract|evals)/.*SKIPPED" result.txt; then
+            echo "A database, sign-in, connector contract or evaluation test was skipped" >&2
             exit 1
           fi
 
@@ -84,6 +84,28 @@ jobs:
         with:
           name: coverage
           path: coverage.xml
+
+  # Model use (ADR 0009): golden incidents, the injection corpus and the redaction
+  # corpus, against stand-in models that obey injected text, give the worst valid
+  # answer, return garbage, or fail. No real provider is called and nothing is spent.
+  evals:
+    name: Model evaluation suite
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run the evaluation suite
+        run: python -m evals.run
 
   frontend:
     name: Frontend build

@@ -1,0 +1,86 @@
+{
+  "note": "Hand-written from the Anthropic Messages API documentation (tool use with a forced tool choice); not captured from the live API.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/messages",
+        "headers": {
+          "x-api-key": "key-one",
+          "anthropic-version": "2023-06-01"
+        },
+        "json": {
+          "model": "claude-test-model",
+          "max_tokens": 400,
+          "system": "You choose.",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Which one?"
+            }
+          ],
+          "tools": [
+            {
+              "name": "select_sop",
+              "description": "Report the choice.",
+              "input_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sop_id": {
+                    "type": "string",
+                    "enum": [
+                      "SOP-1",
+                      "NONE"
+                    ]
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "maxLength": 600
+                  }
+                },
+                "required": [
+                  "sop_id",
+                  "rationale"
+                ]
+              }
+            }
+          ],
+          "tool_choice": {
+            "type": "tool",
+            "name": "select_sop"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "id": "msg_01",
+          "type": "message",
+          "role": "assistant",
+          "model": "claude-test-model",
+          "content": [
+            {
+              "type": "text",
+              "text": "Let me think."
+            },
+            {
+              "type": "tool_use",
+              "id": "toolu_01",
+              "name": "select_sop",
+              "input": {
+                "sop_id": "SOP-1",
+                "rationale": "It fits."
+              }
+            }
+          ],
+          "stop_reason": "tool_use",
+          "usage": {
+            "input_tokens": 9,
+            "output_tokens": 4
+          }
+        }
+      }
+    }
+  ]
+}

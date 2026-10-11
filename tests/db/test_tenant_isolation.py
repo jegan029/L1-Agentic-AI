@@ -35,7 +35,7 @@ from src.l1_agent.models.incident import Incident
 from src.l1_agent.service.runs import recent_records, record_by_number
 from src.l1_agent.sop import ingest
 from src.l1_agent.sop import store as sop_store
-from tests.api.support import seed_action
+from tests.api.support import seed_action, seed_model
 from tests.conftest import make_service
 
 INTAKE = Actor.system("test-intake")
@@ -109,6 +109,7 @@ async def seed(pg, tenant: uuid.UUID, incident_index: int) -> str:
     await ingest._record(pg.db, tenant, INTAKE, ingest.SyncResult("git"), "0" * 40)
     await action_store.set_policy(pg.db, tenant, INTAKE, autonomy="recommend")
     await seed_action(pg.db, tenant, incident.number, "JOB_A")
+    await seed_model(pg.db, tenant, incident.number, "eu")
     return incident.number
 
 

@@ -14,6 +14,7 @@
     knowledge sync              pull changed articles from the SOP sources as drafts
     policy show|set             the autonomy level and the policy rules for actions
     killswitch on|off|status    stop every write for the tenant (--global: for all, migration role)
+    model show|set|usage        whether the tenant uses a model, with which provider and budgets
     breakglass hash             hash a break-glass password
 
 Commands that change access write to the audit log as actor `system:cli`.
@@ -31,6 +32,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from src.l1_agent.actions import store as actions
+from src.l1_agent.ai import policy as model_policy
 from src.l1_agent.api.security import SecurityConfigError
 from src.l1_agent.audit import log as audit
 from src.l1_agent.audit.log import Actor
@@ -109,6 +111,14 @@ def _parser() -> argparse.ArgumentParser:
     changed = policy.add_parser("set")
     changed.add_argument("--autonomy", choices=["shadow", "recommend", "approval", "automatic"])
     changed.add_argument("--rules", help="a JSON file with the policy rules")
+    model = sub.add_parser("model").add_subparsers(dest="action", required=True)
+    model.add_parser("show")
+    model.add_parser("usage")
+    model_set = model.add_parser("set")
+    switch = model_set.add_mutually_exclusive_group()
+    switch.add_argument("--on", dest="enabled", action="store_const", const=True, default=None)
+    switch.add_argument("--off", dest="enabled", action="store_const", const=False)
+    model_set.add_argument("--rules", help="a JSON file with the model policy rules")
     kill = sub.add_parser("killswitch").add_subparsers(dest="action", required=True)
     kill.add_parser("status")
     for action in ("on", "off"):
@@ -168,6 +178,26 @@ async def _run(args: argparse.Namespace, settings: Settings) -> int:
             everywhere = await actions.global_kill_switch(db)
             print(f"tenant kill switch: {'ON' if policy.kill_switch else 'off'}")
             print(f"global kill switch: {'ON' if everywhere['on'] else 'off'}")
+            return 0
+
+        if args.command == "model":
+            if args.action == "usage":
+                print(json.dumps(await model_policy.usage(db, tenant_id), indent=2))
+                return 0
+            if args.action == "set":
+                rules = None
+                if args.rules:
+                    rules = json.loads(Path(args.rules).read_text(encoding="utf-8"))
+                if rules is None and args.enabled is None:
+                    raise ConfigError("model set needs --on, --off, --rules, or a switch and rules")
+                try:
+                    await model_policy.set_model_policy(
+                        db, tenant_id, CLI, enabled=args.enabled, rules=rules
+                    )
+                except model_policy.ModelPolicyError as exc:
+                    raise ConfigError("; ".join([str(exc)] + exc.problems)) from None
+            policy = await model_policy.get_model_policy(db, tenant_id)
+            print(json.dumps(policy.to_dict(), indent=2))
             return 0
 
         if args.command == "policy":
@@ -303,7 +333,14 @@ async def _with_service(args: argparse.Namespace, settings: Settings) -> int:
                 print("no knowledge source is configured")
                 return 0
             failed = False
-            for result in await ingest.sync_all(ctx.db, ctx.tenant_id, sources, CLI):
+            for result in await ingest.sync_all(
+                ctx.db,
+                ctx.tenant_id,
+                sources,
+                CLI,
+                drafter=ingest.model_drafter(ctx.model, ctx.tenant_id, ctx.hub.registry),
+                registry=ctx.hub.registry,
+            ):
                 print(json.dumps(result.to_dict()))
                 failed = failed or bool(result.errors)
             return 2 if failed else 0

@@ -247,6 +247,37 @@ async def seed_demo_policy(db, tenant_id) -> None:
     )
 
 
+async def seed_demo_model_policy(db, tenant_id) -> None:
+    """Let the demo tenant use the deterministic stand-in for a model, for every task.
+
+    A tenant that already has a model policy is left alone. Outside demo mode a
+    tenant uses no model until its administrator sets a policy (ADR 0009).
+    """
+    import sqlalchemy as sa
+
+    from src.l1_agent.ai import policy as model_policy
+    from src.l1_agent.ai.prompts import TASKS
+    from src.l1_agent.ai.providers import DETERMINISTIC
+    from src.l1_agent.audit.log import Actor
+    from src.l1_agent.db.models import model_policies
+
+    async with db.tenant(tenant_id) as conn:
+        exists = (
+            await conn.execute(
+                sa.select(model_policies.c.tenant_id).where(model_policies.c.tenant_id == tenant_id)
+            )
+        ).first()
+    if exists is not None:
+        return
+    await model_policy.set_model_policy(
+        db,
+        tenant_id,
+        Actor.system("demo-setup"),
+        enabled=True,
+        rules={"providers": [DETERMINISTIC], "tasks": list(TASKS)},
+    )
+
+
 def build_mock_adapters() -> dict:
     return {
         "splunk": MockSplunkAdapter(),
@@ -352,14 +383,15 @@ class MockServiceNowClient:
 
 
 def build_demo_processor(
-    snow: MockServiceNowClient, event_bus=None, actions=None
+    snow: MockServiceNowClient, event_bus=None, actions=None, advisors=None
 ) -> IncidentProcessor:
     """The same processor the service uses, wired to mocks.
 
     It is built with no SOPs of its own: the run service hands it the
-    tenant's published versions for each run.
+    tenant's published versions for each run. `advisors` is the model gateway;
+    without one the older mock model client ranks SOPs, with no record kept.
     """
-    llm = MockLLMClient()
+    llm = None if advisors is not None else MockLLMClient()
     return IncidentProcessor(
         snow_client=snow,  # type: ignore[arg-type]
         sop_matcher=SOPMatcher(confidence_threshold=0.6),
@@ -373,9 +405,10 @@ def build_demo_processor(
         ),
         confidence_threshold=0.6,
         llm_client=llm,
-        ai_analyzer=AIAnalyzer(llm_client=llm),
+        ai_analyzer=AIAnalyzer(llm_client=llm) if llm else None,
         event_bus=event_bus,
         l2_router=L2Router(),
+        advisors=advisors,
     )
 
 
@@ -388,6 +421,9 @@ async def run_demo() -> List[dict]:
     # Imported here: the service layer imports this module for its mocks.
     from src.l1_agent.actions import store as action_store
     from src.l1_agent.actions.service import ActionService
+    from src.l1_agent.ai import policy as model_policy
+    from src.l1_agent.ai.gateway import ModelGateway
+    from src.l1_agent.ai.providers import DeterministicProvider
     from src.l1_agent.audit.log import Actor, verify
     from src.l1_agent.db.engine import DEMO_TENANT_SLUG, Database
     from src.l1_agent.service.runs import DbEventBus, RunService, record_by_number
@@ -405,10 +441,12 @@ async def run_demo() -> List[dict]:
         tenant_id = await db.ensure_tenant(DEMO_TENANT_SLUG, "Demo tenant")
         await seed_demo_sops(db, tenant_id)
         await seed_demo_policy(db, tenant_id)
+        await seed_demo_model_policy(db, tenant_id)
         actions = ActionService(db, snow)
+        model = ModelGateway(db, DeterministicProvider())
         service = RunService(
             db,
-            build_demo_processor(snow, DbEventBus(db), actions),
+            build_demo_processor(snow, DbEventBus(db), actions, model),
             sops_from_store=True,
             actions=actions,
         )
@@ -468,6 +506,11 @@ async def run_demo() -> List[dict]:
         chain = await verify(db, tenant_id)
         print(f"\nWork notes posted to the mock ServiceNow: {len(snow.work_notes)}")
         print(f"Change records opened in the mock ServiceNow: {len(snow.changes)}")
+        used = await model_policy.usage(db, tenant_id)
+        print(
+            f"Model requests (deterministic stand-in, each one audited): {used['calls']} "
+            f"({used['tokens']} tokens)"
+        )
         print(
             f"Audit log: {chain.events_checked} events, "
             f"hash chain {'verified' if chain.ok else 'BROKEN'}"

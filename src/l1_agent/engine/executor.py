@@ -26,7 +26,13 @@ from src.l1_agent.connectors.sdk.base import Refused, StepContext
 from src.l1_agent.connectors.sdk.registry import ConnectorSet
 from src.l1_agent.engine import expressions
 from src.l1_agent.engine.journal import RunSuspended
-from src.l1_agent.engine.parameters import ParameterError, bind_parameters, render
+from src.l1_agent.engine.parameters import (
+    ParameterError,
+    accept_advised,
+    bind_what_can_be,
+    may_be_advised,
+    render,
+)
 from src.l1_agent.engine.state_machine import (
     RunEvent,
     RunState,
@@ -123,6 +129,7 @@ class SOPExecutor:
         sop: SOP,
         work_note_callback: Any = None,
         journal: Optional["RunJournal"] = None,
+        advisor: Any = None,
     ) -> ExecutionSummary:
         """Execute an SOP for a given incident.
 
@@ -132,6 +139,8 @@ class SOPExecutor:
             work_note_callback: Async callable(sys_id, note) for posting work notes.
             journal: Durable record of the run. A step it already holds a result
                 for is not executed again; its recorded result is used instead.
+            advisor: The model advisor for this run, if the tenant uses one. It may
+                help locate a parameter the SOP author marked for it; nothing else.
 
         Returns:
             ExecutionSummary with all step results and a terminal outcome.
@@ -161,7 +170,7 @@ class SOPExecutor:
                 reason = "SOP failed validation: " + "; ".join(problems[:5])
             else:
                 try:
-                    values = bind_parameters(sop, incident)
+                    values = await self._bind(sop, incident, journal, advisor, work_note_callback)
                     steps = [self._render_step(s, values) for s in sop.steps]
                     state = transition(state, RunEvent.PARAMS_BOUND)
                 except ParameterError as exc:
@@ -223,6 +232,59 @@ class SOPExecutor:
             elapsed,
         )
         return summary
+
+    async def _bind(
+        self,
+        sop: SOP,
+        incident: Incident,
+        journal: Optional["RunJournal"],
+        advisor: Any,
+        work_note_callback: Any,
+    ) -> Dict[str, Any]:
+        """Bind every parameter, or raise ParameterError.
+
+        A value the author's pattern did not find may be located by a model, when
+        the author allowed that for the parameter and the SOP makes no change.
+        The located value must stand in the ticket word for word and pass the
+        parameter's validation (ADR 0009).
+        """
+        values, failures, not_found = bind_what_can_be(sop, incident)
+        if not failures:
+            return values
+        first = next(iter(failures.values()))
+        acts = any(s.step_type.upper() == StepType.ACTION.value for s in sop.steps)
+        askable = [s for s in not_found if s.name in failures and may_be_advised(s)]
+        if acts or len(askable) != len(failures):
+            raise first
+        stored = getattr(journal, "advised_parameters", None) or {}
+        if all(spec.name in stored for spec in askable):
+            located = stored  # a resumed run uses what the first attempt was given
+        elif advisor is not None:
+            located = await advisor.extract(incident, askable)
+        else:
+            raise first
+        advised: Dict[str, Any] = {}
+        for spec in askable:
+            try:
+                advised[spec.name] = accept_advised(spec, located.get(spec.name), incident)
+            except ParameterError:
+                raise failures[spec.name] from None
+        if located is not stored:
+            record = getattr(journal, "record_advised", None)
+            if record is not None:
+                await record({name: str(value) for name, value in advised.items()})
+            metrics.increment("advisor.parameters_located", len(advised))
+            await self._note(
+                work_note_callback,
+                incident,
+                "[L1 Agent] Model-assisted: "
+                + "; ".join(f"'{name}' = {value}" for name, value in advised.items())
+                + ". A language model pointed to this text in the ticket. It was checked "
+                "to be in the ticket word for word and to fit the SOP's pattern.",
+                "advised",
+            )
+        values.update(advised)
+        return {spec.name: values[spec.name] for spec in sop.parameters}
 
     # ── Run loop ──────────────────────────────────────────────────────
 

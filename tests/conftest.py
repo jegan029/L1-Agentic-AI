@@ -193,12 +193,13 @@ def make_service(
     sops_from_store: bool = False,
     actions=None,
     connector_settings: Optional[Dict[str, dict]] = None,
+    advisors=None,
 ) -> RunService:
     """A run service wired like the real one, with mock adapters and mock ServiceNow.
 
     `actions` is the action pipeline (an ActionService); without one, ACTION steps are
     refused. `connector_settings` gives a mock connector real connection settings, for
-    example an allow list.
+    example an allow list. `advisors` is the model gateway; without one no model is used.
     """
     bus = DbEventBus(db)
     fixed = _FixedConnectors(
@@ -220,6 +221,7 @@ def make_service(
         confidence_threshold=0.6,
         event_bus=bus,  # type: ignore[arg-type]
         l2_router=L2Router(),
+        advisors=advisors,
     )
     if wrap:
         processor = wrap(processor)

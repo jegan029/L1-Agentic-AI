@@ -23,9 +23,11 @@ _REDACTED = "***REDACTED***"
 class LLMClient:
     """Async client for OpenAI-compatible LLM endpoints with tool-calling support."""
 
-    def __init__(self, settings: LLMSettings) -> None:
+    def __init__(self, settings: LLMSettings, api_key_source: Any = None) -> None:
         self._endpoint = settings.endpoint.rstrip("/")
         self._api_key = settings.api_key
+        # An async callable that reads the key from a credential reference, per request.
+        self._api_key_source = api_key_source
         self._model = settings.model
         self._temperature = settings.temperature
         self._max_tokens = settings.max_tokens
@@ -48,6 +50,7 @@ class LLMClient:
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: Any = "auto",
+        max_tokens: Optional[int] = None,
     ) -> LLMResponse:
         """Send a chat completion request to the LLM endpoint.
 
@@ -62,14 +65,14 @@ class LLMClient:
         url = f"{self._endpoint}/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._api_key}",
+            "Authorization": f"Bearer {await self._key()}",
         }
 
         payload: Dict[str, Any] = {
             "model": self._model,
             "messages": messages,
             "temperature": self._temperature,
-            "max_tokens": self._max_tokens,
+            "max_tokens": max_tokens or self._max_tokens,
         }
         if tools:
             payload["tools"] = tools
@@ -92,6 +95,11 @@ class LLMClient:
             data = await resp.json()
 
         return LLMResponse.from_api_response(data)
+
+    async def _key(self) -> str:
+        if self._api_key_source is not None:
+            return await self._api_key_source()
+        return self._api_key
 
     # ── Convenience: single prompt ───────────────────────────────────
 

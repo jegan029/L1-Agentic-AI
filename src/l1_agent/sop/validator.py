@@ -290,6 +290,13 @@ def validate_sop(sop: SOP) -> List[str]:
     for step in sop.steps:
         problems += _step_problems(step, index)
     acts = any(s.step_type.upper() == StepType.ACTION.value for s in sop.steps)
+    if acts and any(
+        isinstance(spec.source, dict) and spec.source.get("advisor") for spec in sop.parameters
+    ):
+        # A value a model located never reaches a write (ADR 0009).
+        problems.append(
+            "an SOP with an ACTION step may not have a parameter with source.advisor set"
+        )
     if acts and not CHANGE_TEMPLATE_RE.match(sop.change_template or ""):
         # Every write is made under a change record (ADR 0008).
         problems.append(

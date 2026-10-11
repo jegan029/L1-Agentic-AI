@@ -171,6 +171,9 @@ runs = sa.Table(
     sa.Column("sop_hash", sa.String(64), nullable=False, server_default=""),
     sa.Column("confidence", sa.Float()),
     sa.Column("match_rationale", sa.Text(), nullable=False, server_default=""),
+    # Parameter values a model located in the ticket (ADR 0009). Kept so that a
+    # resumed run uses the same values and does not ask again.
+    sa.Column("advised_parameters", Json),
     sa.Column("record", Json),
     sa.Column("created_at", Timestamp, nullable=False),
     sa.Column("completed_at", Timestamp),
@@ -488,6 +491,55 @@ actions = sa.Table(
         sqlite_where=sa.text("execution_started_at IS NOT NULL"),
     ),
     sa.Index("ix_actions_status", "tenant_id", "status"),
+)
+
+# ── Model use (ADR 0009) ──────────────────────────────────────────────
+
+# Whether a tenant uses a model at all, with which providers, for which tasks,
+# and within which budgets. No row means no model.
+model_policies = sa.Table(
+    "model_policies",
+    metadata,
+    sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id"), primary_key=True),
+    sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.false()),
+    sa.Column("rules", Json, nullable=False),
+    sa.Column("updated_by", sa.String(300), nullable=False),
+    sa.Column("updated_at", Timestamp, nullable=False),
+)
+
+MODEL_CALL_OUTCOMES = ("ok", "invalid", "error", "over_budget")
+
+# One row per request to a provider, and one per request that a budget stopped.
+# Digests and counts only: neither the prompt nor the answer is stored.
+model_calls = sa.Table(
+    "model_calls",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("run_id", sa.Uuid(), sa.ForeignKey("runs.id")),  # null: not part of a run
+    sa.Column("subject", sa.String(200), nullable=False, server_default=""),
+    sa.Column("task", sa.String(20), nullable=False),
+    sa.Column("provider", sa.String(40), nullable=False),
+    sa.Column("model", sa.String(200), nullable=False),
+    sa.Column("prompt_version", sa.String(40), nullable=False),
+    sa.Column("input_digest", sa.String(64), nullable=False),
+    sa.Column("output_digest", sa.String(64), nullable=False, server_default=""),
+    sa.Column("input_tokens", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("output_tokens", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("cost_micros", sa.BigInteger(), nullable=False, server_default="0"),
+    sa.Column("outcome", sa.String(20), nullable=False),
+    sa.Column("detail", sa.String(300), nullable=False, server_default=""),
+    sa.Column("created_at", Timestamp, nullable=False),
+    sa.CheckConstraint(
+        "outcome IN (" + ", ".join(f"'{o}'" for o in MODEL_CALL_OUTCOMES) + ")",
+        name="ck_model_calls_outcome",
+    ),
+    sa.CheckConstraint(
+        "input_tokens >= 0 AND output_tokens >= 0 AND cost_micros >= 0",
+        name="ck_model_calls_not_negative",
+    ),
+    sa.Index("ix_model_calls_tenant_created", "tenant_id", "created_at"),
+    sa.Index("ix_model_calls_run", "tenant_id", "run_id"),
 )
 
 GLOBAL_TABLES = ("tenants", "platform_flags")

@@ -152,3 +152,128 @@ class TestSOPMatcher:
         result = matcher.match(incident, [sop])
 
         assert result.confidence > 0.0
+
+
+SAMPLE_MQ = {
+    "title": "MQ Queue Depth High - Investigation and Remediation",
+    "keywords": ["queue depth", "mq", "messages not consumed", "queue high", "payment"],
+    "applicable_categories": ["Middleware", "MQ"],
+    "applicable_services": ["PaymentService", "OrderService"],
+}
+
+
+class TestSignalsThatCannotBeCompared:
+    """A ticket that lacks a field is not scored as if the field were wrong."""
+
+    def test_ticket_from_a_stock_instance_clears_the_default_threshold(self):
+        # What a ServiceNow developer instance returned: no CI, and the default
+        # category in place of the one the ticket was created with.
+        incident = _make_incident(
+            short_description="MQ queue depth high on ORDER.REQUEST",
+            description="Queue depth alert for ORDER.REQUEST on queue manager QMPROD01.",
+            category="Inquiry / Help",
+            subcategory="",
+            cmdb_ci="",
+        )
+        result = SOPMatcher(confidence_threshold=0.6).match(incident, [_make_sop(**SAMPLE_MQ)])
+
+        assert result.confidence >= 0.6
+        assert "not compared: ci" in result.rationale
+
+    def test_missing_ci_scores_higher_than_wrong_ci(self):
+        matcher = SOPMatcher()
+        sop = _make_sop()
+        missing = matcher.match(_make_incident(cmdb_ci=""), [sop]).confidence
+        wrong = matcher.match(_make_incident(cmdb_ci="FileServer"), [sop]).confidence
+        right = matcher.match(_make_incident(cmdb_ci="PaymentService"), [sop]).confidence
+
+        assert wrong < missing <= right
+
+    def test_wrong_category_still_counts_against_the_match(self):
+        matcher = SOPMatcher()
+        sop = _make_sop()
+        wrong = matcher.match(_make_incident(category="Storage", subcategory=""), [sop])
+        right = matcher.match(_make_incident(), [sop])
+
+        assert wrong.confidence < right.confidence
+
+    def test_sop_that_declares_no_services_is_not_penalised_for_it(self):
+        incident = _make_incident()
+        with_services = _make_sop(**SAMPLE_MQ)
+        without = _make_sop(**{**SAMPLE_MQ, "applicable_services": []})
+        declared = SOPMatcher().match(incident, [with_services]).confidence
+        undeclared = SOPMatcher().match(incident, [without]).confidence
+
+        assert undeclared == declared == 1.0
+
+    def test_matching_fields_alone_do_not_clear_the_threshold(self):
+        incident = _make_incident(short_description="Something is wrong", description="")
+        result = SOPMatcher(confidence_threshold=0.6).match(incident, [_make_sop(**SAMPLE_MQ)])
+
+        assert result.confidence < 0.6
+
+    def test_score_stays_within_bounds(self):
+        for incident in (
+            _make_incident(),
+            _make_incident(category="", subcategory="", cmdb_ci="", assignment_group=""),
+            _make_incident(short_description="", description=""),
+        ):
+            for sop in (_make_sop(), _make_sop(keywords=[], title=""), _make_sop(**SAMPLE_MQ)):
+                assert 0.0 <= SOPMatcher().match(incident, [sop]).confidence <= 1.0
+
+
+class TestKeywordEvidence:
+    def test_long_keyword_list_does_not_dilute_a_clear_match(self):
+        incident = _make_incident(category="", subcategory="", cmdb_ci="", assignment_group="")
+        short = _make_sop(keywords=["queue depth", "mq", "payment"])
+        long = _make_sop(
+            keywords=["queue depth", "mq", "payment", "backlog", "consumer lag", "dlq", "poison"]
+        )
+
+        assert SOPMatcher().match(incident, [long]).confidence == 1.0
+        assert SOPMatcher().match(incident, [short]).confidence == 1.0
+
+    def test_one_generic_keyword_is_not_enough(self):
+        incident = _make_incident(
+            short_description="Payment page is slow for users",
+            description="",
+            category="",
+            subcategory="",
+            cmdb_ci="",
+        )
+        result = SOPMatcher(confidence_threshold=0.6).match(incident, [_make_sop(**SAMPLE_MQ)])
+
+        assert 0.0 < result.confidence < 0.6
+
+    def test_keyword_matches_whole_words_only(self):
+        sop = _make_sop(title="", keywords=["ram"], applicable_assignment_groups=[])
+        inside = _make_incident(short_description="Program parameter error", description="")
+        whole = _make_incident(short_description="RAM exhausted on host", description="")
+        blank = dict(category="", subcategory="", cmdb_ci="")
+
+        assert (
+            SOPMatcher().match(_make_incident(**{**inside.__dict__, **blank}), [sop]).confidence
+            == 0.0
+        )
+        assert (
+            SOPMatcher().match(_make_incident(**{**whole.__dict__, **blank}), [sop]).confidence
+            == 1.0
+        )
+
+    def test_title_stopwords_and_punctuation_are_not_evidence(self):
+        sop = _make_sop(title="Reset - and Restart", keywords=[], applicable_assignment_groups=[])
+        incident = _make_incident(
+            short_description="Standard request - handled by operations",
+            description="",
+            category="",
+            subcategory="",
+            cmdb_ci="",
+        )
+
+        assert SOPMatcher().match(incident, [sop]).confidence == 0.0
+
+    def test_invalid_regex_keyword_falls_back_to_literal_text(self):
+        sop = _make_sop(title="", keywords=["depth (high"])
+        incident = _make_incident(short_description="queue depth (high on QM1")
+
+        assert SOPMatcher().match(incident, [sop]).confidence > 0.5

@@ -105,12 +105,9 @@ async def group_exists(client: ServiceNowClient, name: str) -> bool:
     return bool(result.get("result"))
 
 
-# The SOP matcher scores category and CI as well as keywords. A stock instance has
-# neither the sample SOPs' categories nor their CIs, so realistic test tickets
-# score about 0.4 to 0.5 against the 0.6 default. The end-to-end write tests lower
-# the threshold so that they exercise the ServiceNow writes; a separate test
-# reports what the default threshold does on this instance.
-WRITE_TEST_THRESHOLD = 0.4
+# A stock instance has neither the sample SOPs' categories nor their CIs. The
+# matcher leaves out a signal the ticket does not carry, so these tickets are
+# expected to clear the product's default threshold; nothing is lowered here.
 
 
 def make_processor(client: ServiceNowClient, threshold: float = 0.6) -> IncidentProcessor:
@@ -229,7 +226,7 @@ class TestEndToEnd:
         )
         incident = await client.get_incident(sys_id)
 
-        result = await make_processor(client, WRITE_TEST_THRESHOLD).process_incident(incident)
+        result = await make_processor(client).process_incident(incident)
         after = await raw(client, sys_id)
         print(
             f"\n  {incident.number}: outcome={result.summary.outcome_label} "
@@ -255,7 +252,7 @@ class TestEndToEnd:
         )
         incident = await client.get_incident(sys_id)
 
-        result = await make_processor(client, WRITE_TEST_THRESHOLD).process_incident(incident)
+        result = await make_processor(client).process_incident(incident)
         after = await raw(client, sys_id)
         expected_group = L2Router().resolve_l2_team(incident.cmdb_ci)["name"]
         print(
@@ -286,13 +283,12 @@ class TestEndToEnd:
         )
         result = await make_processor(client).process_incident(incident)
         after = await raw(client, sys_id)
-        # Whatever the score, the run must end safely and visibly.
-        assert result.summary.outcome in (ExecutionOutcome.ESCALATED, ExecutionOutcome.RESOLVED)
-        if match.confidence < 0.6:
-            assert result.summary.outcome == ExecutionOutcome.ESCALATED
-            assert result.summary.step_results == []
-            assert after["state"]["value"] != "6"
-            assert "Low confidence SOP match" in after["work_notes"]["display_value"]
+        assert match.sop is not None and match.sop.sop_id == "SOP-MQ-001"
+        assert match.confidence >= 0.6, match.rationale
+        # PAYMENT.REQUEST is still backed up in the mock, so the SOP runs and escalates.
+        assert result.summary.outcome == ExecutionOutcome.ESCALATED
+        assert result.summary.step_results, "the SOP should have run"
+        assert after["state"]["value"] != "6"
 
     @pytest.mark.asyncio
     async def test_incident_with_no_matching_sop_is_routed_not_resolved(self, client):

@@ -18,6 +18,23 @@ except ImportError:
     _ResolutionMemory = None  # type: ignore[assignment,misc]
 
 
+# Share of the score each signal carries when every signal can be compared.
+WEIGHTS = {"keyword": 0.50, "ci": 0.20, "category": 0.15, "group": 0.15}
+
+# Distinct keyword hits that count as full keyword evidence. An SOP's keywords
+# are alternative phrasings of one problem, so a ticket is not expected to
+# contain all of them.
+KEYWORD_HITS_FOR_FULL_SCORE = 3
+
+_TITLE_STOPWORDS = frozenset(
+    {"a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to", "with"}
+)
+
+
+def _tokens(text: str) -> set:
+    return {t for t in re.findall(r"[a-z0-9]+", text.lower()) if t not in _TITLE_STOPWORDS}
+
+
 @dataclass
 class MatchResult:
     """Result of SOP matching."""
@@ -35,6 +52,12 @@ class MatchResult:
 class SOPMatcher:
     """Matches incidents to SOPs using keyword/regex, CI, category, and assignment group.
 
+    A signal is scored only when both sides carry it: the ticket has a value and
+    the SOP declares what it applies to. A signal that cannot be compared is left
+    out and the remaining weights are rescaled, so a ticket with no CI is not
+    scored as if its CI were wrong. A value that is present and different still
+    counts against the match.
+
     When a ResolutionMemory instance is provided, historical success rates are used
     to boost or penalise scores by up to ±10%.
     """
@@ -50,10 +73,10 @@ class SOPMatcher:
     def match(self, incident: Incident, sops: List[SOP]) -> MatchResult:
         """Find the best matching SOP for the given incident.
 
-        Scoring weights:
-          - Keyword match in short_description: 0.50
-          - Category match:                    0.15
+        Scoring weights (see WEIGHTS), rescaled over the comparable signals:
+          - Keyword match in the ticket text:  0.50
           - CI / service match:                0.20
+          - Category match:                    0.15
           - Assignment group match:            0.15
         """
         if not sops:
@@ -68,32 +91,23 @@ class SOPMatcher:
         desc_lower = incident.description.lower()
 
         for sop in sops:
-            score = 0.0
-            reasons: List[str] = []
-
-            # ── Keyword matching (weight 0.50) ──
-            keyword_score = self._keyword_score(short_desc_lower, desc_lower, sop)
-            score += keyword_score * 0.50
-            if keyword_score > 0:
-                reasons.append(f"keyword={keyword_score:.2f}")
-
-            # ── Category matching (weight 0.15) ──
-            cat_score = self._category_score(incident, sop)
-            score += cat_score * 0.15
-            if cat_score > 0:
-                reasons.append(f"category={cat_score:.2f}")
-
-            # ── CI / service matching (weight 0.20) ──
-            ci_score = self._ci_score(incident, sop)
-            score += ci_score * 0.20
-            if ci_score > 0:
-                reasons.append(f"ci={ci_score:.2f}")
-
-            # ── Assignment group matching (weight 0.15) ──
-            group_score = self._group_score(incident, sop)
-            score += group_score * 0.15
-            if group_score > 0:
-                reasons.append(f"group={group_score:.2f}")
+            signals = {
+                "keyword": self._keyword_score(short_desc_lower, desc_lower, sop),
+                "ci": self._ci_score(incident, sop),
+                "category": self._category_score(incident, sop),
+                "group": self._group_score(incident, sop),
+            }
+            compared = {name: value for name, value in signals.items() if value is not None}
+            weight = sum(WEIGHTS[name] for name in compared)
+            score = (
+                sum(WEIGHTS[name] * value for name, value in compared.items()) / weight
+                if weight
+                else 0.0
+            )
+            reasons = [f"{name}={value:.2f}" for name, value in compared.items() if value > 0]
+            skipped = [name for name in signals if name not in compared]
+            if skipped:
+                reasons.append(f"not compared: {'/'.join(skipped)}")
 
             # Apply historical success-rate boost when memory is available
             if self._memory and sop.sop_id:
@@ -130,58 +144,60 @@ class SOPMatcher:
     # ── Scoring helpers ───────────────────────────────────────────────
 
     @staticmethod
-    def _keyword_score(short_desc: str, desc: str, sop: SOP) -> float:
-        """Score keyword matches against the SOP's keywords and title."""
-        if not sop.keywords and not sop.title:
-            return 0.0
+    def _keyword_score(short_desc: str, desc: str, sop: SOP) -> Optional[float]:
+        """Score the ticket text against the SOP's keywords and title.
 
-        matches = 0
-        total = max(len(sop.keywords), 1)
+        Counts distinct keywords found as whole words in either description, plus
+        the share of the title's words found in the short description (worth at
+        most one keyword). Full score at KEYWORD_HITS_FOR_FULL_SCORE hits, or at
+        every keyword when the SOP lists fewer.
+        """
+        title_words = _tokens(sop.title)
+        if not sop.keywords and not title_words:
+            return None
 
-        # Check SOP title words in the incident short_description
-        title_words = set(sop.title.lower().split())
-        title_matches = sum(1 for w in title_words if w in short_desc)
-        if title_words:
-            matches += title_matches / len(title_words)
-
-        # Check each keyword via regex or substring
+        hits = 0.0
         for kw in sop.keywords:
             pattern = kw.lower()
             try:
-                if re.search(pattern, short_desc) or re.search(pattern, desc):
-                    matches += 1
+                bounded = re.compile(rf"(?<![a-z0-9])(?:{pattern})(?![a-z0-9])")
             except re.error:
-                if pattern in short_desc or pattern in desc:
-                    matches += 1
+                bounded = re.compile(rf"(?<![a-z0-9]){re.escape(pattern)}(?![a-z0-9])")
+            if bounded.search(short_desc) or bounded.search(desc):
+                hits += 1
 
-        return min(matches / total, 1.0)
+        if title_words:
+            hits += len(title_words & _tokens(short_desc)) / len(title_words)
+
+        needed = min(len(sop.keywords), KEYWORD_HITS_FOR_FULL_SCORE) or 1
+        return min(hits / needed, 1.0)
 
     @staticmethod
-    def _category_score(incident: Incident, sop: SOP) -> float:
-        if not sop.applicable_categories:
-            return 0.0
-        cat = incident.category.lower()
-        subcat = incident.subcategory.lower()
+    def _category_score(incident: Incident, sop: SOP) -> Optional[float]:
+        cat = incident.category.strip().lower()
+        subcat = incident.subcategory.strip().lower()
+        if not sop.applicable_categories or not (cat or subcat):
+            return None
         for ac in sop.applicable_categories:
             if ac.lower() in (cat, subcat):
                 return 1.0
         return 0.0
 
     @staticmethod
-    def _ci_score(incident: Incident, sop: SOP) -> float:
-        if not sop.applicable_services:
-            return 0.0
-        ci = incident.cmdb_ci.lower()
+    def _ci_score(incident: Incident, sop: SOP) -> Optional[float]:
+        ci = incident.cmdb_ci.strip().lower()
+        if not sop.applicable_services or not ci:
+            return None
         for svc in sop.applicable_services:
             if svc.lower() == ci or svc.lower() in ci:
                 return 1.0
         return 0.0
 
     @staticmethod
-    def _group_score(incident: Incident, sop: SOP) -> float:
-        if not sop.applicable_assignment_groups:
-            return 0.0
-        group = incident.assignment_group.lower()
+    def _group_score(incident: Incident, sop: SOP) -> Optional[float]:
+        group = incident.assignment_group.strip().lower()
+        if not sop.applicable_assignment_groups or not group:
+            return None
         for ag in sop.applicable_assignment_groups:
             if ag.lower() == group:
                 return 1.0

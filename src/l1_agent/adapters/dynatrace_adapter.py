@@ -100,7 +100,9 @@ class DynatraceAdapter(BaseAdapter):
         if host_name:
             selector_parts.append(f'entityName("{host_name}")')
         if host_group:
-            selector_parts.append(f'fromRelationships.isInstanceOf(type("HOST_GROUP"),entityName("{host_group}"))')
+            selector_parts.append(
+                f'fromRelationships.isInstanceOf(type("HOST_GROUP"),entityName("{host_group}"))'
+            )
         entity_selector = ",".join(selector_parts)
 
         # Query hosts
@@ -120,11 +122,13 @@ class DynatraceAdapter(BaseAdapter):
         # Build evidence
         host_summaries = []
         for h in hosts[:10]:
-            host_summaries.append({
-                "entity_id": h.get("entityId", ""),
-                "display_name": h.get("displayName", ""),
-                "properties": h.get("properties", {}),
-            })
+            host_summaries.append(
+                {
+                    "entity_id": h.get("entityId", ""),
+                    "display_name": h.get("displayName", ""),
+                    "properties": h.get("properties", {}),
+                }
+            )
 
         evidence_lines = [f"VM Health Check | Host filter: {host_name or 'all'}"]
         evidence_lines.append(f"  Hosts found: {len(hosts)}")
@@ -205,9 +209,7 @@ class DynatraceAdapter(BaseAdapter):
 
                 host_label = dimensions.get("dt.entity.host", "unknown")
                 if latest_value is not None:
-                    evidence_lines.append(
-                        f"  {metric_id} [{host_label}]: {latest_value:.1f}"
-                    )
+                    evidence_lines.append(f"  {metric_id} [{host_label}]: {latest_value:.1f}")
 
         metrics.increment("dynatrace.metric_queries")
         return AdapterResult(
@@ -255,9 +257,7 @@ class DynatraceAdapter(BaseAdapter):
 
     # ── Internal helpers ──────────────────────────────────────────────
 
-    async def _get_entities(
-        self, entity_selector: str, page_size: int = 50
-    ) -> list:
+    async def _get_entities(self, entity_selector: str, page_size: int = 50) -> list:
         """Fetch entities from the Dynatrace Entities API."""
         url = f"{self._base_url}/api/v2/entities"
         params = {"entitySelector": entity_selector, "pageSize": str(page_size)}
@@ -282,9 +282,7 @@ class DynatraceAdapter(BaseAdapter):
         if not entity_ids:
             return []
 
-        entity_selector = ",".join(
-            f'entityId("{eid}")' for eid in entity_ids[:20]
-        )
+        entity_selector = ",".join(f'entityId("{eid}")' for eid in entity_ids[:20])
 
         url = f"{self._base_url}/api/v2/problems"
         params: Dict[str, str] = {

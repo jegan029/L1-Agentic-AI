@@ -421,9 +421,7 @@ def get_sop_selection_tools() -> List[Dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": "escalate_no_sop",
-                "description": (
-                    "Escalate when no suitable SOP matches the incident."
-                ),
+                "description": ("Escalate when no suitable SOP matches the incident."),
                 "parameters": {
                     "type": "object",
                     "properties": {

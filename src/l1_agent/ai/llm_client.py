@@ -133,9 +133,7 @@ class LLMClient:
             )
 
             if not response.tool_calls:
-                logger.info(
-                    "LLM finished after %d tool-call iterations", iteration
-                )
+                logger.info("LLM finished after %d tool-call iterations", iteration)
                 return response
 
             # Append the assistant message with tool calls
@@ -149,23 +147,19 @@ class LLMClient:
                     tc.arguments_str[:200],
                 )
                 try:
-                    result = await tool_executor(
-                        tc.function_name, tc.arguments
-                    )
-                    result_str = (
-                        result if isinstance(result, str) else json.dumps(result)
-                    )
+                    result = await tool_executor(tc.function_name, tc.arguments)
+                    result_str = result if isinstance(result, str) else json.dumps(result)
                 except Exception as exc:
                     logger.error("Tool execution failed: %s - %s", tc.function_name, exc)
-                    result_str = json.dumps(
-                        {"error": str(exc), "tool": tc.function_name}
-                    )
+                    result_str = json.dumps({"error": str(exc), "tool": tc.function_name})
 
-                current_messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.call_id,
-                    "content": result_str,
-                })
+                current_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.call_id,
+                        "content": result_str,
+                    }
+                )
 
         logger.warning("Tool-calling loop hit max iterations (%d)", max_iterations)
         return response

@@ -48,24 +48,26 @@ def make_dashboard_handler(store: IncidentHistoryStore):
                 reason = key.split("reason=")[-1].rstrip("}")
                 escalation_reasons.append({"reason": reason, "count": int(val)})
 
-        return web.json_response({
-            "kpi": {
-                "incidents_received": received,
-                "incidents_resolved": resolved,
-                "incidents_escalated": escalated,
-                "incidents_failed": failed,
-                "resolution_rate_pct": resolution_rate,
-                "avg_resolution_ms": round(avg_ms, 1) if avg_ms is not None else None,
-                "currently_processing": currently_processing,
-            },
-            "outcome_breakdown": [
-                {"label": "Resolved",  "value": resolved,  "color": "#22c55e"},
-                {"label": "Escalated", "value": escalated, "color": "#f97316"},
-                {"label": "Failed",    "value": failed,    "color": "#ef4444"},
-            ],
-            "escalation_reasons": escalation_reasons,
-            "trend_7day": store.trend_7day(),
-            "uptime_seconds": uptime,
-        })
+        return web.json_response(
+            {
+                "kpi": {
+                    "incidents_received": received,
+                    "incidents_resolved": resolved,
+                    "incidents_escalated": escalated,
+                    "incidents_failed": failed,
+                    "resolution_rate_pct": resolution_rate,
+                    "avg_resolution_ms": round(avg_ms, 1) if avg_ms is not None else None,
+                    "currently_processing": currently_processing,
+                },
+                "outcome_breakdown": [
+                    {"label": "Resolved", "value": resolved, "color": "#22c55e"},
+                    {"label": "Escalated", "value": escalated, "color": "#f97316"},
+                    {"label": "Failed", "value": failed, "color": "#ef4444"},
+                ],
+                "escalation_reasons": escalation_reasons,
+                "trend_7day": store.trend_7day(),
+                "uptime_seconds": uptime,
+            }
+        )
 
     return handle_dashboard_summary

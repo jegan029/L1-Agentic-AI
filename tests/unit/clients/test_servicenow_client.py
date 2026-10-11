@@ -71,7 +71,9 @@ class TestServiceNowClient:
     @pytest.mark.asyncio
     async def test_add_work_note(self, client):
         mock_response = {"result": {"sys_id": "abc123"}}
-        with patch.object(client, "update_incident", new_callable=AsyncMock, return_value=mock_response["result"]):
+        with patch.object(
+            client, "update_incident", new_callable=AsyncMock, return_value=mock_response["result"]
+        ):
             result = await client.add_work_note("abc123", "Test note")
         assert result["sys_id"] == "abc123"
 

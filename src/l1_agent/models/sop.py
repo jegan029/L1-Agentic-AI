@@ -83,9 +83,7 @@ class SOP:
     steps: List[SOPStep] = field(default_factory=list)
     pre_checks: List[str] = field(default_factory=list)
     tools_required: List[str] = field(default_factory=list)
-    escalation_criteria: EscalationCriteria = field(
-        default_factory=EscalationCriteria
-    )
+    escalation_criteria: EscalationCriteria = field(default_factory=EscalationCriteria)
     version: str = "1.0"
 
     @classmethod
@@ -100,9 +98,7 @@ class SOP:
             steps=[SOPStep.from_dict(s) for s in data.get("steps", [])],
             pre_checks=data.get("pre_checks", []),
             tools_required=data.get("tools_required", []),
-            escalation_criteria=EscalationCriteria.from_dict(
-                data.get("escalation_criteria", {})
-            ),
+            escalation_criteria=EscalationCriteria.from_dict(data.get("escalation_criteria", {})),
             version=data.get("version", "1.0"),
         )
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def run_crew_for_incident(
@@ -71,14 +71,20 @@ def _parse_crew_result(crew_output: Any, tasks: List[Any], incident: Any, elapse
     try:
         tasks_output = crew_output.tasks_output if hasattr(crew_output, "tasks_output") else []
         if tasks_output:
-            resolver_output = str(tasks_output[-1].raw if hasattr(tasks_output[-1], "raw") else tasks_output[-1])
+            resolver_output = str(
+                tasks_output[-1].raw if hasattr(tasks_output[-1], "raw") else tasks_output[-1]
+            )
             # Try to extract SOP from review task output (2nd task)
             if len(tasks_output) >= 2:
-                review_raw = str(tasks_output[1].raw if hasattr(tasks_output[1], "raw") else tasks_output[1])
+                review_raw = str(
+                    tasks_output[1].raw if hasattr(tasks_output[1], "raw") else tasks_output[1]
+                )
                 sop_match = re.search(r"SOP[-\s]?ID[:\s]+([A-Z0-9\-]+)", review_raw, re.IGNORECASE)
                 if sop_match:
                     sop_id = sop_match.group(1).strip()
-                title_match = re.search(r"(?:Title|SOP)[:\s]+[A-Z0-9\-]+\s*[—–-]\s*(.+)", review_raw)
+                title_match = re.search(
+                    r"(?:Title|SOP)[:\s]+[A-Z0-9\-]+\s*[—–-]\s*(.+)", review_raw
+                )
                 if title_match:
                     sop_title = title_match.group(1).strip()
         else:
@@ -90,7 +96,9 @@ def _parse_crew_result(crew_output: Any, tasks: List[Any], incident: Any, elapse
     outcome = _extract_outcome(resolver_output)
     escalation_reason = ""
     if outcome == ExecutionOutcome.ESCALATED:
-        esc_match = re.search(r"(?:Reason|ESCALATED)[:\s—–-]+(.+?)(?:\n|$)", resolver_output, re.IGNORECASE)
+        esc_match = re.search(
+            r"(?:Reason|ESCALATED)[:\s—–-]+(.+?)(?:\n|$)", resolver_output, re.IGNORECASE
+        )
         if esc_match:
             escalation_reason = esc_match.group(1).strip()
         else:
@@ -136,7 +144,9 @@ def _parse_crew_result(crew_output: Any, tasks: List[Any], incident: Any, elapse
             StepResult(
                 step_id="crew-pipeline",
                 step_type="CREW_PIPELINE",
-                status=StepStatus.SUCCESS if outcome == ExecutionOutcome.RESOLVED else StepStatus.FAIL,
+                status=StepStatus.SUCCESS
+                if outcome == ExecutionOutcome.RESOLVED
+                else StepStatus.FAIL,
                 evidence=resolver_output,
                 tool_called="CrewAI",
                 output_summary=resolver_output[:300],

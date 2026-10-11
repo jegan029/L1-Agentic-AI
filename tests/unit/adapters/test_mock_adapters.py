@@ -41,11 +41,13 @@ class TestMockIR360Adapter:
     @pytest.mark.asyncio
     async def test_depth_check(self):
         adapter = MockIR360Adapter()
-        result = await adapter.execute({
-            "queue_manager": "QMPROD01",
-            "queue": "PAYMENT.REQUEST",
-            "action": "depth",
-        })
+        result = await adapter.execute(
+            {
+                "queue_manager": "QMPROD01",
+                "queue": "PAYMENT.REQUEST",
+                "action": "depth",
+            }
+        )
         assert result.success is True
         assert result.data["current_depth"] == 1523
         assert "depth" in result.evidence_snippet.lower()
@@ -53,11 +55,13 @@ class TestMockIR360Adapter:
     @pytest.mark.asyncio
     async def test_status_check(self):
         adapter = MockIR360Adapter()
-        result = await adapter.execute({
-            "queue_manager": "QMPROD01",
-            "queue": "PAYMENT.REQUEST",
-            "action": "status",
-        })
+        result = await adapter.execute(
+            {
+                "queue_manager": "QMPROD01",
+                "queue": "PAYMENT.REQUEST",
+                "action": "status",
+            }
+        )
         assert result.success is True
         assert result.data["status"] == "RUNNING"
 
@@ -71,19 +75,23 @@ class TestMockWindowsShareAdapter:
     @pytest.mark.asyncio
     async def test_read_lines(self):
         adapter = MockWindowsShareAdapter()
-        result = await adapter.execute({
-            "unc_path": "//server/logs/app.log",
-        })
+        result = await adapter.execute(
+            {
+                "unc_path": "//server/logs/app.log",
+            }
+        )
         assert result.success is True
         assert result.data["line_count"] > 0
 
     @pytest.mark.asyncio
     async def test_pattern_filter(self):
         adapter = MockWindowsShareAdapter()
-        result = await adapter.execute({
-            "unc_path": "//server/logs/app.log",
-            "pattern": "ERROR",
-        })
+        result = await adapter.execute(
+            {
+                "unc_path": "//server/logs/app.log",
+                "pattern": "ERROR",
+            }
+        )
         assert result.success is True
         # Filtered results should only have ERROR lines
         for line in result.raw_output.split("\n"):
@@ -100,19 +108,23 @@ class TestMockAutosysAdapter:
     @pytest.mark.asyncio
     async def test_status_query(self):
         adapter = MockAutosysAdapter()
-        result = await adapter.execute({
-            "job_name": "TEST_JOB",
-            "query_type": "status",
-        })
+        result = await adapter.execute(
+            {
+                "job_name": "TEST_JOB",
+                "query_type": "status",
+            }
+        )
         assert result.success is True
         assert len(result.data["jobs"]) > 0
 
     @pytest.mark.asyncio
     async def test_dependencies_query(self):
         adapter = MockAutosysAdapter()
-        result = await adapter.execute({
-            "job_name": "TEST_JOB",
-            "query_type": "dependencies",
-        })
+        result = await adapter.execute(
+            {
+                "job_name": "TEST_JOB",
+                "query_type": "dependencies",
+            }
+        )
         assert result.success is True
         assert len(result.data["jobs"]) > 0

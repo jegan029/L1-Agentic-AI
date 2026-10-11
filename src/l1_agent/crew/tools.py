@@ -33,6 +33,7 @@ def register_sops(sops: List[Any]) -> None:
 
 # ── Async → sync bridge ───────────────────────────────────────────────────────
 
+
 def _run_sync(coro) -> Any:
     """Run an async coroutine synchronously for use inside CrewAI tool calls."""
     try:
@@ -53,6 +54,7 @@ def _fmt(result: Any) -> str:
 
 
 # ── Adapter-backed tools ──────────────────────────────────────────────────────
+
 
 @tool("Splunk Log Search")
 def splunk_search(query: str, time_range: str = "now-1h") -> str:
@@ -92,12 +94,18 @@ def dynatrace_metrics(
     adapter = _adapters.get("dynatrace")
     if not adapter:
         return "Dynatrace adapter not available."
-    return _fmt(_run_sync(adapter.execute({
-        "action": "metrics",
-        "metric_selector": metric_selector,
-        "entity_selector": f'type("HOST"),entityName("{host_name}")',
-        "time_range": time_range,
-    })))
+    return _fmt(
+        _run_sync(
+            adapter.execute(
+                {
+                    "action": "metrics",
+                    "metric_selector": metric_selector,
+                    "entity_selector": f'type("HOST"),entityName("{host_name}")',
+                    "time_range": time_range,
+                }
+            )
+        )
+    )
 
 
 @tool("MQ Queue Check")
@@ -111,11 +119,17 @@ def mq_check(queue_manager: str, queue_name: str, action: str = "depth") -> str:
     adapter = _adapters.get("ir360")
     if not adapter:
         return "MQ adapter not available."
-    return _fmt(_run_sync(adapter.execute({
-        "action": action,
-        "queue_manager": queue_manager,
-        "queue": queue_name,
-    })))
+    return _fmt(
+        _run_sync(
+            adapter.execute(
+                {
+                    "action": action,
+                    "queue_manager": queue_manager,
+                    "queue": queue_name,
+                }
+            )
+        )
+    )
 
 
 @tool("Autosys Job Status")
@@ -141,11 +155,17 @@ def file_check(unc_path: str, pattern: str = "", last_n_lines: int = 100) -> str
     adapter = _adapters.get("windows_share")
     if not adapter:
         return "Windows share adapter not available."
-    return _fmt(_run_sync(adapter.execute({
-        "unc_path": unc_path,
-        "pattern": pattern,
-        "last_n_lines": last_n_lines,
-    })))
+    return _fmt(
+        _run_sync(
+            adapter.execute(
+                {
+                    "unc_path": unc_path,
+                    "pattern": pattern,
+                    "last_n_lines": last_n_lines,
+                }
+            )
+        )
+    )
 
 
 @tool("Web Application Health Check")
@@ -159,15 +179,23 @@ def web_ui_check(url: str, check_type: str = "availability", expected_text: str 
     adapter = _adapters.get("webui")
     if not adapter:
         return "Web UI adapter not available."
-    return _fmt(_run_sync(adapter.execute({
-        "url": url,
-        "check_type": check_type,
-        "expected_text": expected_text,
-    })))
+    return _fmt(
+        _run_sync(
+            adapter.execute(
+                {
+                    "url": url,
+                    "check_type": check_type,
+                    "expected_text": expected_text,
+                }
+            )
+        )
+    )
 
 
 @tool("Mainframe Job Status Check")
-def mainframe_check(job_name: str, expected_status: str = "COMPLETE", action: str = "status") -> str:
+def mainframe_check(
+    job_name: str, expected_status: str = "COMPLETE", action: str = "status"
+) -> str:
     """Check mainframe batch job status via TN3270 terminal.
     action can be 'status' (current state) or 'output' (SYSOUT/error log).
     expected_status is the target state, e.g. 'COMPLETE', 'RUNNING', 'ABEND'.
@@ -175,14 +203,21 @@ def mainframe_check(job_name: str, expected_status: str = "COMPLETE", action: st
     adapter = _adapters.get("mainframe")
     if not adapter:
         return "Mainframe adapter not available."
-    return _fmt(_run_sync(adapter.execute({
-        "job_name": job_name,
-        "expected_status": expected_status,
-        "action": action,
-    })))
+    return _fmt(
+        _run_sync(
+            adapter.execute(
+                {
+                    "job_name": job_name,
+                    "expected_status": expected_status,
+                    "action": action,
+                }
+            )
+        )
+    )
 
 
 # ── SOP lookup tools ──────────────────────────────────────────────────────────
+
 
 @tool("List Available SOPs")
 def list_sops() -> str:

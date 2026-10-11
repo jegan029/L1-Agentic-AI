@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.models.sop import SOP
@@ -102,7 +102,9 @@ class SOPMatcher:
                     score = min(score * boost, 1.0)
                     reasons.append(f"memory_boost={boost:.2f}")
 
-            rationale = f"Score {score:.2f}: {', '.join(reasons) if reasons else 'no match signals'}"
+            rationale = (
+                f"Score {score:.2f}: {', '.join(reasons) if reasons else 'no match signals'}"
+            )
             scored.append((sop, score, rationale))
 
         scored.sort(key=lambda x: x[1], reverse=True)

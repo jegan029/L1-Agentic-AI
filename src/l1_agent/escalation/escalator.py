@@ -59,9 +59,7 @@ async def escalate_to_l2(
                 {"assignment_group": l2_team["name"]},
             )
         except Exception as exc:
-            logger.warning(
-                "Failed to update SNOW assignment for %s: %s", incident.number, exc
-            )
+            logger.warning("Failed to update SNOW assignment for %s: %s", incident.number, exc)
 
     # Send email notification (best-effort)
     subject = f"[L1 Agent] Escalation: {incident.number} — {incident.short_description}"
@@ -74,14 +72,16 @@ async def escalate_to_l2(
 
     # Emit enriched SSE event
     if event_bus:
-        await event_bus.publish({
-            "type": "incident_escalated",
-            "incident_number": incident.number,
-            "reason": reason,
-            "l2_team_name": l2_team["name"],
-            "l2_team_email": l2_team["email"],
-            "email_sent": email_sent,
-        })
+        await event_bus.publish(
+            {
+                "type": "incident_escalated",
+                "incident_number": incident.number,
+                "reason": reason,
+                "l2_team_name": l2_team["name"],
+                "l2_team_email": l2_team["email"],
+                "email_sent": email_sent,
+            }
+        )
 
 
 def _build_email_body(

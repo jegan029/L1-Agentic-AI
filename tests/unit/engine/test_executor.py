@@ -45,14 +45,16 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_execute_note_step(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "NOTE",
-                "description": "A note",
-                "parameters": {"text": "Hello from the agent"},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "NOTE",
+                    "description": "A note",
+                    "parameters": {"text": "Hello from the agent"},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.RESOLVED
@@ -62,13 +64,15 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_execute_mq_check(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "MQ_CHECK",
-                "parameters": {"queue_manager": "QM1", "queue": "Q1", "action": "depth"},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "MQ_CHECK",
+                    "parameters": {"queue_manager": "QM1", "queue": "Q1", "action": "depth"},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.RESOLVED
@@ -77,13 +81,15 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_execute_splunk_search(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "SPLUNK_SEARCH",
-                "parameters": {"query": "index=main error", "time_range": {"earliest": "-1h"}},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "SPLUNK_SEARCH",
+                    "parameters": {"query": "index=main error", "time_range": {"earliest": "-1h"}},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.RESOLVED
@@ -91,13 +97,15 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_execute_autosys_status(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "AUTOSYS_STATUS",
-                "parameters": {"job_name": "TEST_JOB"},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "AUTOSYS_STATUS",
+                    "parameters": {"job_name": "TEST_JOB"},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.RESOLVED
@@ -105,13 +113,15 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_execute_file_check(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "FILE_CHECK",
-                "parameters": {"unc_path": "//server/logs/app.log"},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "FILE_CHECK",
+                    "parameters": {"unc_path": "//server/logs/app.log"},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.RESOLVED
@@ -119,31 +129,33 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_execute_decision_any_failed(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "NOTE",
-                "parameters": {"text": "Start"},
-                "on_success": "s2",
-            },
-            {
-                "step_id": "s2",
-                "step_type": "DECISION",
-                "parameters": {"rule": "any_failed"},
-                "on_success": "s3",
-                "on_failure": "s-esc",
-            },
-            {
-                "step_id": "s3",
-                "step_type": "NOTE",
-                "parameters": {"text": "All good"},
-            },
-            {
-                "step_id": "s-esc",
-                "step_type": "NOTE",
-                "parameters": {"text": "Escalating"},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "NOTE",
+                    "parameters": {"text": "Start"},
+                    "on_success": "s2",
+                },
+                {
+                    "step_id": "s2",
+                    "step_type": "DECISION",
+                    "parameters": {"rule": "any_failed"},
+                    "on_success": "s3",
+                    "on_failure": "s-esc",
+                },
+                {
+                    "step_id": "s3",
+                    "step_type": "NOTE",
+                    "parameters": {"text": "All good"},
+                },
+                {
+                    "step_id": "s-esc",
+                    "step_type": "NOTE",
+                    "parameters": {"text": "Escalating"},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.RESOLVED
@@ -155,14 +167,16 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_approval_gate_escalates(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "NOTE",
-                "parameters": {"text": "Start"},
-                "requires_approval": True,
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "NOTE",
+                    "parameters": {"text": "Start"},
+                    "requires_approval": True,
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.ESCALATED
@@ -171,13 +185,15 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_missing_adapter_escalates(self):
         executor = SOPExecutor(adapters={})  # No adapters
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "SPLUNK_SEARCH",
-                "parameters": {"query": "test"},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "SPLUNK_SEARCH",
+                    "parameters": {"query": "test"},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.ESCALATED
@@ -185,13 +201,15 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_unknown_step_type_fails(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "UNKNOWN_TYPE",
-                "parameters": {},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "UNKNOWN_TYPE",
+                    "parameters": {},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.FAILED
@@ -199,31 +217,33 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_multi_step_chain(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "NOTE",
-                "parameters": {"text": "Start"},
-                "on_success": "s2",
-            },
-            {
-                "step_id": "s2",
-                "step_type": "MQ_CHECK",
-                "parameters": {"queue_manager": "QM1", "queue": "Q1", "action": "depth"},
-                "on_success": "s3",
-            },
-            {
-                "step_id": "s3",
-                "step_type": "SPLUNK_SEARCH",
-                "parameters": {"query": "index=main"},
-                "on_success": "s4",
-            },
-            {
-                "step_id": "s4",
-                "step_type": "NOTE",
-                "parameters": {"text": "Done"},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "NOTE",
+                    "parameters": {"text": "Start"},
+                    "on_success": "s2",
+                },
+                {
+                    "step_id": "s2",
+                    "step_type": "MQ_CHECK",
+                    "parameters": {"queue_manager": "QM1", "queue": "Q1", "action": "depth"},
+                    "on_success": "s3",
+                },
+                {
+                    "step_id": "s3",
+                    "step_type": "SPLUNK_SEARCH",
+                    "parameters": {"query": "index=main"},
+                    "on_success": "s4",
+                },
+                {
+                    "step_id": "s4",
+                    "step_type": "NOTE",
+                    "parameters": {"text": "Done"},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.outcome == ExecutionOutcome.RESOLVED
@@ -237,13 +257,15 @@ class TestSOPExecutor:
             notes.append(note)
 
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "NOTE",
-                "parameters": {"text": "Hello"},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "NOTE",
+                    "parameters": {"text": "Hello"},
+                },
+            ]
+        )
         await executor.execute_sop(_make_incident(), sop, work_note_callback=capture_note)
 
         assert len(notes) >= 1
@@ -251,13 +273,15 @@ class TestSOPExecutor:
     @pytest.mark.asyncio
     async def test_execution_summary_has_timing(self):
         executor = SOPExecutor(adapters=_make_adapters())
-        sop = _make_sop([
-            {
-                "step_id": "s1",
-                "step_type": "NOTE",
-                "parameters": {"text": "Timed"},
-            },
-        ])
+        sop = _make_sop(
+            [
+                {
+                    "step_id": "s1",
+                    "step_type": "NOTE",
+                    "parameters": {"text": "Timed"},
+                },
+            ]
+        )
         summary = await executor.execute_sop(_make_incident(), sop)
 
         assert summary.total_duration_ms > 0

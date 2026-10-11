@@ -24,9 +24,7 @@ class WindowsShareAdapter(BaseAdapter):
 
     def __init__(self, settings: WindowsShareSettings) -> None:
         self._settings = settings
-        self._allowed_prefixes = [
-            p.replace("\\", "/") for p in settings.allowed_unc_prefixes
-        ]
+        self._allowed_prefixes = [p.replace("\\", "/") for p in settings.allowed_unc_prefixes]
 
     @property
     def adapter_name(self) -> str:
@@ -74,13 +72,9 @@ class WindowsShareAdapter(BaseAdapter):
                 evidence_snippet=evidence,
             )
         except FileNotFoundError:
-            return AdapterResult(
-                success=False, error=f"File not found: {normalised}"
-            )
+            return AdapterResult(success=False, error=f"File not found: {normalised}")
         except PermissionError:
-            return AdapterResult(
-                success=False, error=f"Permission denied: {normalised}"
-            )
+            return AdapterResult(success=False, error=f"Permission denied: {normalised}")
         except Exception as exc:
             metrics.increment("windows_share.errors")
             return AdapterResult(success=False, error=str(exc))
@@ -90,10 +84,10 @@ class WindowsShareAdapter(BaseAdapter):
             return False
         # Resolve path traversal sequences (e.g. /../) before checking prefix
         import posixpath
+
         normalised = posixpath.normpath(path)
         return any(
-            normalised.startswith(posixpath.normpath(prefix))
-            for prefix in self._allowed_prefixes
+            normalised.startswith(posixpath.normpath(prefix)) for prefix in self._allowed_prefixes
         )
 
     async def _read_file(self, path: str, last_n: int) -> List[str]:

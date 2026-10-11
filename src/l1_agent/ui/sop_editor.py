@@ -13,7 +13,6 @@ SOPs are stored as JSON files under the configured sop_dir (default: data/sample
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import List, Optional
@@ -144,18 +143,20 @@ class SOPEditorRoutes:
                 pass
 
         table = (
-            "<table><thead><tr>"
-            "<th>SOP ID</th><th>Title</th><th>Version</th>"
-            "<th>Services</th><th></th>"
-            "</tr></thead><tbody>"
-            + "".join(rows)
-            + "</tbody></table>"
-        ) if rows else "<p>No SOPs found. <a href='/sop-editor/new'>Create the first one</a>.</p>"
+            (
+                "<table><thead><tr>"
+                "<th>SOP ID</th><th>Title</th><th>Version</th>"
+                "<th>Services</th><th></th>"
+                "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+            )
+            if rows
+            else "<p>No SOPs found. <a href='/sop-editor/new'>Create the first one</a>.</p>"
+        )
 
         html = (
             _HTML_HEADER
             + '<div class="card"><h2>SOP Library</h2>'
-            + f'<a class="btn btn-primary" href="/sop-editor/new" style="margin-bottom:16px">+ New SOP</a>'
+            + '<a class="btn btn-primary" href="/sop-editor/new" style="margin-bottom:16px">+ New SOP</a>'
             + table
             + "</div>"
             + _HTML_FOOTER
@@ -195,9 +196,7 @@ class SOPEditorRoutes:
             raise web.HTTPNotFound(text=f"SOP '{sop_id}' not found")
 
         flash = request.rel_url.query.get("saved")
-        flash_html = (
-            f'<div class="flash flash-ok">SOP saved successfully.</div>' if flash else ""
-        )
+        flash_html = '<div class="flash flash-ok">SOP saved successfully.</div>' if flash else ""
         return self._render_form(data, flash=flash_html)
 
     def _render_form(self, sop: dict, flash: Optional[str]) -> web.Response:
@@ -217,11 +216,11 @@ class SOPEditorRoutes:
             + '<div class="card">'
             + f"<h2>{'Edit' if sop_id else 'New'} SOP: {title}</h2>"
             + '<form method="post" action="/sop-editor/save">'
-            + '<label>SOP JSON (edit directly or use the fields below)</label>'
+            + "<label>SOP JSON (edit directly or use the fields below)</label>"
             + f'<textarea name="sop_json" spellcheck="false">{json_str}</textarea>'
             + '<div style="display:flex;gap:12px;align-items:center">'
             + '<button class="btn btn-primary" type="submit">Save SOP</button>'
-            + f'<a class="btn btn-secondary" href="/sop-editor/">Cancel</a>'
+            + '<a class="btn btn-secondary" href="/sop-editor/">Cancel</a>'
             + delete_btn
             + "</div>"
             + "</form>"

@@ -28,9 +28,7 @@ class StepResult:
     input_summary: str = ""
     output_summary: str = ""
     recommended_next_step: str = ""
-    timestamp: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     duration_ms: float = 0.0
 
     def to_audit_dict(self) -> dict:
@@ -65,9 +63,7 @@ class ExecutionSummary:
     outcome: ExecutionOutcome
     step_results: List[StepResult] = field(default_factory=list)
     escalation_reason: str = ""
-    started_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     completed_at: str = ""
     total_duration_ms: float = 0.0
 

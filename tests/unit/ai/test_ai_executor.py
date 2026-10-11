@@ -99,11 +99,13 @@ class TestAIExecutor:
                         "id": "call_2",
                         "function": {
                             "name": "mq_check",
-                            "arguments": json.dumps({
-                                "queue_manager": "QM1",
-                                "queue": "Q1",
-                                "action": "depth",
-                            }),
+                            "arguments": json.dumps(
+                                {
+                                    "queue_manager": "QM1",
+                                    "queue": "Q1",
+                                    "action": "depth",
+                                }
+                            ),
                         },
                     },
                 ],
@@ -115,10 +117,12 @@ class TestAIExecutor:
                         "id": "call_3",
                         "function": {
                             "name": "resolve_incident",
-                            "arguments": json.dumps({
-                                "resolution_summary": "Queue depth normal",
-                                "evidence_summary": "MQ depth checked OK",
-                            }),
+                            "arguments": json.dumps(
+                                {
+                                    "resolution_summary": "Queue depth normal",
+                                    "evidence_summary": "MQ depth checked OK",
+                                }
+                            ),
                         },
                     },
                 ],
@@ -151,11 +155,13 @@ class TestAIExecutor:
                         "id": "call_1",
                         "function": {
                             "name": "escalate_to_l2",
-                            "arguments": json.dumps({
-                                "reason": "Write action required to restart service",
-                                "findings_summary": "MQ depth high, consumer crashed",
-                                "recommended_actions": "Restart PaymentService consumer",
-                            }),
+                            "arguments": json.dumps(
+                                {
+                                    "reason": "Write action required to restart service",
+                                    "findings_summary": "MQ depth high, consumer crashed",
+                                    "recommended_actions": "Restart PaymentService consumer",
+                                }
+                            ),
                         },
                     },
                 ],
@@ -197,9 +203,11 @@ class TestAIExecutor:
                         "id": "call_2",
                         "function": {
                             "name": "resolve_incident",
-                            "arguments": json.dumps({
-                                "resolution_summary": "Could not search Splunk",
-                            }),
+                            "arguments": json.dumps(
+                                {
+                                    "resolution_summary": "Could not search Splunk",
+                                }
+                            ),
                         },
                     },
                 ],
@@ -250,9 +258,11 @@ class TestAIExecutor:
                         "id": "call_2",
                         "function": {
                             "name": "resolve_incident",
-                            "arguments": json.dumps({
-                                "resolution_summary": "Done",
-                            }),
+                            "arguments": json.dumps(
+                                {
+                                    "resolution_summary": "Done",
+                                }
+                            ),
                         },
                     },
                 ],
@@ -266,9 +276,7 @@ class TestAIExecutor:
             adapters=_make_adapters(),
         )
 
-        await executor.execute_sop(
-            _make_incident(), _make_sop(), work_note_callback=capture_note
-        )
+        await executor.execute_sop(_make_incident(), _make_sop(), work_note_callback=capture_note)
 
         assert len(notes_captured) >= 1
         assert any("Test note from AI" in n for n in notes_captured)

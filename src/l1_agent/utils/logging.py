@@ -80,9 +80,7 @@ def log_with_data(
     data: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Log a message with additional structured data."""
-    record = logger.makeRecord(
-        logger.name, level, "(unknown)", 0, message, (), None
-    )
+    record = logger.makeRecord(logger.name, level, "(unknown)", 0, message, (), None)
     if data:
         record.extra_data = redact_dict(data)  # type: ignore[attr-defined]
     logger.handle(record)

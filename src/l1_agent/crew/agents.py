@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 def build_agents(crewai_settings: "CrewAISettings") -> dict:
     """Build and return the four CrewAI agents as a dict keyed by role name."""
-    from crewai import Agent, LLM
+    from crewai import LLM, Agent
 
     from src.l1_agent.crew.tools import (
         autosys_status,

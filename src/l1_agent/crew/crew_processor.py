@@ -12,7 +12,6 @@ audit trail continue to work unchanged.
 from __future__ import annotations
 
 import asyncio
-import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -61,13 +60,16 @@ class CrewIncidentProcessor:
             self._processed_ids.add(incident.sys_id)
 
         logger.info("[CrewAI] Processing incident %s", incident.number)
-        await self._publish("incident_received", {
-            "type": "incident_received",
-            "incident_number": incident.number,
-            "short_description": incident.short_description,
-            "priority": incident.priority,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        })
+        await self._publish(
+            "incident_received",
+            {
+                "type": "incident_received",
+                "incident_number": incident.number,
+                "short_description": incident.short_description,
+                "priority": incident.priority,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            },
+        )
 
         # Run CrewAI synchronously in a thread pool so we don't block the event loop
         from src.l1_agent.crew.crew import run_crew_for_incident
@@ -131,14 +133,17 @@ class CrewIncidentProcessor:
             if summary.outcome == ExecutionOutcome.RESOLVED
             else "incident_escalated"
         )
-        await self._publish(event_type, {
-            "type": event_type,
-            "incident_number": incident.number,
-            "sop_id": summary.sop_id,
-            "duration_ms": summary.total_duration_ms,
-            "reason": summary.escalation_reason,
-            "ts": datetime.now(timezone.utc).isoformat(),
-        })
+        await self._publish(
+            event_type,
+            {
+                "type": event_type,
+                "incident_number": incident.number,
+                "sop_id": summary.sop_id,
+                "duration_ms": summary.total_duration_ms,
+                "reason": summary.escalation_reason,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            },
+        )
         logger.info(
             "[CrewAI] %s %s in %.0fms (SOP: %s)",
             incident.number,

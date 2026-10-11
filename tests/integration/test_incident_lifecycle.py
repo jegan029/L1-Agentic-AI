@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any, List
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -29,7 +29,6 @@ from src.l1_agent.ai.ai_executor import AIExecutor
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.mock_llm import MockLLMClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
-from src.l1_agent.config.settings import AgentSettings, Settings
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.sop_matcher import SOPMatcher
@@ -263,7 +262,11 @@ class TestAIDrivenProcessing:
         summary = await processor.process_incident(incident)
 
         assert summary.incident_number == "INC0000001"
-        assert summary.outcome in (ExecutionOutcome.RESOLVED, ExecutionOutcome.ESCALATED, ExecutionOutcome.PARTIAL)
+        assert summary.outcome in (
+            ExecutionOutcome.RESOLVED,
+            ExecutionOutcome.ESCALATED,
+            ExecutionOutcome.PARTIAL,
+        )
         # AI mode posts at least the initial analysis note
         assert snow.add_work_note.call_count >= 1
 
@@ -303,9 +306,7 @@ class TestSOPMatchingIntegration:
         processor = make_processor([mq_sop], snow, use_ai=False)
         await processor.process_incident(incident)
 
-        all_notes = " ".join(
-            str(call.args[1]) for call in snow.add_work_note.call_args_list
-        )
+        all_notes = " ".join(str(call.args[1]) for call in snow.add_work_note.call_args_list)
         assert "SOP" in all_notes or "mq" in all_notes.lower() or "queue" in all_notes.lower()
 
 
@@ -330,14 +331,28 @@ class TestAdapterHealthChecks:
     @pytest.mark.asyncio
     async def test_all_mock_adapters_execute(self) -> None:
         cases = [
-            (MockSplunkAdapter(), {"query": "index=app_logs ERROR", "time_range": {"earliest": "-1h", "latest": "now"}}),
+            (
+                MockSplunkAdapter(),
+                {
+                    "query": "index=app_logs ERROR",
+                    "time_range": {"earliest": "-1h", "latest": "now"},
+                },
+            ),
             (MockIR360Adapter(), {"queue_manager": "QM1", "queue": "TEST.Q", "action": "depth"}),
-            (MockWindowsShareAdapter(), {"unc_path": r"\\server\share\app.log", "pattern": "ERROR"}),
+            (
+                MockWindowsShareAdapter(),
+                {"unc_path": r"\\server\share\app.log", "pattern": "ERROR"},
+            ),
             (MockAutosysAdapter(), {"job_name": "BATCH_001", "query_type": "status"}),
             (MockDynatraceAdapter(), {"host_name": "prod-host-01", "check_type": "health"}),
-            (MockWebUIScraperAdapter(), {"url": "http://app.internal/health", "check_type": "page_load"}),
+            (
+                MockWebUIScraperAdapter(),
+                {"url": "http://app.internal/health", "check_type": "page_load"},
+            ),
             (MockMainframeAdapter(), {"job_name": "ASYNCJOB1", "expected_status": "inact ok"}),
         ]
         for adapter, params in cases:
             result = await adapter.execute(params)
-            assert result.success is True, f"{adapter.adapter_name}.execute() returned failure: {result.error}"
+            assert result.success is True, (
+                f"{adapter.adapter_name}.execute() returned failure: {result.error}"
+            )

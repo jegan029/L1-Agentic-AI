@@ -44,6 +44,7 @@ class _TerminalToolAction(BaseException):
         self.result_json = result_json
         super().__init__("terminal tool action")
 
+
 # ── System prompt for the execution phase ────────────────────────────
 
 EXECUTION_SYSTEM_PROMPT = """\
@@ -138,9 +139,7 @@ class AIExecutor:
         resolution_summary = ""
 
         # Create the tool executor closure
-        async def tool_executor(
-            tool_name: str, arguments: Dict[str, Any]
-        ) -> str:
+        async def tool_executor(tool_name: str, arguments: Dict[str, Any]) -> str:
             nonlocal outcome, escalation_reason, resolution_summary
 
             step_start = time.monotonic()
@@ -151,9 +150,7 @@ class AIExecutor:
                 note_text = arguments.get("note", "")
                 work_notes_posted.append(note_text)
                 if work_note_callback:
-                    await work_note_callback(
-                        incident.sys_id, f"[L1 Agent - AI] {note_text}"
-                    )
+                    await work_note_callback(incident.sys_id, f"[L1 Agent - AI] {note_text}")
                 _record_step(
                     step_results,
                     step_id=f"note-{len(work_notes_posted)}",
@@ -181,9 +178,7 @@ class AIExecutor:
                 )
                 work_notes_posted.append(escalation_note)
                 if work_note_callback:
-                    await work_note_callback(
-                        incident.sys_id, f"[L1 Agent - AI] {escalation_note}"
-                    )
+                    await work_note_callback(incident.sys_id, f"[L1 Agent - AI] {escalation_note}")
                 _record_step(
                     step_results,
                     step_id="escalation",
@@ -195,24 +190,18 @@ class AIExecutor:
                     evidence=escalation_note,
                     duration_ms=(time.monotonic() - step_start) * 1000,
                 )
-                raise _TerminalToolAction(
-                    json.dumps({"status": "escalated", "reason": reason})
-                )
+                raise _TerminalToolAction(json.dumps({"status": "escalated", "reason": reason}))
 
             if tool_name == "resolve_incident":
                 resolution_summary = arguments.get("resolution_summary", "")
                 evidence_summary = arguments.get("evidence_summary", "")
                 outcome = ExecutionOutcome.RESOLVED
                 resolve_note = (
-                    f"RESOLVED\n"
-                    f"Summary: {resolution_summary}\n"
-                    f"Evidence: {evidence_summary}"
+                    f"RESOLVED\nSummary: {resolution_summary}\nEvidence: {evidence_summary}"
                 )
                 work_notes_posted.append(resolve_note)
                 if work_note_callback:
-                    await work_note_callback(
-                        incident.sys_id, f"[L1 Agent - AI] {resolve_note}"
-                    )
+                    await work_note_callback(incident.sys_id, f"[L1 Agent - AI] {resolve_note}")
                 _record_step(
                     step_results,
                     step_id="resolution",
@@ -266,11 +255,13 @@ class AIExecutor:
                         evidence=result.evidence_snippet,
                         duration_ms=elapsed,
                     )
-                    return json.dumps({
-                        "status": "success",
-                        "data": result.data,
-                        "evidence": result.evidence_snippet,
-                    })
+                    return json.dumps(
+                        {
+                            "status": "success",
+                            "data": result.data,
+                            "evidence": result.evidence_snippet,
+                        }
+                    )
                 else:
                     _record_step(
                         step_results,
@@ -283,10 +274,12 @@ class AIExecutor:
                         error_message=result.error,
                         duration_ms=elapsed,
                     )
-                    return json.dumps({
-                        "status": "error",
-                        "error": result.error,
-                    })
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "error": result.error,
+                        }
+                    )
 
             except Exception as exc:
                 elapsed = (time.monotonic() - step_start) * 1000
@@ -355,10 +348,7 @@ class AIExecutor:
         """Build the user prompt with full incident and SOP context."""
         steps_desc = []
         for step in sop.steps:
-            step_info = (
-                f"  - Step {step.step_id} ({step.step_type}): "
-                f"{step.description}"
-            )
+            step_info = f"  - Step {step.step_id} ({step.step_type}): {step.description}"
             if step.parameters:
                 step_info += f"\n    Parameters: {json.dumps(step.parameters)}"
             if step.expected_output:
@@ -380,9 +370,7 @@ class AIExecutor:
             f"SOP: {sop.title} ({sop.sop_id})\n"
             f"Tools required: {', '.join(sop.tools_required)}\n"
             f"Pre-checks: {', '.join(sop.pre_checks)}\n\n"
-            "Steps:\n"
-            + "\n".join(steps_desc)
-            + "\n\n"
+            "Steps:\n" + "\n".join(steps_desc) + "\n\n"
             "=== INSTRUCTIONS ===\n"
             "Execute the SOP steps above using the available tools. "
             "Post work notes to document your findings after each "

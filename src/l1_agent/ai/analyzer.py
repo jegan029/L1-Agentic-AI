@@ -97,9 +97,7 @@ class AIAnalyzer:
                 tools=tools,
                 tool_choice="required",
             )
-            return self._parse_sop_selection_response(
-                response, available_sops
-            )
+            return self._parse_sop_selection_response(response, available_sops)
         except Exception as exc:
             logger.error("LLM SOP selection failed: %s", exc)
             return AIMatchResult(
@@ -168,9 +166,7 @@ class AIAnalyzer:
 
     # ── Internal helpers ──────────────────────────────────────────────
 
-    def _build_sop_selection_prompt(
-        self, incident: Incident, sops: List[SOP]
-    ) -> str:
+    def _build_sop_selection_prompt(self, incident: Incident, sops: List[SOP]) -> str:
         """Build the user prompt for SOP selection."""
         sop_summaries = []
         for sop in sops:
@@ -219,9 +215,7 @@ class AIAnalyzer:
                 selected_sop = sop_index.get(sop_id)
 
                 if not selected_sop:
-                    logger.warning(
-                        "LLM selected unknown SOP ID: %s", sop_id
-                    )
+                    logger.warning("LLM selected unknown SOP ID: %s", sop_id)
                     return AIMatchResult(
                         sop=None,
                         confidence=0.0,

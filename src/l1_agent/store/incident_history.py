@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -89,7 +89,8 @@ class IncidentHistoryStore:
         if search:
             s = search.lower()
             records = [
-                r for r in records
+                r
+                for r in records
                 if s in r.get("incident_number", "").lower()
                 or s in r.get("short_description", "").lower()
                 or s in r.get("sop_title", "").lower()
@@ -103,7 +104,7 @@ class IncidentHistoryStore:
 
         total = len(records)
         start = (page - 1) * per_page
-        items = records[start: start + per_page]
+        items = records[start : start + per_page]
 
         # Strip step_results from list view for smaller payloads
         return total, [{k: v for k, v in r.items() if k != "step_results"} for r in items]

@@ -32,9 +32,7 @@ def send_escalation_email(team_email: str, subject: str, body: str) -> bool:
     smtp_from = os.getenv("SMTP_FROM", smtp_user)
 
     if not smtp_host:
-        logger.warning(
-            "SMTP_HOST not configured — skipping escalation email to %s", team_email
-        )
+        logger.warning("SMTP_HOST not configured — skipping escalation email to %s", team_email)
         return False
 
     try:

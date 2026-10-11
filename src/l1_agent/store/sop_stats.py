@@ -41,15 +41,17 @@ def compute_sop_stats(records: List[dict]) -> List[dict]:
         total = entry["total_runs"]
         resolved = entry["resolved_count"]
         avg_ms = entry["total_duration_ms"] / total if total else 0.0
-        result.append({
-            "sop_id": entry["sop_id"],
-            "sop_title": entry["sop_title"],
-            "total_runs": total,
-            "resolved_count": resolved,
-            "escalated_count": entry["escalated_count"],
-            "failed_count": entry["failed_count"],
-            "success_rate_pct": round(resolved / total * 100, 1) if total else 0.0,
-            "avg_duration_ms": round(avg_ms, 1),
-        })
+        result.append(
+            {
+                "sop_id": entry["sop_id"],
+                "sop_title": entry["sop_title"],
+                "total_runs": total,
+                "resolved_count": resolved,
+                "escalated_count": entry["escalated_count"],
+                "failed_count": entry["failed_count"],
+                "success_rate_pct": round(resolved / total * 100, 1) if total else 0.0,
+                "avg_duration_ms": round(avg_ms, 1),
+            }
+        )
 
     return sorted(result, key=lambda x: x["total_runs"], reverse=True)

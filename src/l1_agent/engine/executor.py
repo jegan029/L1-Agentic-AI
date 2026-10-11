@@ -112,26 +112,30 @@ class SOPExecutor:
                 break
 
             if self._event_bus:
-                await self._event_bus.publish({
-                    "type": "step_executing",
-                    "incident_number": incident.number,
-                    "step_id": step.step_id,
-                    "step_type": step.step_type,
-                    "description": step.description,
-                })
+                await self._event_bus.publish(
+                    {
+                        "type": "step_executing",
+                        "incident_number": incident.number,
+                        "step_id": step.step_id,
+                        "step_type": step.step_type,
+                        "description": step.description,
+                    }
+                )
 
             result = await self._execute_step(step, incident, summary)
             summary.step_results.append(result)
 
             if self._event_bus:
-                await self._event_bus.publish({
-                    "type": "step_done",
-                    "incident_number": incident.number,
-                    "step_id": step.step_id,
-                    "status": result.status.value,
-                    "output_summary": result.output_summary[:200],
-                    "duration_ms": round(result.duration_ms, 1),
-                })
+                await self._event_bus.publish(
+                    {
+                        "type": "step_done",
+                        "incident_number": incident.number,
+                        "step_id": step.step_id,
+                        "status": result.status.value,
+                        "output_summary": result.output_summary[:200],
+                        "duration_ms": round(result.duration_ms, 1),
+                    }
+                )
 
             # Post work note for this step
             if work_note_callback:
@@ -154,7 +158,9 @@ class SOPExecutor:
                     current_step_id = step.on_failure
                 else:
                     summary.outcome = ExecutionOutcome.FAILED
-                    summary.escalation_reason = f"Step {step.step_id} failed: {result.error_message}"
+                    summary.escalation_reason = (
+                        f"Step {step.step_id} failed: {result.error_message}"
+                    )
                     break
             elif result.status == StepStatus.SUCCESS:
                 # For DECISION steps, recommended_next_step overrides on_success

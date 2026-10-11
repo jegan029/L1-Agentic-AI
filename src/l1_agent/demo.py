@@ -54,114 +54,118 @@ SAMPLE_INCIDENT = {
 
 def _load_sample_sop() -> SOP:
     """Load sample SOP from file or use inline definition."""
-    sample_sop_path = Path(__file__).parent.parent.parent / "data" / "sample_sops" / "mq_queue_depth_high.json"
+    sample_sop_path = (
+        Path(__file__).parent.parent.parent / "data" / "sample_sops" / "mq_queue_depth_high.json"
+    )
     if sample_sop_path.exists():
         with open(sample_sop_path) as f:
             return SOP.from_dict(json.load(f))
 
     # Inline fallback
-    return SOP.from_dict({
-        "sop_id": "SOP-MQ-001",
-        "title": "MQ Queue Depth High - Investigation and Remediation",
-        "applicable_services": ["PaymentService", "OrderService"],
-        "applicable_categories": ["Middleware", "MQ"],
-        "applicable_assignment_groups": ["L1-Middleware-Support"],
-        "keywords": ["queue depth", "mq", "messages not consumed", "queue high", "payment"],
-        "steps": [
-            {
-                "step_id": "step-1",
-                "step_type": "NOTE",
-                "description": "Begin MQ queue depth investigation",
-                "parameters": {"text": "Starting investigation of MQ queue depth issue."},
-            },
-            {
-                "step_id": "step-2",
-                "step_type": "MQ_CHECK",
-                "description": "Check queue depth on reported queue",
-                "parameters": {
-                    "queue_manager": "QMPROD01",
-                    "queue": "PAYMENT.REQUEST",
-                    "action": "depth",
+    return SOP.from_dict(
+        {
+            "sop_id": "SOP-MQ-001",
+            "title": "MQ Queue Depth High - Investigation and Remediation",
+            "applicable_services": ["PaymentService", "OrderService"],
+            "applicable_categories": ["Middleware", "MQ"],
+            "applicable_assignment_groups": ["L1-Middleware-Support"],
+            "keywords": ["queue depth", "mq", "messages not consumed", "queue high", "payment"],
+            "steps": [
+                {
+                    "step_id": "step-1",
+                    "step_type": "NOTE",
+                    "description": "Begin MQ queue depth investigation",
+                    "parameters": {"text": "Starting investigation of MQ queue depth issue."},
                 },
-                "expected_output": "Queue depth and consumer status",
-                "on_success": "step-3",
-                "on_failure": "step-escalate",
-            },
-            {
-                "step_id": "step-3",
-                "step_type": "MQ_CHECK",
-                "description": "Check queue status and consumers",
-                "parameters": {
-                    "queue_manager": "QMPROD01",
-                    "queue": "PAYMENT.REQUEST",
-                    "action": "status",
+                {
+                    "step_id": "step-2",
+                    "step_type": "MQ_CHECK",
+                    "description": "Check queue depth on reported queue",
+                    "parameters": {
+                        "queue_manager": "QMPROD01",
+                        "queue": "PAYMENT.REQUEST",
+                        "action": "depth",
+                    },
+                    "expected_output": "Queue depth and consumer status",
+                    "on_success": "step-3",
+                    "on_failure": "step-escalate",
                 },
-                "on_success": "step-4",
-                "on_failure": "step-escalate",
-            },
-            {
-                "step_id": "step-4",
-                "step_type": "SPLUNK_SEARCH",
-                "description": "Search application logs for errors",
-                "parameters": {
-                    "query": 'index=app_logs sourcetype=log4j host=app-server-* "PaymentService" (ERROR OR FATAL)',
-                    "time_range": {"earliest": "-2h", "latest": "now"},
+                {
+                    "step_id": "step-3",
+                    "step_type": "MQ_CHECK",
+                    "description": "Check queue status and consumers",
+                    "parameters": {
+                        "queue_manager": "QMPROD01",
+                        "queue": "PAYMENT.REQUEST",
+                        "action": "status",
+                    },
+                    "on_success": "step-4",
+                    "on_failure": "step-escalate",
                 },
-                "on_success": "step-5",
-                "on_failure": "step-escalate",
-            },
-            {
-                "step_id": "step-5",
-                "step_type": "AUTOSYS_STATUS",
-                "description": "Check if batch payment processing job is running",
-                "parameters": {
-                    "job_name": "BATCH_PAYMENT_PROCESS",
-                    "query_type": "status",
+                {
+                    "step_id": "step-4",
+                    "step_type": "SPLUNK_SEARCH",
+                    "description": "Search application logs for errors",
+                    "parameters": {
+                        "query": 'index=app_logs sourcetype=log4j host=app-server-* "PaymentService" (ERROR OR FATAL)',
+                        "time_range": {"earliest": "-2h", "latest": "now"},
+                    },
+                    "on_success": "step-5",
+                    "on_failure": "step-escalate",
                 },
-                "on_success": "step-6",
-                "on_failure": "step-escalate",
-            },
-            {
-                "step_id": "step-6",
-                "step_type": "DECISION",
-                "description": "Evaluate all check results",
-                "parameters": {"rule": "any_failed"},
-                "on_success": "step-resolve",
-                "on_failure": "step-escalate",
-            },
-            {
-                "step_id": "step-resolve",
-                "step_type": "NOTE",
-                "description": "All checks passed - summarise findings",
-                "parameters": {
-                    "text": (
-                        "Investigation complete. All checks executed successfully. "
-                        "Evidence collected and attached. Queue depth is elevated but "
-                        "consumers are being investigated. Recommend monitoring."
-                    ),
+                {
+                    "step_id": "step-5",
+                    "step_type": "AUTOSYS_STATUS",
+                    "description": "Check if batch payment processing job is running",
+                    "parameters": {
+                        "job_name": "BATCH_PAYMENT_PROCESS",
+                        "query_type": "status",
+                    },
+                    "on_success": "step-6",
+                    "on_failure": "step-escalate",
                 },
-            },
-            {
-                "step_id": "step-escalate",
-                "step_type": "NOTE",
-                "description": "Escalation required",
-                "parameters": {
-                    "text": (
-                        "One or more checks failed or produced concerning results. "
-                        "Escalating to L2 with collected evidence."
-                    ),
+                {
+                    "step_id": "step-6",
+                    "step_type": "DECISION",
+                    "description": "Evaluate all check results",
+                    "parameters": {"rule": "any_failed"},
+                    "on_success": "step-resolve",
+                    "on_failure": "step-escalate",
                 },
+                {
+                    "step_id": "step-resolve",
+                    "step_type": "NOTE",
+                    "description": "All checks passed - summarise findings",
+                    "parameters": {
+                        "text": (
+                            "Investigation complete. All checks executed successfully. "
+                            "Evidence collected and attached. Queue depth is elevated but "
+                            "consumers are being investigated. Recommend monitoring."
+                        ),
+                    },
+                },
+                {
+                    "step_id": "step-escalate",
+                    "step_type": "NOTE",
+                    "description": "Escalation required",
+                    "parameters": {
+                        "text": (
+                            "One or more checks failed or produced concerning results. "
+                            "Escalating to L2 with collected evidence."
+                        ),
+                    },
+                },
+            ],
+            "pre_checks": ["Verify MQ connectivity", "Verify Splunk access"],
+            "tools_required": ["IR360", "Splunk", "Autosys"],
+            "escalation_criteria": {
+                "max_retry_count": 2,
+                "escalate_on_access_denied": True,
+                "escalate_on_ambiguous_result": True,
+                "escalate_on_write_action": True,
             },
-        ],
-        "pre_checks": ["Verify MQ connectivity", "Verify Splunk access"],
-        "tools_required": ["IR360", "Splunk", "Autosys"],
-        "escalation_criteria": {
-            "max_retry_count": 2,
-            "escalate_on_access_denied": True,
-            "escalate_on_ambiguous_result": True,
-            "escalate_on_write_action": True,
-        },
-    })
+        }
+    )
 
 
 class MockServiceNowClient:
@@ -205,8 +209,10 @@ def _print_summary(summary: object, mock_snow: MockServiceNowClient) -> None:
     print("\n--- Step Results ---")
     for r in summary.step_results:
         status_icon = {
-            "success": "OK", "fail": "FAIL",
-            "skip": "SKIP", "escalated": "ESC",
+            "success": "OK",
+            "fail": "FAIL",
+            "skip": "SKIP",
+            "escalated": "ESC",
         }.get(r.status.value, "?")
         print(f"  [{status_icon}] {r.step_id} ({r.step_type})")
         if r.evidence:
@@ -216,7 +222,7 @@ def _print_summary(summary: object, mock_snow: MockServiceNowClient) -> None:
     print(f"\n--- Work Notes Posted ({len(mock_snow.work_notes)}) ---")
     for i, wn in enumerate(mock_snow.work_notes):
         preview = wn["note"][:120].replace("\n", " | ")
-        print(f"  [{i+1}] {preview}...")
+        print(f"  [{i + 1}] {preview}...")
 
     print("\n--- Incident Update Payload ---")
     update_payload = {

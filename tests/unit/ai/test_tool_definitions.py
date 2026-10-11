@@ -26,7 +26,9 @@ class TestToolDefinitions:
 
     def test_investigation_tools_count(self):
         tools = get_investigation_tools()
-        assert len(tools) == 11  # splunk, mq, file, autosys, dynatrace_vm, dynatrace_metrics, web_ui, mainframe, note, escalate, resolve
+        assert (
+            len(tools) == 11
+        )  # splunk, mq, file, autosys, dynatrace_vm, dynatrace_metrics, web_ui, mainframe, note, escalate, resolve
 
     def test_sop_selection_tools_count(self):
         tools = get_sop_selection_tools()

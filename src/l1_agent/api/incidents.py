@@ -38,11 +38,13 @@ def make_incidents_handler(store: IncidentHistoryStore):
             priority=priority,
         )
 
-        return web.json_response({
-            "total": total,
-            "page": page,
-            "per_page": per_page,
-            "items": items,
-        })
+        return web.json_response(
+            {
+                "total": total,
+                "page": page,
+                "per_page": per_page,
+                "items": items,
+            }
+        )
 
     return handle_incidents

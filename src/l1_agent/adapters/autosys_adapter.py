@@ -84,9 +84,7 @@ class AutosysAdapter(BaseAdapter):
         cmd = ["job_depends", "-J", job_name]
         return await self._execute_safe(cmd, f"job_depends -J {job_name}")
 
-    async def _execute_safe(
-        self, cmd: List[str], description: str
-    ) -> AdapterResult:
+    async def _execute_safe(self, cmd: List[str], description: str) -> AdapterResult:
         """Run a command ensuring it's in the safe allow-list."""
         base_cmd = cmd[0].split("/")[-1]
         if base_cmd not in SAFE_COMMANDS and base_cmd not in self._settings.allowed_commands:
@@ -149,9 +147,7 @@ class AutosysAdapter(BaseAdapter):
         return {"jobs": jobs, "raw_line_count": len(lines)}
 
     @staticmethod
-    def _format_evidence(
-        description: str, parsed: Dict[str, Any], raw: str
-    ) -> str:
+    def _format_evidence(description: str, parsed: Dict[str, Any], raw: str) -> str:
         jobs = parsed.get("jobs", [])
         if not jobs:
             return f"Command: {description}\nNo jobs found in output."

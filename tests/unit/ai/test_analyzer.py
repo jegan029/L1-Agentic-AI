@@ -45,11 +45,13 @@ def _make_sop_selection_response(sop_id: str, confidence: float) -> MockLLMRespo
                 "id": "call_select_1",
                 "function": {
                     "name": "select_sop",
-                    "arguments": json.dumps({
-                        "sop_id": sop_id,
-                        "confidence": confidence,
-                        "rationale": "Incident describes MQ queue depth issue matching this SOP.",
-                    }),
+                    "arguments": json.dumps(
+                        {
+                            "sop_id": sop_id,
+                            "confidence": confidence,
+                            "rationale": "Incident describes MQ queue depth issue matching this SOP.",
+                        }
+                    ),
                 },
             }
         ],
@@ -59,9 +61,7 @@ def _make_sop_selection_response(sop_id: str, confidence: float) -> MockLLMRespo
 class TestAIAnalyzer:
     @pytest.mark.asyncio
     async def test_select_sop_returns_match(self):
-        mock_llm = MockLLMClient(
-            responses=[_make_sop_selection_response("SOP-MQ-001", 0.92)]
-        )
+        mock_llm = MockLLMClient(responses=[_make_sop_selection_response("SOP-MQ-001", 0.92)])
         analyzer = AIAnalyzer(llm_client=mock_llm)
         sop = _make_sop()
 
@@ -93,9 +93,11 @@ class TestAIAnalyzer:
                             "id": "call_esc_1",
                             "function": {
                                 "name": "escalate_no_sop",
-                                "arguments": json.dumps({
-                                    "reason": "No SOP matches a network issue.",
-                                }),
+                                "arguments": json.dumps(
+                                    {
+                                        "reason": "No SOP matches a network issue.",
+                                    }
+                                ),
                             },
                         }
                     ],
@@ -113,9 +115,7 @@ class TestAIAnalyzer:
 
     @pytest.mark.asyncio
     async def test_select_sop_unknown_sop_id(self):
-        mock_llm = MockLLMClient(
-            responses=[_make_sop_selection_response("SOP-UNKNOWN-999", 0.8)]
-        )
+        mock_llm = MockLLMClient(responses=[_make_sop_selection_response("SOP-UNKNOWN-999", 0.8)])
         analyzer = AIAnalyzer(llm_client=mock_llm)
         sop = _make_sop()
 

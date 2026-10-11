@@ -26,12 +26,14 @@ class MockLLMClient(LLMClient):
 
     def __init__(self, responses: Optional[List[MockLLMResponse]] = None) -> None:
         # Initialize with dummy settings (no real endpoint needed)
-        super().__init__(LLMSettings(
-            endpoint="http://mock-llm",
-            api_key="mock-key",
-            model="mock-model",
-            enabled=False,
-        ))
+        super().__init__(
+            LLMSettings(
+                endpoint="http://mock-llm",
+                api_key="mock-key",
+                model="mock-model",
+                enabled=False,
+            )
+        )
         self._responses = list(responses) if responses else []
         self._call_index = 0
         self._auto_mode = not bool(responses)
@@ -122,9 +124,7 @@ class MockLLMClient(LLMClient):
             # Final call: resolve
             return self._resolve_investigation(messages, tool_results)
 
-    def _auto_sop_selection(
-        self, messages: List[Dict[str, Any]]
-    ) -> LLMResponse:
+    def _auto_sop_selection(self, messages: List[Dict[str, Any]]) -> LLMResponse:
         """Generate SOP selection response."""
         # Extract SOP IDs from the user message
         user_msg = ""
@@ -136,6 +136,7 @@ class MockLLMClient(LLMClient):
         sop_id = "SOP-MQ-001"  # Default
         if "SOP-" in user_msg:
             import re
+
             match = re.search(r"SOP-[A-Z]+-\d+", user_msg)
             if match:
                 sop_id = match.group(0)
@@ -146,18 +147,20 @@ class MockLLMClient(LLMClient):
                 ToolCall(
                     call_id="call_sop_select_1",
                     function_name="select_sop",
-                    arguments_str=json.dumps({
-                        "sop_id": sop_id,
-                        "confidence": 0.92,
-                        "rationale": (
-                            "The incident describes MQ queue depth issues with "
-                            "messages not being consumed. The SOP covers MQ queue "
-                            "depth investigation including queue checks, log analysis, "
-                            "and job status verification. The CI (PaymentService) and "
-                            "category (Middleware/MQ) match the SOP's applicable "
-                            "services and categories. High confidence match."
-                        ),
-                    }),
+                    arguments_str=json.dumps(
+                        {
+                            "sop_id": sop_id,
+                            "confidence": 0.92,
+                            "rationale": (
+                                "The incident describes MQ queue depth issues with "
+                                "messages not being consumed. The SOP covers MQ queue "
+                                "depth investigation including queue checks, log analysis, "
+                                "and job status verification. The CI (PaymentService) and "
+                                "category (Middleware/MQ) match the SOP's applicable "
+                                "services and categories. High confidence match."
+                            ),
+                        }
+                    ),
                 )
             ],
             usage={"prompt_tokens": 500, "completion_tokens": 100, "total_tokens": 600},
@@ -173,29 +176,37 @@ class MockLLMClient(LLMClient):
 
         # Post initial work note
         if "post_work_note" in tool_names:
-            calls.append(ToolCall(
-                call_id="call_note_1",
-                function_name="post_work_note",
-                arguments_str=json.dumps({
-                    "note": (
-                        "Starting AI-driven investigation. Analyzing incident "
-                        "description and executing SOP checks. Will check MQ "
-                        "queue depth, application logs, and batch job status."
+            calls.append(
+                ToolCall(
+                    call_id="call_note_1",
+                    function_name="post_work_note",
+                    arguments_str=json.dumps(
+                        {
+                            "note": (
+                                "Starting AI-driven investigation. Analyzing incident "
+                                "description and executing SOP checks. Will check MQ "
+                                "queue depth, application logs, and batch job status."
+                            ),
+                        }
                     ),
-                }),
-            ))
+                )
+            )
 
         # Start with MQ check
         if "mq_check" in tool_names:
-            calls.append(ToolCall(
-                call_id="call_mq_1",
-                function_name="mq_check",
-                arguments_str=json.dumps({
-                    "queue_manager": "QMPROD01",
-                    "queue": "PAYMENT.REQUEST",
-                    "action": "depth",
-                }),
-            ))
+            calls.append(
+                ToolCall(
+                    call_id="call_mq_1",
+                    function_name="mq_check",
+                    arguments_str=json.dumps(
+                        {
+                            "queue_manager": "QMPROD01",
+                            "queue": "PAYMENT.REQUEST",
+                            "action": "depth",
+                        }
+                    ),
+                )
+            )
 
         return LLMResponse(
             content="",
@@ -217,51 +228,67 @@ class MockLLMClient(LLMClient):
         if call_count <= 2:
             # Check MQ status + search Splunk logs
             if "mq_check" in tool_names:
-                calls.append(ToolCall(
-                    call_id=f"call_mq_{call_count + 1}",
-                    function_name="mq_check",
-                    arguments_str=json.dumps({
-                        "queue_manager": "QMPROD01",
-                        "queue": "PAYMENT.REQUEST",
-                        "action": "status",
-                    }),
-                ))
-            if "splunk_search" in tool_names:
-                calls.append(ToolCall(
-                    call_id=f"call_splunk_{call_count + 1}",
-                    function_name="splunk_search",
-                    arguments_str=json.dumps({
-                        "query": (
-                            'index=app_logs sourcetype=log4j host=app-server-* '
-                            '"PaymentService" (ERROR OR FATAL)'
+                calls.append(
+                    ToolCall(
+                        call_id=f"call_mq_{call_count + 1}",
+                        function_name="mq_check",
+                        arguments_str=json.dumps(
+                            {
+                                "queue_manager": "QMPROD01",
+                                "queue": "PAYMENT.REQUEST",
+                                "action": "status",
+                            }
                         ),
-                        "time_range": {"earliest": "-2h", "latest": "now"},
-                    }),
-                ))
+                    )
+                )
+            if "splunk_search" in tool_names:
+                calls.append(
+                    ToolCall(
+                        call_id=f"call_splunk_{call_count + 1}",
+                        function_name="splunk_search",
+                        arguments_str=json.dumps(
+                            {
+                                "query": (
+                                    "index=app_logs sourcetype=log4j host=app-server-* "
+                                    '"PaymentService" (ERROR OR FATAL)'
+                                ),
+                                "time_range": {"earliest": "-2h", "latest": "now"},
+                            }
+                        ),
+                    )
+                )
         else:
             # Check Autosys job + post findings
             if "autosys_status" in tool_names:
-                calls.append(ToolCall(
-                    call_id=f"call_autosys_{call_count + 1}",
-                    function_name="autosys_status",
-                    arguments_str=json.dumps({
-                        "job_name": "BATCH_PAYMENT_PROCESS",
-                        "query_type": "status",
-                    }),
-                ))
-            if "post_work_note" in tool_names:
-                calls.append(ToolCall(
-                    call_id=f"call_note_{call_count + 1}",
-                    function_name="post_work_note",
-                    arguments_str=json.dumps({
-                        "note": (
-                            "Investigation progress: MQ queue depth is elevated "
-                            "(1523/5000), consumers appear stalled. Application "
-                            "logs show connection timeout errors. Checking batch "
-                            "job status next."
+                calls.append(
+                    ToolCall(
+                        call_id=f"call_autosys_{call_count + 1}",
+                        function_name="autosys_status",
+                        arguments_str=json.dumps(
+                            {
+                                "job_name": "BATCH_PAYMENT_PROCESS",
+                                "query_type": "status",
+                            }
                         ),
-                    }),
-                ))
+                    )
+                )
+            if "post_work_note" in tool_names:
+                calls.append(
+                    ToolCall(
+                        call_id=f"call_note_{call_count + 1}",
+                        function_name="post_work_note",
+                        arguments_str=json.dumps(
+                            {
+                                "note": (
+                                    "Investigation progress: MQ queue depth is elevated "
+                                    "(1523/5000), consumers appear stalled. Application "
+                                    "logs show connection timeout errors. Checking batch "
+                                    "job status next."
+                                ),
+                            }
+                        ),
+                    )
+                )
 
         if not calls:
             return self._resolve_investigation(messages, [])
@@ -286,26 +313,28 @@ class MockLLMClient(LLMClient):
                 ToolCall(
                     call_id="call_resolve_final",
                     function_name="resolve_incident",
-                    arguments_str=json.dumps({
-                        "resolution_summary": (
-                            "Investigation complete. Findings:\n"
-                            "1. MQ queue PAYMENT.REQUEST on QMPROD01 has elevated "
-                            "depth (1523/5000) with no active consumers.\n"
-                            "2. Application logs show connection timeout errors to "
-                            "MQ broker starting at 09:55.\n"
-                            "3. Batch job BATCH_PAYMENT_PROCESS shows FAILURE status "
-                            "with exit code 1.\n\n"
-                            "Root cause: PaymentService lost connectivity to MQ broker, "
-                            "causing message backlog. The batch payment processing job "
-                            "has also failed, likely related to the same connectivity issue.\n\n"
-                            "All evidence has been collected and attached as work notes."
-                        ),
-                        "evidence_summary": (
-                            "MQ depth: 1523/5000 (consumers stalled), "
-                            "App logs: connection timeout errors, "
-                            "Autosys: BATCH_PAYMENT_PROCESS FAILURE (exit code 1)"
-                        ),
-                    }),
+                    arguments_str=json.dumps(
+                        {
+                            "resolution_summary": (
+                                "Investigation complete. Findings:\n"
+                                "1. MQ queue PAYMENT.REQUEST on QMPROD01 has elevated "
+                                "depth (1523/5000) with no active consumers.\n"
+                                "2. Application logs show connection timeout errors to "
+                                "MQ broker starting at 09:55.\n"
+                                "3. Batch job BATCH_PAYMENT_PROCESS shows FAILURE status "
+                                "with exit code 1.\n\n"
+                                "Root cause: PaymentService lost connectivity to MQ broker, "
+                                "causing message backlog. The batch payment processing job "
+                                "has also failed, likely related to the same connectivity issue.\n\n"
+                                "All evidence has been collected and attached as work notes."
+                            ),
+                            "evidence_summary": (
+                                "MQ depth: 1523/5000 (consumers stalled), "
+                                "App logs: connection timeout errors, "
+                                "Autosys: BATCH_PAYMENT_PROCESS FAILURE (exit code 1)"
+                            ),
+                        }
+                    ),
                 ),
             ],
             usage={"prompt_tokens": 2000, "completion_tokens": 300, "total_tokens": 2300},

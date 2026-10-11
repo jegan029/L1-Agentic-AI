@@ -25,10 +25,12 @@ class TestMockDynatraceAdapter:
 
     @pytest.mark.asyncio
     async def test_vm_health_check(self, adapter):
-        result = await adapter.execute({
-            "action": "vm_health",
-            "host_name": "web-server-01",
-        })
+        result = await adapter.execute(
+            {
+                "action": "vm_health",
+                "host_name": "web-server-01",
+            }
+        )
         assert result.success is True
         assert result.data["hosts_found"] == 1
         assert result.data["healthy"] is True
@@ -44,17 +46,18 @@ class TestMockDynatraceAdapter:
 
     @pytest.mark.asyncio
     async def test_metrics_check(self, adapter):
-        result = await adapter.execute({
-            "action": "metrics",
-            "metric_selector": "builtin:host.cpu.usage",
-        })
+        result = await adapter.execute(
+            {
+                "action": "metrics",
+                "metric_selector": "builtin:host.cpu.usage",
+            }
+        )
         assert result.success is True
         assert result.data["metric_count"] == 2
         assert len(result.data["metrics"]) == 2
         # Check CPU metric present
         cpu_metric = next(
-            m for m in result.data["metrics"]
-            if m["metric_id"] == "builtin:host.cpu.usage"
+            m for m in result.data["metrics"] if m["metric_id"] == "builtin:host.cpu.usage"
         )
         assert cpu_metric["latest_value"] == 42.3
 
@@ -70,8 +73,7 @@ class TestMockDynatraceAdapter:
     async def test_metrics_memory_value(self, adapter):
         result = await adapter.execute({"action": "metrics"})
         mem_metric = next(
-            m for m in result.data["metrics"]
-            if m["metric_id"] == "builtin:host.mem.usage"
+            m for m in result.data["metrics"] if m["metric_id"] == "builtin:host.mem.usage"
         )
         assert mem_metric["latest_value"] == 92.5
 
@@ -83,10 +85,12 @@ class TestMockDynatraceAdapter:
 
     @pytest.mark.asyncio
     async def test_evidence_snippet_contains_host(self, adapter):
-        result = await adapter.execute({
-            "action": "vm_health",
-            "host_name": "my-special-host",
-        })
+        result = await adapter.execute(
+            {
+                "action": "vm_health",
+                "host_name": "my-special-host",
+            }
+        )
         assert "my-special-host" in result.evidence_snippet
 
     @pytest.mark.asyncio
@@ -98,6 +102,7 @@ class TestMockDynatraceAdapter:
     @pytest.mark.asyncio
     async def test_raw_output_is_json(self, adapter):
         import json
+
         result = await adapter.execute({"action": "vm_health", "host_name": "h1"})
         parsed = json.loads(result.raw_output)
         assert "hosts" in parsed

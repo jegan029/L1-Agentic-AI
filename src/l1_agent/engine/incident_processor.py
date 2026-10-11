@@ -17,17 +17,16 @@ from src.l1_agent.ai.analyzer import AIAnalyzer, AIMatchResult
 from src.l1_agent.ai.llm_client import LLMClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
 from src.l1_agent.engine.executor import SOPExecutor
+from src.l1_agent.engine.resolution_memory import ResolutionMemory
 from src.l1_agent.engine.sop_matcher import MatchResult, SOPMatcher
 from src.l1_agent.engine.sop_parser import SOPParser
 from src.l1_agent.models.evidence import ExecutionOutcome, ExecutionSummary
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.models.sop import SOP
-from src.l1_agent.engine.resolution_memory import ResolutionMemory
 from src.l1_agent.utils.logging import get_logger, set_correlation_id
 from src.l1_agent.utils.metrics import metrics
 
 if TYPE_CHECKING:
-    from src.l1_agent.clients.servicenow_client import ServiceNowClient as _SNClient
     from src.l1_agent.events.event_bus import EventBus
     from src.l1_agent.store.incident_history import IncidentHistoryStore
 
@@ -103,13 +102,15 @@ class IncidentProcessor:
         logger.info("Processing incident %s: %s", incident.number, incident.short_description)
 
         if self._event_bus:
-            await self._event_bus.publish({
-                "type": "incident_received",
-                "incident_number": incident.number,
-                "short_description": incident.short_description,
-                "priority": incident.priority,
-                "category": incident.category,
-            })
+            await self._event_bus.publish(
+                {
+                    "type": "incident_received",
+                    "incident_number": incident.number,
+                    "short_description": incident.short_description,
+                    "priority": incident.priority,
+                    "category": incident.category,
+                }
+            )
 
         if self._ai_enabled:
             return await self._process_with_ai(incident)
@@ -142,9 +143,7 @@ class IncidentProcessor:
             await self._refresh_sop_cache()
 
         if self._ai_analyzer:
-            ai_match = await self._ai_analyzer.select_sop(
-                incident, self._sop_cache
-            )
+            ai_match = await self._ai_analyzer.select_sop(incident, self._sop_cache)
         else:
             # Fallback to rule-based matching even in AI mode
             rule_match = self._matcher.match(incident, self._sop_cache)
@@ -168,13 +167,15 @@ class IncidentProcessor:
             f"AI rationale: {ai_match.rationale}",
         )
         if self._event_bus:
-            await self._event_bus.publish({
-                "type": "sop_matched",
-                "incident_number": incident.number,
-                "sop_id": sop.sop_id,
-                "sop_title": sop.title,
-                "confidence": round(ai_match.confidence, 3),
-            })
+            await self._event_bus.publish(
+                {
+                    "type": "sop_matched",
+                    "incident_number": incident.number,
+                    "sop_id": sop.sop_id,
+                    "sop_title": sop.title,
+                    "confidence": round(ai_match.confidence, 3),
+                }
+            )
 
         # 4. Set incident to In Progress
         await self._update_state(incident, state=2)
@@ -292,13 +293,15 @@ class IncidentProcessor:
             f"Rationale: {match_result.rationale}",
         )
         if self._event_bus:
-            await self._event_bus.publish({
-                "type": "sop_matched",
-                "incident_number": incident.number,
-                "sop_id": sop.sop_id,
-                "sop_title": sop.title,
-                "confidence": round(match_result.confidence, 3),
-            })
+            await self._event_bus.publish(
+                {
+                    "type": "sop_matched",
+                    "incident_number": incident.number,
+                    "sop_id": sop.sop_id,
+                    "sop_title": sop.title,
+                    "confidence": round(match_result.confidence, 3),
+                }
+            )
 
         # 3. Set incident to In Progress
         await self._update_state(incident, state=2)
@@ -334,9 +337,7 @@ class IncidentProcessor:
         except Exception as exc:
             logger.error("Failed to refresh SOP cache: %s", exc)
 
-    async def _escalate_no_sop(
-        self, incident: Incident, match: MatchResult
-    ) -> ExecutionSummary:
+    async def _escalate_no_sop(self, incident: Incident, match: MatchResult) -> ExecutionSummary:
         """Escalate when no SOP is available."""
         note = (
             "[L1 Agent] ESCALATION: No applicable SOP found.\n"
@@ -415,13 +416,15 @@ class IncidentProcessor:
             if self._memory and summary.sop_id:
                 self._memory.record(incident, summary, confidence_used=confidence)
             if self._event_bus:
-                await self._event_bus.publish({
-                    "type": "incident_resolved",
-                    "incident_number": incident.number,
-                    "sop_id": summary.sop_id,
-                    "sop_title": summary.sop_title,
-                    "duration_ms": round(summary.total_duration_ms, 1),
-                })
+                await self._event_bus.publish(
+                    {
+                        "type": "incident_resolved",
+                        "incident_number": incident.number,
+                        "sop_id": summary.sop_id,
+                        "sop_title": summary.sop_title,
+                        "duration_ms": round(summary.total_duration_ms, 1),
+                    }
+                )
         elif summary.outcome == ExecutionOutcome.ESCALATED:
             escalation_packet = summary.to_escalation_packet()
             await self._post_note(

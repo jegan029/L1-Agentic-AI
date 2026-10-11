@@ -178,6 +178,7 @@ class Settings:
     @classmethod
     def from_env(cls) -> "Settings":
         from dotenv import load_dotenv
+
         load_dotenv()
         return cls(
             servicenow=ServiceNowSettings(
@@ -203,14 +204,10 @@ class Settings:
             ),
             autosys=AutosysSettings(
                 cli_path=os.getenv("AUTOSYS_CLI_PATH", "autorep"),
-                allowed_commands=tuple(
-                    _csv(os.getenv("AUTOSYS_ALLOWED_COMMANDS", "autorep"))
-                ),
+                allowed_commands=tuple(_csv(os.getenv("AUTOSYS_ALLOWED_COMMANDS", "autorep"))),
             ),
             windows_share=WindowsShareSettings(
-                allowed_unc_prefixes=_csv(
-                    os.getenv("WINDOWS_SHARE_ALLOWED_PREFIXES", "")
-                ),
+                allowed_unc_prefixes=_csv(os.getenv("WINDOWS_SHARE_ALLOWED_PREFIXES", "")),
                 smb_username=os.getenv("SMB_USERNAME", ""),
                 smb_password=os.getenv("SMB_PASSWORD", ""),
                 smb_domain=os.getenv("SMB_DOMAIN", ""),
@@ -229,9 +226,7 @@ class Settings:
             mainframe=MainframeSettings(
                 host=os.getenv("MAINFRAME_HOST", ""),
                 port=int(os.getenv("MAINFRAME_PORT", "23")),
-                allowed_transactions=_csv(
-                    os.getenv("MAINFRAME_ALLOWED_TRANSACTIONS", "")
-                ),
+                allowed_transactions=_csv(os.getenv("MAINFRAME_ALLOWED_TRANSACTIONS", "")),
                 timeout_seconds=int(os.getenv("MAINFRAME_TIMEOUT", "30")),
             ),
             llm=LLMSettings(
@@ -244,22 +239,12 @@ class Settings:
                 enabled=os.getenv("LLM_ENABLED", "true").lower() == "true",
             ),
             agent=AgentSettings(
-                sop_confidence_threshold=float(
-                    os.getenv("AGENT_SOP_CONFIDENCE_THRESHOLD", "0.6")
-                ),
-                max_concurrent_incidents=int(
-                    os.getenv("AGENT_MAX_CONCURRENT_INCIDENTS", "5")
-                ),
+                sop_confidence_threshold=float(os.getenv("AGENT_SOP_CONFIDENCE_THRESHOLD", "0.6")),
+                max_concurrent_incidents=int(os.getenv("AGENT_MAX_CONCURRENT_INCIDENTS", "5")),
                 retry_max_attempts=int(os.getenv("AGENT_RETRY_MAX_ATTEMPTS", "3")),
-                retry_base_delay_seconds=float(
-                    os.getenv("AGENT_RETRY_BASE_DELAY", "1.0")
-                ),
-                circuit_breaker_failure_threshold=int(
-                    os.getenv("AGENT_CB_FAILURE_THRESHOLD", "5")
-                ),
-                circuit_breaker_reset_seconds=int(
-                    os.getenv("AGENT_CB_RESET_SECONDS", "60")
-                ),
+                retry_base_delay_seconds=float(os.getenv("AGENT_RETRY_BASE_DELAY", "1.0")),
+                circuit_breaker_failure_threshold=int(os.getenv("AGENT_CB_FAILURE_THRESHOLD", "5")),
+                circuit_breaker_reset_seconds=int(os.getenv("AGENT_CB_RESET_SECONDS", "60")),
                 demo_mode=os.getenv("AGENT_DEMO_MODE", "false").lower() == "true",
                 log_level=os.getenv("AGENT_LOG_LEVEL", "INFO"),
                 webhook_host=os.getenv("AGENT_WEBHOOK_HOST", "0.0.0.0"),

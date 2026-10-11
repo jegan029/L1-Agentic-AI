@@ -5,12 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import signal
+from pathlib import Path
 from typing import Any, Dict
 
-import json
 import aiohttp_cors
 from aiohttp import web
-from pathlib import Path
 
 from src.l1_agent.adapters.autosys_adapter import AutosysAdapter
 from src.l1_agent.adapters.base import BaseAdapter
@@ -33,26 +32,26 @@ from src.l1_agent.ai.ai_executor import AIExecutor
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.llm_client import LLMClient
 from src.l1_agent.ai.mock_llm import MockLLMClient
+from src.l1_agent.api.dashboard import make_dashboard_handler
+from src.l1_agent.api.incidents import make_incidents_handler
+from src.l1_agent.api.sops import make_sops_handler
+from src.l1_agent.api.stream import handle_stream
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
 from src.l1_agent.config.settings import Settings
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
+from src.l1_agent.engine.resolution_memory import ResolutionMemory
 from src.l1_agent.engine.sop_matcher import SOPMatcher
 from src.l1_agent.engine.sop_parser import SOPParser
+from src.l1_agent.escalation.l2_router import L2Router
+from src.l1_agent.events.event_bus import EventBus
 from src.l1_agent.models.incident import Incident
-from src.l1_agent.engine.resolution_memory import ResolutionMemory
+from src.l1_agent.store.incident_history import IncidentHistoryStore
 from src.l1_agent.ui.sop_editor import SOPEditorRoutes
 from src.l1_agent.utils.logging import get_logger, setup_logging
 from src.l1_agent.utils.metrics import metrics
 from src.l1_agent.utils.retry import CircuitBreaker
 from src.l1_agent.utils.secrets import SecretsProvider
-from src.l1_agent.events.event_bus import EventBus
-from src.l1_agent.store.incident_history import IncidentHistoryStore
-from src.l1_agent.escalation.l2_router import L2Router
-from src.l1_agent.api.dashboard import make_dashboard_handler
-from src.l1_agent.api.incidents import make_incidents_handler
-from src.l1_agent.api.sops import make_sops_handler
-from src.l1_agent.api.stream import handle_stream
 
 logger = get_logger("main")
 
@@ -100,6 +99,7 @@ class L1AgentService:
 
         if settings.crewai.enabled:
             from src.l1_agent.crew.crew_processor import CrewIncidentProcessor
+
             logger.info(
                 "CrewAI mode enabled (model: %s, verbose: %s)",
                 settings.crewai.model,
@@ -136,6 +136,7 @@ class L1AgentService:
     def _load_demo_sops(self) -> list:
         """Load all JSON SOPs from data/sample_sops/ for demo mode."""
         from src.l1_agent.models.sop import SOP
+
         sops = []
         # Use path relative to this file so it works regardless of cwd
         sop_dir = Path(__file__).resolve().parent.parent.parent / "data" / "sample_sops"
@@ -210,11 +211,13 @@ class L1AgentService:
         return web.json_response({"status": "accepted", "incident": incident.number})
 
     async def _handle_health(self, request: web.Request) -> web.Response:
-        return web.json_response({
-            "status": "healthy",
-            "metrics": metrics.snapshot(),
-            "memory": self._memory.stats(),
-        })
+        return web.json_response(
+            {
+                "status": "healthy",
+                "metrics": metrics.snapshot(),
+                "memory": self._memory.stats(),
+            }
+        )
 
     async def _handle_metrics(self, request: web.Request) -> web.Response:
         """Prometheus-compatible /metrics endpoint for Grafana scraping."""
@@ -237,21 +240,26 @@ class L1AgentService:
         # Dashboard API routes
         app.router.add_get("/api/dashboard/summary", make_dashboard_handler(self._history_store))
         app.router.add_get("/api/incidents", make_incidents_handler(self._history_store))
-        app.router.add_get("/api/incidents/{incident_number}", make_incidents_handler(self._history_store))
+        app.router.add_get(
+            "/api/incidents/{incident_number}", make_incidents_handler(self._history_store)
+        )
         app.router.add_get("/api/sops/stats", make_sops_handler(self._history_store))
         app.router.add_get("/api/stream", handle_stream)
 
         SOPEditorRoutes(sop_dir="data/sample_sops").register(app)
 
         # CORS — allow all origins (demo/showcase mode)
-        cors = aiohttp_cors.setup(app, defaults={
-            "*": aiohttp_cors.ResourceOptions(
-                allow_credentials=False,
-                expose_headers="*",
-                allow_headers="*",
-                allow_methods=["GET", "POST", "OPTIONS"],
-            )
-        })
+        cors = aiohttp_cors.setup(
+            app,
+            defaults={
+                "*": aiohttp_cors.ResourceOptions(
+                    allow_credentials=False,
+                    expose_headers="*",
+                    allow_headers="*",
+                    allow_methods=["GET", "POST", "OPTIONS"],
+                )
+            },
+        )
         for route in list(app.router.routes()):
             try:
                 cors.add(route)
@@ -285,9 +293,7 @@ class L1AgentService:
             try:
                 await self._processor.process_incident(incident)
             except Exception as exc:
-                logger.error(
-                    "Unhandled error processing %s: %s", incident.number, exc
-                )
+                logger.error("Unhandled error processing %s: %s", incident.number, exc)
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
@@ -323,9 +329,9 @@ class L1AgentService:
                 loop.add_signal_handler(sig, stop_event.set)
         except NotImplementedError:
             # Windows does not support add_signal_handler; use signal.signal instead
-            import threading
             def _win_handler(signum, frame):
                 loop.call_soon_threadsafe(stop_event.set)
+
             signal.signal(signal.SIGINT, _win_handler)
             signal.signal(signal.SIGTERM, _win_handler)
         await stop_event.wait()

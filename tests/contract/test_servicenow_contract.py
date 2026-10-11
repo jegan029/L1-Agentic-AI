@@ -48,6 +48,20 @@ class TestPaging:
         assert incidents[0].assignment_group == "L1-Middleware-Support"
         assert incidents[0].cmdb_ci == "OrderService" and incidents[0].priority == 3
 
+    async def test_a_short_or_empty_page_is_not_the_end_when_rows_are_hidden_by_access_control(
+        self,
+    ):
+        # Seen on a real instance: the page is cut first and unreadable rows dropped after,
+        # so the first page here is empty although two readable rows follow.
+        async with Replay.from_file("servicenow/incidents_acl_filtered.json") as server:
+            snow = connector(server.url)
+            try:
+                incidents = await snow.get_new_incidents()
+            finally:
+                await snow.close()
+            server.assert_complete()
+        assert [i.number for i in incidents] == ["INC0000003", "INC0000005"]
+
     async def test_paging_stops_at_the_configured_ceiling(self):
         async with Replay.from_file("servicenow/incidents_page_ceiling.json") as server:
             snow = connector(server.url, max_pages=2)
@@ -161,6 +175,23 @@ class TestClaim:
         with pytest.raises(ServiceNowError) as err:
             await self.run("claim_acl_denied")
         assert err.value.status == 403 and "ACL Exception" in str(err.value)
+
+    async def test_handing_a_claimed_ticket_to_another_group_releases_the_assignment(self):
+        # A stock instance refuses a group change while the ticket is still assigned
+        # (business rule "Abort changes on group"). Seen on a developer instance.
+        from unittest.mock import AsyncMock, patch
+
+        for claim, expected in (
+            (True, {"assignment_group": "L2-General", "assigned_to": ""}),
+            (False, {"assignment_group": "L2-General"}),
+        ):
+            snow = connector("https://example.service-now.com", claim=claim)
+            with patch.object(snow, "_patch", AsyncMock(return_value={"result": {}})) as sent:
+                await snow.update_incident(INC, {"assignment_group": "L2-General"})
+                await snow.update_incident(INC, {"work_notes": "a note"})
+            await snow.close()
+            assert sent.call_args_list[0].args[1] == expected
+            assert sent.call_args_list[1].args[1] == {"work_notes": "a note"}
 
     async def test_claiming_can_be_switched_off(self):
         snow = connector("https://example.service-now.com", claim=False)

@@ -2,7 +2,7 @@
 
 An async Python service that takes a ServiceNow incident, matches it to a published Standard Operating Procedure (SOP), runs the SOP's diagnostic steps through tool adapters, and ends in one explicit outcome: resolved with verification, or handed to a person with the evidence. A React dashboard shows what the agent did.
 
-**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow connector has run against one developer instance (basic authentication only) and the model client against one hosted provider. Every operations connector (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock and against fixtures written from vendor documentation, and sign-in has only run against identity providers faked in the tests. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
+**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow connector has run against one developer instance (basic authentication; OAuth has not) and the model client against one hosted provider. Every operations connector (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock and against fixtures written from vendor documentation, and sign-in has only run against identity providers faked in the tests. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
 
 ## What it does today
 

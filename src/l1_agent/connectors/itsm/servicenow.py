@@ -4,13 +4,14 @@ Authentication is basic or OAuth 2.0. Lists are paged. Before the agent
 works a ticket it claims it, and a ticket someone else already holds is
 left alone.
 
-Verified against a ServiceNow developer instance with basic authentication
-only (tests/live). OAuth and paging are covered by contract tests written
-from the vendor documentation.
+Basic authentication, paging, the claim step and the hand-over to another
+group have run against one ServiceNow developer instance (tests/live). OAuth
+is covered only by contract tests written from the vendor documentation.
 """
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 from src.l1_agent.config.settings import ConfigError, ServiceNowSettings
@@ -40,6 +41,10 @@ INCIDENT_FIELDS = (
     "subcategory,cmdb_ci,assignment_group,priority,state,"
     "caller_id,sys_created_on"
 )
+
+
+# X-Total-Count of the list response this task read last, when the instance sent one.
+_total_count: ContextVar[Optional[int]] = ContextVar("servicenow_total_count", default=None)
 
 
 class ServiceNowError(ConnectorHttpError):
@@ -146,6 +151,10 @@ class ServiceNowConnector:
             response = await self._http.request(method, path, params=params, json=data)
         except ConnectorHttpError as exc:
             raise ServiceNowError(method, path, exc.status, exc.message, exc.detail) from None
+        try:
+            _total_count.set(int(response.headers.get("X-Total-Count", "")))
+        except ValueError:
+            _total_count.set(None)
         return response.body if isinstance(response.body, dict) else {}
 
     async def _get(self, path: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
@@ -155,10 +164,17 @@ class ServiceNowConnector:
         return await self._request("PATCH", path, data=data)
 
     async def _get_all(self, path: str, params: Dict[str, str]) -> List[Dict[str, Any]]:
-        """Every row of a list, a page at a time, up to the configured ceiling."""
+        """Every row of a list, a page at a time, up to the configured ceiling.
+
+        ServiceNow cuts each page before it applies access controls, so a page
+        can come back short, or empty, while readable rows remain further on.
+        The end of the list is therefore taken from X-Total-Count. Only when an
+        instance does not send it does a short page mean the end.
+        """
         size = max(1, self._settings.page_size)
         rows: List[Dict[str, Any]] = []
         for page in range(max(1, self._settings.max_pages)):
+            _total_count.set(None)
             result = await self._get(
                 path, {**params, "sysparm_limit": str(size), "sysparm_offset": str(page * size)}
             )
@@ -166,7 +182,8 @@ class ServiceNowConnector:
             if not isinstance(batch, list):
                 break
             rows.extend(batch)
-            if len(batch) < size:
+            total = _total_count.get()
+            if (page + 1) * size >= total if total is not None else len(batch) < size:
                 return rows
         else:
             logger.warning("ServiceNow list %s stopped at %d rows; more remain", path, len(rows))
@@ -211,6 +228,11 @@ class ServiceNowConnector:
     ) -> Dict[str, Any]:
         """Update incident fields (work_notes, state, etc.)."""
         table = self._settings.incident_table
+        if self._settings.claim and "assignment_group" in fields and "assigned_to" not in fields:
+            # Handing a claimed ticket to another group also gives up the assignment. A stock
+            # instance refuses the move otherwise (business rule "Abort changes on group"),
+            # and the receiving team should not get a ticket that still shows the agent.
+            fields = {**fields, "assigned_to": ""}
         logger.info("Updating incident %s with fields: %s", sys_id, list(fields.keys()))
         result = await self._patch(f"/api/now/table/{table}/{sys_id}", fields)
         metrics.increment("servicenow.incident_updates")

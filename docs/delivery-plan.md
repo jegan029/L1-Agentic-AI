@@ -106,10 +106,10 @@ These are product, commercial or irreversible choices. Each has a recommendation
 | D2 | Customer name in git history on a hosted remote. | Remove from the tree in Phase 1. Separately decide whether to rewrite history or start the product in a fresh repository. A fresh repository is cleaner for a commercial product and avoids force-pushing. |
 | D3 | CrewAI path: repair it in Phase 1, or remove it in Phase 1. | Remove. ADR 0001 retires it, it cannot be verified without a provider key, and repairing code that is scheduled for deletion is wasted review effort. If you want it kept alive until Phase 5, Phase 1 repairs the four defects and forces its outcome through the same fail-closed mapping. |
 | D4 | Lead deployment shape (ADR 0003). | Single-tenant in the customer environment first; keep the runner split so the hosted control plane can follow. |
-| D5 | Highest tier allowed to run without a human approval. | T1 only. T2 always needs an approval bound to the action hash, in every autonomy level. This is a liability position as much as an engineering one. |
+| D5 | Highest tier allowed to run without a human approval. **Decided: as recommended.** | T1 only. T2 always needs an approval bound to the action hash, in every autonomy level. This is a liability position as much as an engineering one. |
 | D6 | Model providers at launch, and whether "no model" is a supported configuration. | Support a customer-supplied OpenAI-compatible endpoint and Anthropic. Make the engine fully functional with the model disabled, because some buyers will start that way. |
 | D7 | Product name, licence, and whether the mainframe and browser connectors ship in the first release. | Ship both connectors as T0 read only and labelled preview. They carry the most risk for the least reference-case value. |
-| D8 | ServiceNow approval mechanism: approval on a change request created from a standard change template, or a custom approval record. Whether we ship a ServiceNow scoped application. | Standard change template plus approval on the change request. A scoped application is the durable answer but adds store certification work; defer it to after Phase 6. |
+| D8 | ServiceNow approval mechanism: approval on a change request created from a standard change template, or a custom approval record. Whether we ship a ServiceNow scoped application. **Decided: as recommended.** | Standard change template plus approval on the change request. A scoped application is the durable answer but adds store certification work; defer it to after Phase 6. |
 
 ## 3. Phases
 
@@ -376,4 +376,13 @@ Behaviour that changed for an existing deployment
 - A mainframe transaction parameter is refused when the allow list is empty. Before, an empty list allowed any.
 - `get_new_incidents` reads every page up to the ceiling. Before, the first 20 rows.
 
-Not verified: ServiceNow OAuth, paging and the claim step against a real instance (the live tests were not run in this phase); every operations connector against its real system; the Vault and AWS secrets backends; Git over https with a token; the review screen in a browser; the CI workflow for this branch on the hosted runner.
+Verified against a ServiceNow developer instance after the phase summary (`pytest tests/live -m live_servicenow`, 14 passed): basic authentication, paging, the claim step, leaving alone a ticket someone else holds, hand-over to an L2 group, verified resolution, and listing knowledge articles. That run found two defects, both fixed:
+
+| Defect | Fix |
+|---|---|
+| After a claim, escalation failed with `403`: a stock business rule ("Abort changes on group") refuses a group change while the ticket is still assigned. | A group change now also clears the assignment, when claiming is on. |
+| Paging stopped at the first short page. ServiceNow cuts a page before it applies access controls, so a page can be short or empty while readable rows remain: on the instance, 3 readable knowledge articles out of 53 were all missed with small pages. | The end of a list is taken from `X-Total-Count`. A short page ends the list only when that header is absent. |
+
+Decisions recorded for Phase 4: **D5** T1 is the highest tier that may run without a human approval; T2 always needs an approval bound to the action hash. **D8** approvals go through a change request created from a standard change template; a scoped application is deferred.
+
+Not verified: ServiceNow OAuth against a real instance; ingesting real knowledge articles end to end (they were listed, not ingested); every operations connector against its real system; the Vault and AWS secrets backends; Git over https with a token; the review screen in a browser; the CI workflow for this branch on the hosted runner.

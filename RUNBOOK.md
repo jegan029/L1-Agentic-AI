@@ -1,14 +1,14 @@
 # L1 Engineer Agent: runbook
 
-How to run and operate the service as it stands after Phase 2. Installation and the demo quick start are in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
+How to run and operate the service as it stands after Phase 4. Installation and the demo quick start are in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
 
-This is pre-release software. Sign-in has been tested only against identity providers faked in the test suite, and the tool adapters only against mocks. Expect to find differences on first contact with real systems.
+This is pre-release software. Sign-in has been tested only against identity providers faked in the test suite, and the tool adapters only against mocks. The Autosys force start has only run against a mock scheduler, and the ServiceNow change and approval calls have never run against an instance. Expect to find differences on first contact with real systems, and start every tenant in shadow mode.
 
 ## 1. Run it
 
 | Mode | Command | Needs |
 |---|---|---|
-| One-shot demo | `python -m src.l1_agent.demo` | Nothing. Five sample incidents, all mocks, a throwaway SQLite file. |
+| One-shot demo | `python -m src.l1_agent.demo` | Nothing. Eight sample incidents, all mocks, a throwaway SQLite file. The demo tenant is set to act; a real tenant starts in shadow. |
 | Demo service | `AGENT_DEMO_MODE=true LLM_ENABLED=false python -m src.l1_agent.main` | Nothing. Loopback only; every caller is the demo user. |
 | Demo service with real ServiceNow | add `SERVICENOW_LIVE_IN_DEMO=true` and the `SERVICENOW_*` settings | ServiceNow for real; tool adapters stay mocked. |
 | Full service | `l1-agent serve` (or `python -m src.l1_agent.cli serve`) | PostgreSQL, a webhook secret, ServiceNow, an identity provider. |
@@ -129,6 +129,68 @@ Knowledge sources:
 
 `l1-agent knowledge sync` pulls what changed since the last sync; `KNOWLEDGE_SYNC_INTERVAL` (seconds) does it on a timer. Each article revision becomes one draft, once. A file deleted from Git or an article unpublished in ServiceNow does not retire its SOP; retire it in the library.
 
+### 2.6 Letting the agent make changes
+
+A new tenant is in **shadow**: at an `ACTION` step the agent records what it would have done and changes nothing. Leave it there until the shadow record looks right. The design is in [ADR 0008](docs/adr/0008-actions-policy-and-approvals.md).
+
+**Before the first change**
+
+1. **ServiceNow.** Create a standard change template for each SOP that has an `ACTION` step, with exactly the name in the SOP's `change_template`. The integration user must be able to create a standard change from it and to update that change. With no change record, the agent does not act.
+2. **Autosys.** Set the connection's `force_start_jobs` (or `AUTOSYS_FORCE_START_JOBS`) to the jobs that may be restarted: exact names or patterns such as `NIGHTLY_*`. An empty list means none. `sendevent` must be on the agent host (`AUTOSYS_SENDEVENT_PATH`), run as an account that may send `FORCE_STARTJOB` to those jobs and nothing more.
+3. **Roles.** Map a group to `approver`. Keep it separate from `tenant_admin`: the person who sets how far the agent may go does not also approve what it does.
+
+To check the ServiceNow side on a developer or sub-production instance, set `LIVE_SERVICENOW_CHANGE_TEMPLATE` to the template's name and run `pytest tests/live/test_servicenow_changes_live.py -m live_servicenow -v -s`. It creates tagged change records and leaves them there. This test has not yet been run against any instance.
+
+**Raising the level**
+
+```bash
+l1-agent policy show
+l1-agent policy set --autonomy approval --rules rules.json
+```
+
+| Level | What an `ACTION` step does |
+|---|---|
+| `shadow` | Records the action it would take. Nothing changes. |
+| `recommend` | Posts the proposed action to the ticket and escalates. |
+| `approval` | Opens the change, asks for approval, acts when it is given. |
+| `automatic` | Acts without a person for tier 1 actions on the `automatic` list. Everything else asks. |
+
+Three levels apply and the lowest wins: the tenant's, the one in `sop_autonomy` for the SOP version that is running, and the deployment ceiling `ACTIONS_MAX_AUTONOMY`. `sop_autonomy` names the version's content hash, so **a newly published version is in shadow until you list its hash**. The hash is on the version's page in the SOP library and in `l1-agent sop list`.
+
+```json
+{
+  "sop_autonomy": {"SOP-AUTOSYS-002": {"level": "automatic", "content_hash": "<sha256 of the published version>"}},
+  "automatic":    [{"sop_id": "SOP-AUTOSYS-002", "capability": "autosys.job.force_start", "targets": ["NIGHTLY_*"]}],
+  "raise_tier":   [{"capability": "autosys.job.force_start", "targets": ["PAYROLL_*", "GL_*"]}],
+  "freeze":       [{"start": "2026-12-20T00:00:00Z", "end": "2027-01-05T00:00:00Z", "reason": "year end"}],
+  "hours":        {"days": [0, 1, 2, 3, 4], "start": "06:00", "end": "22:00"},
+  "rate":         {"max_actions": 10, "per_minutes": 60},
+  "approval":     {"ttl_minutes": 60, "execute_within_minutes": 15, "channels": ["ui"], "servicenow_group": ""}
+}
+```
+
+- `raise_tier` makes the named targets tier 2. **Tier 2 always needs an approval**, from someone other than the SOP's author. Nothing lowers a tier.
+- `hours` and `freeze` are in UTC. `days` counts Monday as 0.
+- Invalid rules are refused whole, with every problem listed; the previous rules stay.
+- `ACTIONS_MAX_TIER=T0` on a deployment means it never makes a change, whatever any tenant sets.
+
+**Approvals**
+
+- In the dashboard under **Actions**: the approver sees the capability, the parameters, the SOP version, the change number and the expiry, and approves or rejects exactly that.
+- In ServiceNow, if `approval.channels` includes `servicenow`: the agent adds an approval request on the change for each active member of `servicenow_group` (up to 25) and checks for a decision every `ACTIONS_SERVICENOW_POLL_SECONDS`. One rejection rejects; otherwise one approval approves. The integration user needs to read `sys_user_grmember` and to create and read `sysapproval_approver`. For tier 2 the approver's email must be known and differ from the SOP author's; if not, the approval is not accepted and the run escalates.
+- A request nobody answers expires after `ttl_minutes` and the run escalates. An approval must be acted on within `execute_within_minutes`.
+
+**The kill switch**
+
+```bash
+l1-agent killswitch on --reason "runaway restarts"      # this tenant
+l1-agent killswitch off
+l1-agent killswitch on --global --reason "bad release"  # every tenant; needs DATABASE_MIGRATION_URL
+l1-agent killswitch status
+```
+
+Or **Actions → Stop all changes** in the dashboard. An operator or tenant administrator can engage the tenant's switch; only a tenant administrator can release it. A third switch is local to a process: while the file named by `ACTIONS_KILL_SWITCH_FILE` exists, that process makes no change. With any switch on, runs still read and diagnose; a run that reaches a change ends `aborted` and the ticket goes to a person. The switches are read from the database each time, so they take effect on the next change, not after a delay.
+
 ## 3. Health and monitoring
 
 | Route | Use | Needs |
@@ -169,6 +231,17 @@ After restoring a database backup, run `audit verify --checkpoints` against the 
 | Requests return `429` | Rate limit | `RATE_LIMIT_PER_MINUTE`, `LOGIN_RATE_LIMIT_PER_MINUTE`. |
 | Incidents are never picked up | Not New, or not in the intake group | Check the ticket and `SERVICENOW_ASSIGNMENT_GROUP`. |
 | Run ends `aborted` with "Not claimed" | Someone already holds the ticket, or it is no longer open | Nothing to do. The agent wrote nothing to the ticket. |
+| Run ends `aborted` with "kill switch is on" | A kill switch was on when the run reached a change | `l1-agent killswitch status`. The ticket has been routed to a person. |
+| An action is always "Shadow: would have run" | The tenant, or this SOP version, is in shadow | `l1-agent policy show`. A new SOP version needs its hash in `sop_autonomy`. |
+| Action denied: `change_record_unavailable` | No standard change template with the SOP's `change_template` name, or the integration user may not create one | Create the template; check the user's rights. |
+| Action denied: `not_on_allow_list` | The job is not on the connection's `force_start_jobs`, or the list is empty | Add it to the connection. |
+| Action denied: `above_deployment_ceiling`, `change_freeze`, `outside_permitted_hours`, `rate_limit` | The rule named | `l1-agent policy show`; `ACTIONS_MAX_TIER`. |
+| A run sits in "waiting for approval" | Nobody has decided | **Actions** in the dashboard, or the change in ServiceNow. It escalates when the request expires. |
+| Approve returns `403` "author of the SOP cannot approve a T2 action" | Working as intended | Another approver decides. |
+| Approve returns `409` | Already decided, expired, or not the action that was shown | Reload the page. |
+| Run ends `escalated` with "ran but was not verified" | The job was started and did not reach `SU` in the wait the SOP allows, or failed again | The change record is closed as unsuccessful. L2 has both status reads. |
+| Run ends `needs_human` with "Whether it happened is not known" | A worker died between sending the write and recording its result | Check the scheduler. The agent did not send it again. |
+| `change.close_failed` in the audit log | The instance refused a state change when closing the change | Close it by hand. The run's outcome is unaffected. Tell us which state was refused. |
 | Every run ends `escalated` with "No applicable SOP found" | No SOP is published for this tenant | `l1-agent sop list`. Drafts and versions in review are never matched. |
 | Run ends `needs_human` with "Adapter '...' not configured" | The SOP calls a connector this tenant has no connection for | `l1-agent connection set`, or `GET /api/connectors` to see the state and any error. |
 | A check fails with "credential unavailable" | The reference cannot be read | Check the reference, the backend's reachability and its access policy. |
@@ -195,6 +268,9 @@ Everything is in PostgreSQL.
 | `users`, `sessions`, `api_tokens`, `role_mappings` | Identity provider subject, email and display name; hashes of credentials | No password is stored. |
 | `sops`, `sop_versions` | Every SOP version, its author, approver, content hash and source article text | A submitted version cannot be changed and only a draft can be deleted, for any database role. |
 | `connections` | Connector settings and credential references | No credential values. |
+| `policies` | Autonomy level, rules and the tenant kill switch | |
+| `actions` | Every policy decision: capability, parameters, hash, tier, approver, change number, result | Cannot be deleted. What was decided and approved cannot be changed, for any database role. |
+| `platform_flags` | The global kill switch | The only table besides `tenants` with no tenant. The application can read it and cannot write it. |
 | `knowledge_sources` | How far each source has been read | |
 
 Back up the database as a whole. There are no files to back up.
@@ -208,5 +284,9 @@ Back up the database as a whole. There are no files to back up.
 - A worker that dies while writing the final ServiceNow update can cause the closing work notes to be posted twice when the run is resumed. The outcome is recorded once.
 - If a worker stalls for longer than `WORKER_VISIBILITY_TIMEOUT` without dying, a second worker can pick up its run. Both then replay the same journal and the first conclusion stands, but work notes may repeat.
 - The rate limit and the metrics are per process.
+- A run waiting for approval holds its incident's one open run until it is decided or expires.
+- The same change is made at most once per incident. If a restart is needed twice, the second is a person's.
+- When a change record cannot be closed automatically it is left open with a note.
+- ServiceNow approvals are polled; a decision takes up to `ACTIONS_SERVICENOW_POLL_SECONDS` to be seen.
 - The webhook secret is shared and is rotated by changing the setting and restarting.
 - The service does not serve TLS.

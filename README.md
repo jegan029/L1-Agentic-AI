@@ -1,8 +1,8 @@
 # L1 Engineer Agent
 
-An async Python service that takes a ServiceNow incident, matches it to a published Standard Operating Procedure (SOP), runs the SOP's diagnostic steps through tool adapters, and ends in one explicit outcome: resolved with verification, or handed to a person with the evidence. A React dashboard shows what the agent did.
+An async Python service that takes a ServiceNow incident, matches it to a published Standard Operating Procedure (SOP), runs the SOP's steps through connectors, and ends in one explicit outcome: resolved with verification, or handed to a person with the evidence. Where the SOP and the tenant's policy allow it, it carries out the fix the SOP describes; by default it only records what it would have done. A React dashboard shows what the agent did.
 
-**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow connector has run against one developer instance (basic authentication; OAuth has not) and the model client against one hosted provider. Every operations connector (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock and against fixtures written from vendor documentation, and sign-in has only run against identity providers faked in the tests. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
+**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow connector has run against one developer instance (basic authentication; OAuth has not) and the model client against one hosted provider. Every operations connector (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock and against fixtures written from vendor documentation, and sign-in has only run against identity providers faked in the tests. The force start has only run against a mock scheduler: the real `sendevent` command, its exit codes and its timing are unverified. ServiceNow change records and approvals are written from vendor documentation and have not run against an instance. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
 
 ## What it does today
 
@@ -10,7 +10,8 @@ An async Python service that takes a ServiceNow incident, matches it to a publis
 - Keeps SOPs as versions with a review workflow: one person submits a draft, a different person approves it, and only a published version is ever matched or run. Articles pulled from a ServiceNow knowledge base or a Git repository arrive as drafts.
 - Matches each incident to a published SOP by keyword, CI, category and assignment group. A field the ticket does not carry is left out of the score; it is not counted as a mismatch. A model, if configured, can help choose between candidates that already clear the confidence threshold. It has no tools and cannot decide what runs.
 - Binds typed parameters from the ticket (for example an Autosys job name), validates them, and stops if any cannot be bound.
-- Executes the SOP step by step through read-only connectors: Splunk, IBM MQ (through IR360), Autosys, file shares, Dynatrace, a browser check and mainframe TN3270. Each connector declares its capabilities, their parameters and their risk tier in a manifest.
+- Executes the SOP step by step through connectors: Splunk, IBM MQ (through IR360), Autosys, file shares, Dynatrace, a browser check and mainframe TN3270. Each connector declares its capabilities, their parameters and their risk tier in a manifest.
+- Carries out one kind of change so far: an Autosys force start of a failed job. Every change goes through a policy decision, a ServiceNow change record, an approval where one is required, pre-checks, verification and, where the connector declares one, rollback. A new tenant starts in shadow mode, where nothing is changed.
 - Ends every run in one of four outcomes.
 
 | Outcome | Meaning |
@@ -18,11 +19,26 @@ An async Python service that takes a ServiceNow incident, matches it to a publis
 | `resolved` | A VERIFY step ran and its assertion showed the symptom is gone. The incident is resolved in ServiceNow. |
 | `escalated` | The SOP routed the incident to an L2 team, with the evidence collected. |
 | `needs_human` | The agent could not continue safely: invalid SOP, unbound parameter, adapter unavailable, internal error. The incident stays open and is routed to a person. |
-| `aborted` | Stopped before doing anything. Today that means the ticket was already assigned to someone else. |
+| `aborted` | Stopped on purpose: the ticket was already assigned to someone else, or the kill switch was on when the run reached a change. The incident is routed to a person. |
 
 There is no default outcome. A run cannot be recorded as resolved without a passed verification; see [ADR 0002](docs/adr/0002-fail-closed-outcomes.md).
 
-All connectors are read only, and the connector layer refuses to call a write capability at all. The agent does not change anything in a target system yet. Remediation actions with policy and approval are planned for a later phase.
+### Changes the agent can make
+
+An SOP step of type `ACTION` names a write capability. There is one: `autosys.job.force_start`. See [ADR 0008](docs/adr/0008-actions-policy-and-approvals.md).
+
+| Autonomy level | What happens at an `ACTION` step |
+|---|---|
+| `shadow` (default) | The agent records what it would have done and changes nothing. |
+| `recommend` | It posts the proposed action to the ticket and escalates. |
+| `approval` | It opens a change record, waits for a person to approve, then acts. |
+| `automatic` | It acts without a person, for tier 1 actions the tenant has listed. Anything else waits for approval. |
+
+- The level that applies is the lowest of three: the tenant's, the one set for the SOP version that is running, and the deployment's ceiling. A newly published SOP version starts in shadow.
+- **Tier 2 actions always need an approval**, and the approver cannot be the author of the SOP.
+- An approval is for one exact action. If the parameters change, or the request expires, it is void.
+- **Kill switch.** An operator or tenant administrator can stop every change for the tenant at once; the platform operator can stop them for every tenant. Only a tenant administrator can release the tenant's switch.
+- A connector refuses a write unless the policy engine has recorded a decision and issued a single-use grant for exactly that call.
 
 ## Quick start (demo mode)
 
@@ -31,7 +47,8 @@ Requires Python 3.11+ and Node 18+.
 ```bash
 pip install -r requirements-dev.txt
 
-# One-shot demo: five sample incidents through the real engine, with mocks
+# One-shot demo: eight sample incidents through the real engine, with mocks.
+# Three of them restart a failed job: automatically, after an approval, and unsuccessfully.
 python -m src.l1_agent.demo
 
 # Service in demo mode: mock adapters, sample SOPs, no credentials, loopback only
@@ -187,7 +204,7 @@ Every route is denied unless it is declared with an access rule; the service wil
 | `GET /health` | nothing | Liveness only, no detail |
 | `GET /api/me` | any sign-in | Who is signed in, roles, CSRF token |
 | `GET /api/dashboard/summary`, `/api/incidents[/{number}]`, `/api/sops/stats` | `incidents.read` | Runs and their evidence |
-| `GET /api/stream` | `incidents.read` | Server-sent events: `incident_received`, `sop_matched`, `step_executing`, `step_done`, `incident_resolved`, `incident_escalated`, `heartbeat` |
+| `GET /api/stream` | `incidents.read` | Server-sent events: `incident_received`, `sop_matched`, `step_executing`, `step_done`, `incident_resolved`, `incident_escalated`, `awaiting_approval`, `heartbeat` |
 | `GET /api/status`, `/api/openapi.json` | `system.read` | Mode, metrics snapshot, API description |
 | `GET /metrics` | `metrics.read` | Prometheus text format |
 | `GET /api/audit/events`, `/api/audit/verify` | `audit.read` | The audit log and its integrity |
@@ -197,6 +214,11 @@ Every route is denied unless it is declared with an access rule; the service wil
 | `POST /api/sop-versions/{id}/approve`, `.../request-changes`, `.../publish`, `POST /api/sops/{sop_id}/retire` | `sops.approve` | Review. The author of a version cannot approve it |
 | `GET /api/connectors` | `system.read` | Every connector's manifest and whether this tenant has configured it. No credentials |
 | `PUT`/`DELETE /api/connectors/{id}/connection`, `POST /api/connectors/{id}/test` | `connectors.manage` | A connector's settings and credential references; test the connection |
+| `GET /api/actions[/{id}]` | `incidents.read` | Every action: the policy decision, the approval, the result |
+| `POST /api/actions/{id}/approve`, `.../reject` | `actions.approve` | Decide a waiting action. The request carries the hash of the action that was shown |
+| `GET /api/policy` | `system.read` | Autonomy level, rules, kill switches, deployment ceiling |
+| `PUT /api/policy`, `POST /api/kill-switch/release` | `policy.manage` | Change the level or the rules; release the kill switch |
+| `POST /api/kill-switch/engage` | `actions.stop` | Stop every change for the tenant |
 | `/auth/login`, `/auth/callback`, `/auth/saml/*`, `/auth/break-glass`, `/auth/logout` | public, except logout | Sign-in and sign-out |
 
 A signed-in browser sends `X-CSRF-Token` (from `/api/me`) on every request that changes something. API tokens go in `Authorization: Bearer`.
@@ -260,7 +282,10 @@ docs/                  target architecture, threat model, controls matrix, ADRs,
 ## Known limits
 
 - One deployment serves one tenant's ServiceNow and identity provider. Operations connectors and knowledge sources are per tenant.
-- Connectors are read only. There are no remediation actions, action approvals or policy engine yet.
+- One write capability exists, the Autosys force start, and it has only run against a mock scheduler. The Autosys REST API is not implemented; the command line is.
+- ServiceNow change records and approvals have not run against an instance. An existing normal change on the ticket is not accepted as the change record, and ServiceNow approvals are polled, not pushed.
+- Policy rules are edited as JSON through the API or the command line. The dashboard sets the autonomy level and the kill switch and shows the rules.
+- A grant is issued and checked inside one process. Checking it in a separate runner needs the key split planned for the packaging phase.
 - Knowledge sources are a ServiceNow knowledge base and Git. Confluence and SharePoint are not built. A prose article becomes an empty draft; nothing drafts the steps for you yet.
 - Connections are set from the command line or the API; the dashboard has no screen for them yet.
 - The audit log is not yet exported to a SIEM and has no retention control.

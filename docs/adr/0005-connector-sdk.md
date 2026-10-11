@@ -1,6 +1,6 @@
 # ADR 0005: Connector SDK and registry
 
-Status: accepted and built in Phase 3, with the differences listed under "As built in Phase 3" at the end. Engineering decision.
+Status: accepted and built in Phase 3, with the differences listed under "As built in Phase 3" at the end. Engineering decision. The write path this ADR left closed is opened by [ADR 0008](0008-actions-policy-and-approvals.md).
 
 ## Context
 

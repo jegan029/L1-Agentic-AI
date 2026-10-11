@@ -386,3 +386,77 @@ Verified against a ServiceNow developer instance after the phase summary (`pytes
 Decisions recorded for Phase 4: **D5** T1 is the highest tier that may run without a human approval; T2 always needs an approval bound to the action hash. **D8** approvals go through a change request created from a standard change template; a scoped application is deferred.
 
 Not verified: ServiceNow OAuth against a real instance; ingesting real knowledge articles end to end (they were listed, not ingested); every operations connector against its real system; the Vault and AWS secrets backends; Git over https with a token; the review screen in a browser; the CI workflow for this branch on the hosted runner.
+
+## 8. Phase 4 record
+
+Delivered on branch `phase-4/actions`, based on `phase-3/connectors-and-knowledge`. Decisions D5 and D8 were taken before it started. The design is [ADR 0008](adr/0008-actions-policy-and-approvals.md).
+
+**Everything in this phase is evidenced against a mock scheduler and a mock ServiceNow.** The Autosys force start has never run against Autosys. The ServiceNow change and approval calls were written from vendor documentation and have never run against an instance; the live tests of Phase 3 do not touch them.
+
+Exit criteria
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | The Autosys scenario passes end to end against the mock in shadow, approval and automatic modes, and a test reconstructs each run from the audit log alone | `tests/db/test_actions.py::TestScenarioInEachMode`, on SQLite and PostgreSQL. `reconstruct` in `tests/actions_support.py` reads only audit events and is compared with the run record, the action record and what the mock scheduler received. |
+| 2 | No connector write capability can be invoked without a policy decision record | `tests/unit/actions/test_write_needs_a_decision.py`: every write capability in the registry is refused without a grant, with a forged one and with one from another authority; a grant is good for one call, once, for 60 seconds; and a search of the source tree finds `mint` called from two methods only, each after the database step that authorises. |
+| 3 | Changed parameters invalidate the approval; expired approval is rejected; SOP author cannot approve a T2 action | `tests/db/test_actions.py::TestApprovals` and `tests/api/test_actions_api.py`. The T2 rule and "an approval is for this action" are also table constraints, tested by writing to the table directly. |
+| 4 | With the switch on, an in-flight run stops before execute and a queued write is refused, globally and per tenant | `tests/db/test_actions.py::TestKillSwitch`, each test run for the tenant, global and local switch. The queued write is a grant that was already minted and is refused at the connector. |
+| 5 | Verification failure triggers rollback where declared, then escalation | `tests/db/test_action_rollback.py`, with a connector written for the test because the Autosys force start declares no rollback. For Autosys: `TestOutcomes::test_a_job_that_fails_again_is_not_verified_and_the_run_escalates`. |
+
+A mutation check was run by hand: eighteen guards were removed one at a time (kill switch, T2 approval, grant redemption, parameter digest, single use, author rule, hash check, expiry, pre-checks, verification, change record, allow list and others). Each removal made at least one test fail.
+
+Also delivered: `ACTION` step type and its validation; `policies`, `actions` and `platform_flags` tables (migration 0003); approval through the dashboard and through ServiceNow; the Actions page; `l1-agent policy` and `killswitch`; three roles' new permissions; the restart sample SOP and three demo incidents.
+
+Deviations from the plan
+
+| Item | What happened |
+|---|---|
+| Autosys force start "through the argument list or REST API" | The argument list only. The REST API is not implemented: its request shape could not be checked against a system or confirmed from memory. |
+| Change record: "or an existing approved normal change supplied on the ticket" | Not built. Only a standard change opened by the agent counts. |
+| ServiceNow approval "polled or received by signed webhook" | Polled only. |
+| Kill switch "checked by the runner against its local flag" | There is no separate runner yet. The local flag is a file the worker process checks. |
+| "Operator stop" of one run | Not built. The kill switch and the expiry of an approval request are the ways to stop a waiting run. `runs.operate` still has no route. |
+| Pre-check "the box, if any, is not on hold" | Not built; `autorep` output is not parsed for it. The pre-check is that the job is failed or terminated. |
+| Kill switch "takes effect within the flag cache lifetime" | There is no cache. The switches are read from the database at each of the three checks. |
+| Verification of an action and `RESOLVED` | A verified action does not make the run verified. A `VERIFY` step must still pass before `RESOLVE` (ADR 0002 unchanged). |
+| Policy rule editing in the dashboard | The dashboard sets the autonomy level and the kill switch and shows the rules. Rules are edited as JSON through the API or CLI. |
+| Duplicate closing work notes after a crash | Carried from Phase 2 and Phase 3. Still not fixed. |
+
+Found and fixed while building
+
+| Where | What |
+|---|---|
+| Autosys job name check (existing read adapter, and the new write) | The pattern ended in `$`, which accepts a name with a trailing newline. Now a full match. The name was always passed as one argument, never through a shell. |
+| Capability schemas | Had no way to restrict a string's characters. `pattern` added, so an unsafe job name is refused before a grant is used. |
+
+Test expectations changed
+
+| Test | Before | Now | Reason |
+|---|---|---|---|
+| `test_manifest_lint.py::test_no_write_capability_exists_before_the_policy_engine` | Asserted the registry declares no write | Renamed `test_the_write_capabilities_are_exactly_the_reviewed_ones`; asserts the list is exactly `autosys.job.force_start`, T1, not idempotent, no rollback | The phase adds the first write. The new test fails when anyone adds another. |
+| `test_manifest_lint.py` fixtures | `pre_checks=("demo.job.status",)` | `pre_checks=(PreCheck("demo.job.status", "<assertion>"),)`; seven more lint cases added | A pre-check now carries the assertion that must hold. |
+| `test_phase3_cli_and_engine.py::test_connectors_lists_every_capability_with_its_tier` | Asserted no line says `write` | Asserts the only `write` line is the force start, with `T1` | Same. |
+| `test_phase3_cli_and_engine.py` validator case | Message "only a CHECK step names a capability" | "only a CHECK or ACTION step names a capability" | Wording. |
+| `test_tenant_isolation.py::test_every_table_but_tenants_carries_a_tenant` | Exempted `tenants` | Exempts the two names in `GLOBAL_TABLES` and asserts that list is exactly `tenants` and `platform_flags` | The global kill switch is a table with no tenant. New tests assert it holds no tenant data and that the application role can read it and cannot write it. |
+| `test_tenant_isolation.py::seed`, `test_api_data.py`, `test_http_access.py::concrete` | Knew the Phase 3 tables and path parameters | Seed a policy and an action per tenant and walk the new routes | Extended, not relaxed. |
+| `test_http_access.py::test_role_table_keeps_duties_apart` | Phase 2 separations | Adds: only `approver` holds `actions.approve`; only `tenant_admin` holds `policy.manage`; `operator` and `tenant_admin` hold `actions.stop` | New permissions. |
+| `test_sop_api.py::test_demo_tenant_starts_with_published_sops_and_one_to_review` | Three published samples | Four | The restart sample. |
+| `test_no_unverified_resolve.py` | Random graphs without actions; five mutations | Random graphs include `ACTION` steps; eleven mutations; a new test that no action state leads to `VERIFIED` | Extended. |
+
+No test was removed.
+
+Behaviour that changed for an existing deployment
+
+- Nothing changes until an SOP with an `ACTION` step is published **and** the tenant's policy is raised from shadow. A deployment that does neither behaves as after Phase 3.
+- A run can now be open for as long as an approval request lives (default 60 minutes).
+- `aborted` now also means "stopped by the kill switch".
+- Demo mode sets its tenant to `automatic` so the demo shows more than shadow. It does this only for a tenant that has no policy yet.
+- Migration `0003` must be applied.
+
+Verified: the full suite on Windows on SQLite and PostgreSQL 16, and in a Linux container; lint and format; bandit; the one-shot demo; the demo service over HTTP (an automatic restart, a T2 restart approved through the API, the kill switch, audit verification); the production frontend build.
+
+Not verified: the force start against Autosys (`sendevent` exit codes, output and timing; whether `FA` and `TE` are the right states to require; how long a real job takes to show `RU`); every ServiceNow change and approval call, the roles the integration user needs for them, and whether a standard change can be taken through its states and closed by the Table API on a given instance; the Actions page in a browser; behaviour with several worker processes sweeping the same approval requests (each move is a guarded update, tested with one worker); everything listed as unverified in the Phase 3 record.
+
+A live test for the change and approval calls exists and has not been run: `tests/live/test_servicenow_changes_live.py`. It needs the name of a standard change template on the instance (`LIVE_SERVICENOW_CHANGE_TEMPLATE`) and creates tagged change records there.
+
+Open decisions: D6 (model providers) is needed before Phase 5. D7 (product name, licence, preview connectors) is needed before Phase 6.

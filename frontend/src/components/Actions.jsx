@@ -212,6 +212,94 @@ function Policy({ user }) {
   )
 }
 
+const TASKS = {
+  rank: 'Rank SOP candidates',
+  extract: 'Locate a parameter in the ticket',
+  interpret: 'Write a hand-over summary',
+  draft: 'Draft an SOP from an article',
+}
+const REFUSALS = {
+  model_off: 'the model is switched off for this tenant',
+  task_not_enabled: 'this task is not enabled',
+  provider_not_allowed: 'this provider is not on the tenant\u2019s list',
+  region_not_allowed: 'the provider\u2019s region is not allowed',
+  retention_not_allowed: 'the provider keeps data longer than allowed',
+}
+
+function ModelUse({ user }) {
+  const { data, error, updatedAt, refresh } = usePolledJson(`${API_BASE_URL}/api/model`, { intervalMs: 15000 })
+  const [busy, setBusy] = useState(false)
+  const [failure, setFailure] = useState(null)
+  const canManage = user.permissions.includes('policy.manage')
+
+  if (!data) {
+    return <DataNotice error={error} hasData={false} updatedAt={updatedAt} onRetry={refresh} what="the model policy" />
+  }
+  const provider = data.provider
+  const hasRules = (data.rules.providers || []).length > 0 && (data.rules.tasks || []).length > 0
+  const toggle = async () => {
+    setBusy(true)
+    setFailure(null)
+    const res = await send(user, 'PUT', '/api/model', { enabled: !data.enabled })
+    setBusy(false)
+    if (res.ok) refresh(); else setFailure(res)
+  }
+
+  return (
+    <Card title={<>Model assistance</>}>
+      <Failure failure={failure} />
+      <p className="muted">
+        A language model can advise on four things. It never chooses what runs, never makes a
+        change, and the agent works the same without it. Everything sent to it is redacted first.
+      </p>
+      {!provider.configured ? (
+        <p>No model provider is configured on this server.</p>
+      ) : (
+        <>
+          <p>
+            <strong>{data.enabled ? 'On' : 'Off'}</strong> for this tenant. Provider{' '}
+            <span className="mono">{provider.provider}</span>, model <span className="mono">{provider.model}</span>
+            {provider.region ? `, region ${provider.region}` : ', region not stated'}
+            {provider.retention_days == null ? ', retention not stated' : `, keeps data ${provider.retention_days} day(s)`}.
+          </p>
+          <ul className="plain-list">
+            {Object.entries(TASKS).map(([task, label]) => {
+              const why = data.refused ? data.refused[task] : 'model_off'
+              return (
+                <li key={task}>
+                  <span className={`badge badge--${why ? 'neutral' : 'resolved'}`}>{why ? 'Not used' : 'In use'}</span>{' '}
+                  {label}{why && data.enabled ? `: ${REFUSALS[why] || why}` : ''}
+                </li>
+              )
+            })}
+          </ul>
+          <p className="muted">
+            Today: {data.usage_today.calls} request(s), {data.usage_today.tokens.toLocaleString()} tokens
+            {provider.priced ? `, $${data.usage_today.cost_usd.toFixed(4)}` : ''}.
+          </p>
+          {canManage && (data.enabled || hasRules) && (
+            <div className="actions">
+              <button type="button" className="btn" disabled={busy} onClick={toggle}>
+                {data.enabled ? 'Switch the model off' : 'Switch the model on'}
+              </button>
+            </div>
+          )}
+          {canManage && !data.enabled && !hasRules && (
+            <p className="muted">
+              To switch it on, name the providers and tasks you allow with the API or{' '}
+              <span className="mono">l1-agent model set</span>.
+            </p>
+          )}
+        </>
+      )}
+      <details>
+        <summary>Rules (read only here; change them with the API or <span className="mono">l1-agent model set</span>)</summary>
+        <pre className="source-text" tabIndex={0}>{JSON.stringify(data.rules, null, 2)}</pre>
+      </details>
+    </Card>
+  )
+}
+
 export default function Actions() {
   const { user } = useSession()
   const { data, error, loading, updatedAt, refresh } = usePolledJson(
@@ -247,6 +335,7 @@ export default function Actions() {
       </Card>
 
       {canSeePolicy && <Policy user={user} />}
+      {canSeePolicy && <ModelUse user={user} />}
 
       <div className="table-wrap">
         {hasData && rest.length === 0 ? (

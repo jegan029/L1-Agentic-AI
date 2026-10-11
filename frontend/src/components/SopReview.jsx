@@ -230,6 +230,17 @@ export default function SopReview({ versionId }) {
 
       {v && (
         <>
+          {v.origin === 'model_drafted' && (
+            <div className="notice notice--warn" role="status">
+              <Icon name="alert-triangle" />
+              <div className="notice__text">
+                <strong>The steps were drafted by a language model</strong>
+                They were written from the article shown below and have passed the automatic
+                checks only. Read every step against the article. Whoever submits this version
+                is its author of record.
+              </div>
+            </div>
+          )}
           {v.review_note && v.status === 'draft' && (
             <div className="notice notice--warn" role="status">
               <Icon name="alert-triangle" />

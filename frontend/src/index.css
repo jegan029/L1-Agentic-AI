@@ -463,6 +463,15 @@ dialog.drawer::backdrop { background: rgba(2, 11, 91, 0.3); }
 .reason strong { display: block; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 2px; }
 .reason p { color: var(--text-primary); font-size: 13px; overflow-wrap: anywhere; }
 
+.model-note {
+  display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--radius-md);
+  color: var(--neutral); background: var(--neutral-bg); border: 1px dashed var(--neutral-border);
+}
+.model-note .icon { font-size: 18px; margin-top: 1px; }
+.model-note strong { display: block; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 2px; }
+.model-note__text { color: var(--text-primary); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 6px; }
+.plain-list { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 6px; }
+
 .section-label { font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px; }
 
 .steps { display: flex; flex-direction: column; }

@@ -139,6 +139,20 @@ export default function IncidentDetail({ incidentNumber, onClose }) {
             </div>
           )}
 
+          {record.model_note && (
+            <div className="model-note">
+              <Icon name="file-text" />
+              <div>
+                <strong>Model-drafted summary</strong>
+                <p className="muted">
+                  Written by a language model from the results below. It has not been verified and
+                  was not used for any decision.
+                </p>
+                <p className="model-note__text">{record.model_note.split('\n').slice(1).join('\n')}</p>
+              </div>
+            </div>
+          )}
+
           {record.step_results?.length > 0 ? (
             <section aria-labelledby={`${uid}-trace`}>
               <h3 id={`${uid}-trace`} className="section-label">

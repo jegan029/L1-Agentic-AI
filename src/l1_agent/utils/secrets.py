@@ -9,9 +9,9 @@ Usage (called once at service startup before Settings.from_env()):
 
     from src.l1_agent.utils.secrets import SecretsProvider
     provider = SecretsProvider.from_env()
-    provider.inject()   # writes fetched secrets into os.environ
+    settings = Settings.from_env(secrets=provider.fetch())
 
-Settings.from_env() then reads them normally from os.environ, so the
+Secrets are handed to Settings directly and never written to os.environ, so the
 rest of the codebase is unchanged regardless of which backend is used.
 """
 
@@ -35,26 +35,18 @@ _SECRET_MAPPINGS: List[Dict[str, str]] = [
     {"env_key": "DYNATRACE_API_TOKEN", "vault_key": "dynatrace/api_token"},
     {"env_key": "LLM_API_KEY", "vault_key": "llm/api_key"},
     {"env_key": "SMB_PASSWORD", "vault_key": "smb/password"},
+    {"env_key": "AGENT_API_TOKENS", "vault_key": "agent/api_tokens"},
+    {"env_key": "AGENT_WEBHOOK_SECRET", "vault_key": "agent/webhook_secret"},
 ]
 
 
 class SecretsProvider(ABC):
-    """Abstract base — fetch secrets and inject them into os.environ."""
+    """Abstract base: fetch secrets for Settings.from_env(secrets=...)."""
 
     @abstractmethod
     def fetch(self) -> Dict[str, str]:
         """Return a mapping of env_key → secret_value."""
         ...
-
-    def inject(self) -> None:
-        """Write fetched secrets into os.environ (only if not already set)."""
-        secrets = self.fetch()
-        injected = 0
-        for key, value in secrets.items():
-            if not os.environ.get(key):
-                os.environ[key] = value
-                injected += 1
-        logger.info("Injected %d secret(s) into environment", injected)
 
     @classmethod
     def from_env(cls) -> "SecretsProvider":

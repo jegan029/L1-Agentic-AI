@@ -30,7 +30,7 @@ class L2Router:
         except Exception as exc:
             logger.error("Failed to load L2 routing config from %s: %s", path, exc)
             return {
-                "default_team": {"name": "L2-General", "email": "l2-general@statestreet.com"},
+                "default_team": {"name": "L2-General", "email": ""},
                 "ci_mappings": {},
             }
 
@@ -47,8 +47,6 @@ class L2Router:
                     logger.debug("CI '%s' matched pattern '%s' -> %s", ci, pattern, team["name"])
                     return dict(team)
 
-        default = self._routing.get(
-            "default_team", {"name": "L2-General", "email": "l2-general@statestreet.com"}
-        )
+        default = self._routing.get("default_team", {"name": "L2-General", "email": ""})
         logger.debug("CI '%s' -> default team %s", ci, default["name"])
         return dict(default)

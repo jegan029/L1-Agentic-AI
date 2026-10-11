@@ -214,7 +214,11 @@ class DynatraceAdapter(BaseAdapter):
         metrics.increment("dynatrace.metric_queries")
         return AdapterResult(
             success=True,
-            data={"metric_count": len(metric_data), "metrics": metric_data},
+            data={
+                "metric_count": len(metric_data),
+                "metrics": metric_data,
+                "latest": _latest_by_metric(metric_data),
+            },
             raw_output=json.dumps(metric_data),
             evidence_snippet="\n".join(evidence_lines),
         )
@@ -298,7 +302,19 @@ class DynatraceAdapter(BaseAdapter):
                 params=params,
                 ssl=self._settings.verify_ssl,
             ) as resp:
-                if resp.status != 200:
-                    return []
+                # A failed lookup must not read as "no problems".
+                resp.raise_for_status()
                 data = await resp.json()
                 return data.get("problems", [])
+
+
+def _latest_by_metric(metric_data: list) -> Dict[str, Any]:
+    """Map metric id to its latest value, for assertions.
+
+    A metric reported for more than one entity, or with no value, is left out
+    so that an assertion on it cannot be evaluated and therefore cannot pass.
+    """
+    seen: Dict[str, list] = {}
+    for entry in metric_data:
+        seen.setdefault(entry["metric_id"], []).append(entry["latest_value"])
+    return {k: v[0] for k, v in seen.items() if len(v) == 1 and v[0] is not None}

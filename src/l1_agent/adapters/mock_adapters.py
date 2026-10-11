@@ -68,13 +68,33 @@ class MockIR360Adapter(BaseAdapter):
     async def health_check(self) -> bool:
         return True
 
+    # Sentinel queue that reports a drained backlog (verified-resolution scenario)
+    _RECOVERED_QUEUE = "ORDER.REQUEST"
+
     async def execute(self, parameters: Dict[str, Any]) -> AdapterResult:
         qm = parameters.get("queue_manager", "QMPROD01")
         queue = parameters.get("queue", "PAYMENT.REQUEST")
         action = parameters.get("action", "depth")
 
         data: Dict[str, Any] = {}
-        if action == "depth":
+        if action == "depth" and queue == self._RECOVERED_QUEUE:
+            # Recovered scenario: the backlog has drained by the time the agent looks.
+            data = {
+                "queue_manager": qm,
+                "queue": queue,
+                "current_depth": 12,
+                "max_depth": 5000,
+                "oldest_message_age_seconds": 4,
+                "input_count": 45,
+                "output_count": 44,
+            }
+            evidence = (
+                f"MQ depth check | QM={qm} Queue={queue}\n"
+                f"  Current depth: 12 / 5000 (0.2%)\n"
+                f"  Oldest message age: 4s\n"
+                f"  Input: 45, Output: 44 (consumers active)"
+            )
+        elif action == "depth":
             data = {
                 "queue_manager": qm,
                 "queue": queue,
@@ -336,7 +356,11 @@ class MockDynatraceAdapter(BaseAdapter):
         )
         return AdapterResult(
             success=True,
-            data={"metric_count": 2, "metrics": metrics_data},
+            data={
+                "metric_count": 2,
+                "metrics": metrics_data,
+                "latest": {m["metric_id"]: m["latest_value"] for m in metrics_data},
+            },
             raw_output=json.dumps(metrics_data),
             evidence_snippet=evidence,
         )

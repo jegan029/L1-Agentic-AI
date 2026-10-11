@@ -25,7 +25,6 @@ from src.l1_agent.adapters.mock_adapters import (
     MockWebUIScraperAdapter,
     MockWindowsShareAdapter,
 )
-from src.l1_agent.ai.ai_executor import AIExecutor
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.mock_llm import MockLLMClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
@@ -46,7 +45,7 @@ def load_sample_sop(filename: str) -> SOP:
     path = os.path.join(DATA_DIR, filename)
     with open(path) as f:
         raw = json.load(f)
-    sop = parser.parse(raw)
+    sop = parser.parse_from_json(raw)
     assert sop is not None, f"Failed to parse SOP from {filename}"
     return sop
 
@@ -95,11 +94,9 @@ def make_processor(
 
     llm_client = None
     ai_analyzer = None
-    ai_executor = None
     if use_ai:
         llm_client = MockLLMClient()
         ai_analyzer = AIAnalyzer(llm_client)
-        ai_executor = AIExecutor(llm_client=llm_client, adapters=adapters)
 
     return IncidentProcessor(
         snow_client=snow_client,
@@ -110,7 +107,6 @@ def make_processor(
         confidence_threshold=0.3,
         llm_client=llm_client,
         ai_analyzer=ai_analyzer,
-        ai_executor=ai_executor,
     )
 
 
@@ -138,7 +134,7 @@ class TestRuleBasedMQIncident:
         incident = make_incident()
         processor = make_processor([mq_sop], snow, use_ai=False)
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.incident_number == "INC0000001"
         assert summary.sop_id == "SOP-MQ-001"
@@ -170,7 +166,7 @@ class TestRuleBasedMQIncident:
         )
         processor = make_processor([], snow, use_ai=False)
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.outcome == ExecutionOutcome.ESCALATED
         assert "No" in summary.escalation_reason or "no" in summary.escalation_reason.lower()
@@ -198,7 +194,7 @@ class TestRuleBasedMQIncident:
             confidence_threshold=0.95,
         )
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
         assert summary.outcome == ExecutionOutcome.ESCALATED
 
 
@@ -222,7 +218,7 @@ class TestRuleBasedAutosysIncident:
         )
         processor = make_processor([autosys_sop], snow, use_ai=False)
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.incident_number == "INC0000002"
         assert summary.outcome in (ExecutionOutcome.RESOLVED, ExecutionOutcome.ESCALATED)
@@ -240,7 +236,7 @@ class TestRuleBasedAutosysIncident:
         )
         processor = make_processor([mq_sop, autosys_sop], snow, use_ai=False)
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.sop_id == "SOP-MQ-001"
 
@@ -259,14 +255,11 @@ class TestAIDrivenProcessing:
         processor = make_processor([mq_sop], snow, use_ai=True)
 
         assert processor.ai_enabled
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.incident_number == "INC0000001"
-        assert summary.outcome in (
-            ExecutionOutcome.RESOLVED,
-            ExecutionOutcome.ESCALATED,
-            ExecutionOutcome.PARTIAL,
-        )
+        # The mock queue is still backed up, so verification fails and L2 gets it.
+        assert summary.outcome == ExecutionOutcome.ESCALATED
         # AI mode posts at least the initial analysis note
         assert snow.add_work_note.call_count >= 1
 
@@ -295,7 +288,7 @@ class TestSOPMatchingIntegration:
             category="Middleware",
         )
         processor = make_processor([mq_sop], snow, use_ai=False)
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
         assert summary.sop_id == "SOP-MQ-001"
 
     @pytest.mark.asyncio

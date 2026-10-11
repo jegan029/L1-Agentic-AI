@@ -31,6 +31,10 @@ def send_escalation_email(team_email: str, subject: str, body: str) -> bool:
     smtp_password = os.getenv("SMTP_PASSWORD", "")
     smtp_from = os.getenv("SMTP_FROM", smtp_user)
 
+    if not team_email:
+        logger.info("No L2 email address configured for this route; skipping email")
+        return False
+
     if not smtp_host:
         logger.warning("SMTP_HOST not configured — skipping escalation email to %s", team_email)
         return False

@@ -59,7 +59,8 @@ class IncidentHistoryStore:
             "cmdb_ci": incident.cmdb_ci,
             "sop_id": summary.sop_id,
             "sop_title": summary.sop_title,
-            "outcome": summary.outcome.value,
+            "outcome": summary.outcome_label,
+            "verified_by": summary.verified_by,
             "escalation_reason": summary.escalation_reason,
             "duration_ms": summary.total_duration_ms,
             "started_at": summary.started_at,
@@ -136,7 +137,7 @@ class IncidentHistoryStore:
             outcome = r.get("outcome", "")
             if outcome == "resolved":
                 buckets[day]["resolved"] += 1
-            elif outcome in ("escalated", "partial", "failed"):
+            elif outcome:  # every other outcome needs a person
                 buckets[day]["escalated"] += 1
 
         return list(buckets.values())

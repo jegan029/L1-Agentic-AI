@@ -18,6 +18,30 @@ class StepType(Enum):
     MAINFRAME_CHECK = "MAINFRAME_CHECK"
     DECISION = "DECISION"
     NOTE = "NOTE"
+    # Runs a read check and applies an assertion. The only route to RESOLVE.
+    VERIFY = "VERIFY"
+    # Explicit terminal steps.
+    ESCALATE = "ESCALATE"
+    RESOLVE = "RESOLVE"
+
+
+# Step types that call a tool adapter.
+CHECK_STEP_TYPES = frozenset(
+    {
+        StepType.SPLUNK_SEARCH.value,
+        StepType.MQ_CHECK.value,
+        StepType.FILE_CHECK.value,
+        StepType.AUTOSYS_STATUS.value,
+        StepType.DYNATRACE_VM_CHECK.value,
+        StepType.DYNATRACE_METRICS.value,
+        StepType.WEB_UI_CHECK.value,
+        StepType.MAINFRAME_CHECK.value,
+    }
+)
+TERMINAL_STEP_TYPES = frozenset({StepType.ESCALATE.value, StepType.RESOLVE.value})
+
+SOP_STATUS_PUBLISHED = "published"
+SOP_STATUS_DRAFT = "draft"
 
 
 @dataclass
@@ -47,6 +71,49 @@ class SOPStep:
             requires_approval=data.get("requires_approval", False),
             timeout_seconds=data.get("timeout_seconds", 60),
         )
+
+
+@dataclass
+class ParameterSpec:
+    """A typed SOP parameter, bound from the ticket before any step runs.
+
+    ``source`` is one of:
+      {"kind": "ticket_field", "field": "<incident field>"}
+      {"kind": "extraction", "fields": [...], "regex": "<pattern with one group>"}
+      {"kind": "constant", "value": ...}
+    A string parameter without ``pattern`` is held to a conservative default.
+    """
+
+    name: str = ""
+    type: str = "string"
+    source: Dict[str, Any] = field(default_factory=dict)
+    pattern: str = ""
+    enum: List[Any] = field(default_factory=list)
+    max_length: int = 128
+    description: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ParameterSpec":
+        return cls(
+            name=data.get("name", ""),
+            type=data.get("type", "string"),
+            source=data.get("source", {}),
+            pattern=data.get("pattern", ""),
+            enum=data.get("enum", []),
+            max_length=data.get("max_length", 128),
+            description=data.get("description", ""),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "type": self.type,
+            "source": self.source,
+            "pattern": self.pattern,
+            "enum": self.enum,
+            "max_length": self.max_length,
+            "description": self.description,
+        }
 
 
 @dataclass
@@ -85,6 +152,13 @@ class SOP:
     tools_required: List[str] = field(default_factory=list)
     escalation_criteria: EscalationCriteria = field(default_factory=EscalationCriteria)
     version: str = "1.0"
+    parameters: List[ParameterSpec] = field(default_factory=list)
+    # A draft is never matched and never executed.
+    status: str = SOP_STATUS_PUBLISHED
+
+    @property
+    def is_draft(self) -> bool:
+        return self.status != SOP_STATUS_PUBLISHED
 
     @classmethod
     def from_dict(cls, data: dict) -> "SOP":
@@ -100,16 +174,20 @@ class SOP:
             tools_required=data.get("tools_required", []),
             escalation_criteria=EscalationCriteria.from_dict(data.get("escalation_criteria", {})),
             version=data.get("version", "1.0"),
+            parameters=[ParameterSpec.from_dict(p) for p in data.get("parameters", [])],
+            status=data.get("status", SOP_STATUS_PUBLISHED),
         )
 
     def to_dict(self) -> dict:
         return {
             "sop_id": self.sop_id,
             "title": self.title,
+            "status": self.status,
             "applicable_services": self.applicable_services,
             "applicable_categories": self.applicable_categories,
             "applicable_assignment_groups": self.applicable_assignment_groups,
             "keywords": self.keywords,
+            "parameters": [p.to_dict() for p in self.parameters],
             "steps": [
                 {
                     "step_id": s.step_id,

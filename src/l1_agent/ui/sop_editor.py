@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import json
 import re
+from html import escape
 from pathlib import Path
 from typing import List, Optional
 
 from aiohttp import web
 
+from src.l1_agent.models.sop import SOP
+from src.l1_agent.sop.validator import validate_sop
 from src.l1_agent.utils.logging import get_logger
 
 logger = get_logger("sop_editor")
@@ -82,6 +85,21 @@ _HTML_HEADER = """<!DOCTYPE html>
 _HTML_FOOTER = "</div></body></html>"
 
 
+_PAGE_CSP = (
+    "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"
+)
+
+
+def _page(html: str, status: int = 200) -> web.Response:
+    """HTML response with a policy that blocks script, including inline script."""
+    return web.Response(
+        text=html,
+        content_type="text/html",
+        status=status,
+        headers={"Content-Security-Policy": _PAGE_CSP},
+    )
+
+
 class SOPEditorRoutes:
     """Registers the SOP editor aiohttp routes onto an app."""
 
@@ -125,10 +143,10 @@ class SOPEditorRoutes:
         for f in self._sop_files():
             try:
                 data = json.loads(f.read_text())
-                sop_id = data.get("sop_id", f.stem)
-                title = data.get("title", "(untitled)")
-                version = data.get("version", "–")
-                services = ", ".join(data.get("applicable_services", []))
+                sop_id = escape(str(data.get("sop_id", f.stem)), quote=True)
+                title = escape(str(data.get("title", "(untitled)")))
+                version = escape(str(data.get("version", "–")))
+                services = escape(", ".join(map(str, data.get("applicable_services", []))))
                 rows.append(
                     f"<tr>"
                     f'<td><a href="/sop-editor/{sop_id}">{sop_id}</a></td>'
@@ -161,7 +179,7 @@ class SOPEditorRoutes:
             + "</div>"
             + _HTML_FOOTER
         )
-        return web.Response(text=html, content_type="text/html")
+        return _page(html)
 
     # ── New / Edit form ───────────────────────────────────────────────
 
@@ -193,19 +211,19 @@ class SOPEditorRoutes:
 
         data = self._load_sop(sop_id)
         if data is None:
-            raise web.HTTPNotFound(text=f"SOP '{sop_id}' not found")
+            raise web.HTTPNotFound(text="SOP not found")
 
         flash = request.rel_url.query.get("saved")
         flash_html = '<div class="flash flash-ok">SOP saved successfully.</div>' if flash else ""
         return self._render_form(data, flash=flash_html)
 
     def _render_form(self, sop: dict, flash: Optional[str]) -> web.Response:
-        json_str = json.dumps(sop, indent=2)
-        sop_id = sop.get("sop_id", "")
-        title = sop.get("title", "")
+        json_str = escape(json.dumps(sop, indent=2))
+        sop_id = escape(str(sop.get("sop_id", "")), quote=True)
+        title = escape(str(sop.get("title", "")))
         delete_btn = (
             f'<form method="post" action="/sop-editor/{sop_id}/delete" '
-            f'onsubmit="return confirm(\'Delete {sop_id}?\')" style="display:inline">'
+            'style="display:inline">'
             f'<button class="btn btn-danger" type="submit">Delete</button></form>'
             if sop_id
             else ""
@@ -227,7 +245,7 @@ class SOPEditorRoutes:
             + "</div>"
             + _HTML_FOOTER
         )
-        return web.Response(text=html, content_type="text/html")
+        return _page(html)
 
     # ── Save ──────────────────────────────────────────────────────────
 
@@ -242,11 +260,11 @@ class SOPEditorRoutes:
         except json.JSONDecodeError as exc:
             html = (
                 _HTML_HEADER
-                + f'<div class="flash flash-err">Invalid JSON: {exc}</div>'
+                + f'<div class="flash flash-err">Invalid JSON: {escape(str(exc))}</div>'
                 + '<a class="btn btn-secondary" href="javascript:history.back()">Go back</a>'
                 + _HTML_FOOTER
             )
-            return web.Response(text=html, content_type="text/html", status=400)
+            return _page(html, 400)
 
         sop_id = data.get("sop_id", "").strip()
         if not sop_id or not _SAFE_ID_RE.match(sop_id):
@@ -256,7 +274,18 @@ class SOPEditorRoutes:
                 + '<a class="btn btn-secondary" href="javascript:history.back()">Go back</a>'
                 + _HTML_FOOTER
             )
-            return web.Response(text=html, content_type="text/html", status=400)
+            return _page(html, 400)
+
+        problems = validate_sop(SOP.from_dict(data))
+        if problems:
+            items = "".join(f"<li>{escape(p)}</li>" for p in problems)
+            html = (
+                _HTML_HEADER
+                + f'<div class="flash flash-err">SOP is not valid:<ul>{items}</ul></div>'
+                + '<a class="btn btn-secondary" href="javascript:history.back()">Go back</a>'
+                + _HTML_FOOTER
+            )
+            return _page(html, 400)
 
         path = self._sop_dir / f"{sop_id}.json"
         path.write_text(json.dumps(data, indent=2))

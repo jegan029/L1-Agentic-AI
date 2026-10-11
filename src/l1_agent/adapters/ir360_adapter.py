@@ -85,7 +85,9 @@ class IR360Adapter(BaseAdapter):
         try:
             session = self._get_session()
             url = f"{self._settings.base_url.rstrip('/')}/api/v1/health"
-            async with session.get(url, headers=self._auth_headers(), ssl=False) as resp:
+            async with session.get(
+                url, headers=self._auth_headers(), ssl=self._settings.verify_ssl
+            ) as resp:
                 healthy = resp.status == 200
                 if healthy:
                     metrics.increment("ir360.health_checks_ok")
@@ -125,7 +127,7 @@ class IR360Adapter(BaseAdapter):
                 f"{base}{endpoint}",
                 headers=self._auth_headers(),
                 params=params,
-                ssl=False,
+                ssl=self._settings.verify_ssl,
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()

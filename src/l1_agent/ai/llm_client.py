@@ -85,9 +85,9 @@ class LLMClient:
         session = await self._get_session()
         async with session.post(url, headers=headers, json=payload) as resp:
             if resp.status != 200:
-                body = await resp.text()
-                logger.error("LLM API error %d: %s", resp.status, body[:500])
-                raise LLMError(f"LLM API returned {resp.status}: {body[:200]}")
+                # The body can echo prompt content; record the status only.
+                logger.error("LLM API error %d", resp.status)
+                raise LLMError(f"LLM API returned {resp.status}")
 
             data = await resp.json()
 
@@ -101,68 +101,6 @@ class LLMClient:
             messages=[{"role": "user", "content": prompt}],
         )
         return resp.content
-
-    # ── Convenience: tool-calling loop ───────────────────────────────
-
-    async def chat_with_tools(
-        self,
-        messages: List[Dict[str, Any]],
-        tools: List[Dict[str, Any]],
-        tool_executor: Any,
-        max_iterations: int = 10,
-    ) -> LLMResponse:
-        """Run a tool-calling loop until the model stops requesting tools.
-
-        Args:
-            messages: Initial message history.
-            tools: Tool definitions.
-            tool_executor: Callable(tool_name, arguments) -> str that
-                           executes a tool and returns the result as a string.
-            max_iterations: Safety limit to prevent infinite loops.
-
-        Returns:
-            Final LLMResponse after all tool calls are resolved.
-        """
-        current_messages = list(messages)
-
-        for iteration in range(max_iterations):
-            response = await self.chat(
-                messages=current_messages,
-                tools=tools,
-                tool_choice="auto",
-            )
-
-            if not response.tool_calls:
-                logger.info("LLM finished after %d tool-call iterations", iteration)
-                return response
-
-            # Append the assistant message with tool calls
-            current_messages.append(response.to_assistant_message())
-
-            # Execute each tool call and append results
-            for tc in response.tool_calls:
-                logger.info(
-                    "Executing tool call: %s(%s)",
-                    tc.function_name,
-                    tc.arguments_str[:200],
-                )
-                try:
-                    result = await tool_executor(tc.function_name, tc.arguments)
-                    result_str = result if isinstance(result, str) else json.dumps(result)
-                except Exception as exc:
-                    logger.error("Tool execution failed: %s - %s", tc.function_name, exc)
-                    result_str = json.dumps({"error": str(exc), "tool": tc.function_name})
-
-                current_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.call_id,
-                        "content": result_str,
-                    }
-                )
-
-        logger.warning("Tool-calling loop hit max iterations (%d)", max_iterations)
-        return response
 
 
 class LLMError(Exception):

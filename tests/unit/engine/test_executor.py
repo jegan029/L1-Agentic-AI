@@ -34,11 +34,17 @@ def _make_adapters():
 
 
 def _make_sop(steps: list) -> SOP:
-    return SOP(
-        sop_id="SOP-TEST",
-        title="Test SOP",
-        steps=[SOPStep.from_dict(s) for s in steps],
-    )
+    """Build a check-only SOP: every open success edge leads to an ESCALATE step.
+
+    An SOP must end in an explicit terminal step, and a check-only flow with no
+    VERIFY can only hand over to a person.
+    """
+    parsed = [SOPStep.from_dict(s) for s in steps]
+    for step in parsed:
+        if not step.on_success and not step.requires_approval:
+            step.on_success = "end"
+    parsed.append(SOPStep(step_id="end", step_type="ESCALATE", description="Checks complete"))
+    return SOP(sop_id="SOP-TEST", title="Test SOP", steps=parsed)
 
 
 class TestSOPExecutor:
@@ -57,8 +63,8 @@ class TestSOPExecutor:
         )
         summary = await executor.execute_sop(_make_incident(), sop)
 
-        assert summary.outcome == ExecutionOutcome.RESOLVED
-        assert len(summary.step_results) == 1
+        assert summary.outcome == ExecutionOutcome.ESCALATED
+        assert len(summary.step_results) == 2  # the note plus the ESCALATE terminal
         assert summary.step_results[0].status == StepStatus.SUCCESS
 
     @pytest.mark.asyncio
@@ -75,7 +81,7 @@ class TestSOPExecutor:
         )
         summary = await executor.execute_sop(_make_incident(), sop)
 
-        assert summary.outcome == ExecutionOutcome.RESOLVED
+        assert summary.outcome == ExecutionOutcome.ESCALATED
         assert summary.step_results[0].status == StepStatus.SUCCESS
 
     @pytest.mark.asyncio
@@ -92,7 +98,7 @@ class TestSOPExecutor:
         )
         summary = await executor.execute_sop(_make_incident(), sop)
 
-        assert summary.outcome == ExecutionOutcome.RESOLVED
+        assert summary.outcome == ExecutionOutcome.ESCALATED
 
     @pytest.mark.asyncio
     async def test_execute_autosys_status(self):
@@ -108,7 +114,7 @@ class TestSOPExecutor:
         )
         summary = await executor.execute_sop(_make_incident(), sop)
 
-        assert summary.outcome == ExecutionOutcome.RESOLVED
+        assert summary.outcome == ExecutionOutcome.ESCALATED
 
     @pytest.mark.asyncio
     async def test_execute_file_check(self):
@@ -124,7 +130,7 @@ class TestSOPExecutor:
         )
         summary = await executor.execute_sop(_make_incident(), sop)
 
-        assert summary.outcome == ExecutionOutcome.RESOLVED
+        assert summary.outcome == ExecutionOutcome.ESCALATED
 
     @pytest.mark.asyncio
     async def test_execute_decision_any_failed(self):
@@ -158,7 +164,7 @@ class TestSOPExecutor:
         )
         summary = await executor.execute_sop(_make_incident(), sop)
 
-        assert summary.outcome == ExecutionOutcome.RESOLVED
+        assert summary.outcome == ExecutionOutcome.ESCALATED
         # Should follow success branch since no failures
         step_ids = [r.step_id for r in summary.step_results]
         assert "s3" in step_ids
@@ -183,7 +189,7 @@ class TestSOPExecutor:
         assert summary.step_results[0].status == StepStatus.ESCALATED
 
     @pytest.mark.asyncio
-    async def test_missing_adapter_escalates(self):
+    async def test_missing_adapter_needs_human(self):
         executor = SOPExecutor(adapters={})  # No adapters
         sop = _make_sop(
             [
@@ -196,10 +202,10 @@ class TestSOPExecutor:
         )
         summary = await executor.execute_sop(_make_incident(), sop)
 
-        assert summary.outcome == ExecutionOutcome.ESCALATED
+        assert summary.outcome == ExecutionOutcome.NEEDS_HUMAN
 
     @pytest.mark.asyncio
-    async def test_unknown_step_type_fails(self):
+    async def test_unknown_step_type_needs_human(self):
         executor = SOPExecutor(adapters=_make_adapters())
         sop = _make_sop(
             [
@@ -212,7 +218,7 @@ class TestSOPExecutor:
         )
         summary = await executor.execute_sop(_make_incident(), sop)
 
-        assert summary.outcome == ExecutionOutcome.FAILED
+        assert summary.outcome == ExecutionOutcome.NEEDS_HUMAN
 
     @pytest.mark.asyncio
     async def test_multi_step_chain(self):
@@ -246,8 +252,8 @@ class TestSOPExecutor:
         )
         summary = await executor.execute_sop(_make_incident(), sop)
 
-        assert summary.outcome == ExecutionOutcome.RESOLVED
-        assert len(summary.step_results) == 4
+        assert summary.outcome == ExecutionOutcome.ESCALATED
+        assert len(summary.step_results) == 5  # four steps plus the ESCALATE terminal
 
     @pytest.mark.asyncio
     async def test_work_note_callback_called(self):

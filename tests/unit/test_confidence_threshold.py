@@ -26,6 +26,7 @@ def _make_summary(outcome: ExecutionOutcome = ExecutionOutcome.ESCALATED) -> Exe
         sop_title="Test SOP",
         outcome=outcome,
         escalation_reason="test",
+        verified_by="step-verify" if outcome == ExecutionOutcome.RESOLVED else "",
     )
 
 
@@ -78,7 +79,7 @@ class TestNoneConfidenceEscalates:
         processor._matcher.match.return_value = match
 
         incident = _make_incident()
-        summary = await processor._process_rule_based(incident)
+        summary = await processor._run(incident)
 
         assert summary.outcome == ExecutionOutcome.ESCALATED
         mock_escalate.assert_awaited_once()
@@ -101,7 +102,7 @@ class TestBelowThresholdEscalates:
         processor._matcher.match.return_value = match
 
         incident = _make_incident()
-        summary = await processor._process_rule_based(incident)
+        summary = await processor._run(incident)
 
         assert summary.outcome == ExecutionOutcome.ESCALATED
         mock_escalate.assert_awaited_once()
@@ -128,7 +129,7 @@ class TestBelowThresholdEscalates:
         processor._executor.execute_sop = AsyncMock(return_value=resolved)
 
         incident = _make_incident()
-        await processor._process_rule_based(incident)
+        await processor._run(incident)
 
         # escalate_to_l2 should NOT have been called for the pre-execution check
         for call in mock_escalate.call_args_list:
@@ -154,7 +155,7 @@ class TestAboveThresholdExecutes:
         processor._executor.execute_sop = AsyncMock(return_value=resolved)
 
         incident = _make_incident()
-        summary = await processor._process_rule_based(incident)
+        summary = await processor._run(incident)
 
         assert summary.outcome == ExecutionOutcome.RESOLVED
         processor._executor.execute_sop.assert_awaited_once()
@@ -170,7 +171,7 @@ class TestNoSopEscalates:
         processor._matcher.match.return_value = match
 
         incident = _make_incident()
-        summary = await processor._process_rule_based(incident)
+        summary = await processor._run(incident)
 
         assert summary.outcome == ExecutionOutcome.ESCALATED
         mock_escalate.assert_awaited_once()

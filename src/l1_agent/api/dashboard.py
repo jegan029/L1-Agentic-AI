@@ -17,7 +17,7 @@ def make_dashboard_handler(store: IncidentHistoryStore):
 
         received = int(counters.get("incidents.received", 0))
         resolved = int(counters.get("incidents.resolved", 0))
-        failed = int(counters.get("incidents.failed", 0))
+        needs_human = int(counters.get("incidents.needs_human", 0))
 
         # Escalated: sum all escalation reason labels
         escalated = 0
@@ -54,7 +54,7 @@ def make_dashboard_handler(store: IncidentHistoryStore):
                     "incidents_received": received,
                     "incidents_resolved": resolved,
                     "incidents_escalated": escalated,
-                    "incidents_failed": failed,
+                    "incidents_needs_human": needs_human,
                     "resolution_rate_pct": resolution_rate,
                     "avg_resolution_ms": round(avg_ms, 1) if avg_ms is not None else None,
                     "currently_processing": currently_processing,
@@ -62,7 +62,7 @@ def make_dashboard_handler(store: IncidentHistoryStore):
                 "outcome_breakdown": [
                     {"label": "Resolved", "value": resolved, "color": "#22c55e"},
                     {"label": "Escalated", "value": escalated, "color": "#f97316"},
-                    {"label": "Failed", "value": failed, "color": "#ef4444"},
+                    {"label": "Needs human", "value": needs_human, "color": "#ef4444"},
                 ],
                 "escalation_reasons": escalation_reasons,
                 "trend_7day": store.trend_7day(),

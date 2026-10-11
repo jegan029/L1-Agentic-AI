@@ -210,8 +210,8 @@ class TestMemorySopStructure:
         assert "mem.usage" in selector
 
     def test_parsed_sop_has_correct_step_count(self, parsed_memory_sop):
-        # 6 logic steps + 2 terminal notes = 8
-        assert len(parsed_memory_sop.steps) == 8
+        # 6 investigation steps + VERIFY + RESOLVE + 2 ESCALATE terminals = 10
+        assert len(parsed_memory_sop.steps) == 10
 
 
 # ── SOP matching ──────────────────────────────────────────────────────────────

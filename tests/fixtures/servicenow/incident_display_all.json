@@ -1,0 +1,58 @@
+{
+  "_comment": "Hand-written from the ServiceNow Table API documentation for sysparm_display_value=all. Not a recording from a live instance.",
+  "result": [
+    {
+      "sys_id": {
+        "display_value": "9d385017c611228701d22104cc95c371",
+        "value": "9d385017c611228701d22104cc95c371"
+      },
+      "number": {
+        "display_value": "INC0010023",
+        "value": "INC0010023"
+      },
+      "short_description": {
+        "display_value": "Autosys batch job failure - ETL pipeline job BATCH_PAYMENT_PROCESS status FA",
+        "value": "Autosys batch job failure - ETL pipeline job BATCH_PAYMENT_PROCESS status FA"
+      },
+      "description": {
+        "display_value": "The Autosys job BATCH_PAYMENT_PROCESS has entered FA state. Job ran at 02:00 but failed with exit code 1.",
+        "value": "The Autosys job BATCH_PAYMENT_PROCESS has entered FA state. Job ran at 02:00 but failed with exit code 1."
+      },
+      "category": {
+        "display_value": "Batch",
+        "value": "batch"
+      },
+      "subcategory": {
+        "display_value": "Scheduling",
+        "value": "scheduling"
+      },
+      "cmdb_ci": {
+        "display_value": "ETL-Pipeline",
+        "value": "b0c4030ac0a800090152e7a4564ca36c",
+        "link": "https://example.service-now.com/api/now/table/cmdb_ci/b0c4030ac0a800090152e7a4564ca36c"
+      },
+      "assignment_group": {
+        "display_value": "L1-Batch-Support",
+        "value": "287ebd7da9fe198100f92cc8d1d2154e",
+        "link": "https://example.service-now.com/api/now/table/sys_user_group/287ebd7da9fe198100f92cc8d1d2154e"
+      },
+      "priority": {
+        "display_value": "3 - Moderate",
+        "value": "3"
+      },
+      "state": {
+        "display_value": "New",
+        "value": "1"
+      },
+      "caller_id": {
+        "display_value": "Monitoring Integration",
+        "value": "5137153cc611227c000bbd1bd8cd2005",
+        "link": "https://example.service-now.com/api/now/table/sys_user/5137153cc611227c000bbd1bd8cd2005"
+      },
+      "sys_created_on": {
+        "display_value": "2026-04-13 19:06:11",
+        "value": "2026-04-14 02:06:11"
+      }
+    }
+  ]
+}

@@ -21,7 +21,7 @@ def compute_sop_stats(records: List[dict]) -> List[dict]:
                 "total_runs": 0,
                 "resolved_count": 0,
                 "escalated_count": 0,
-                "failed_count": 0,
+                "needs_human_count": 0,
                 "total_duration_ms": 0.0,
             }
 
@@ -32,8 +32,8 @@ def compute_sop_stats(records: List[dict]) -> List[dict]:
             entry["resolved_count"] += 1
         elif outcome == "escalated":
             entry["escalated_count"] += 1
-        elif outcome in ("failed", "partial"):
-            entry["failed_count"] += 1
+        elif outcome:  # needs_human, aborted, and legacy failed/partial records
+            entry["needs_human_count"] += 1
         entry["total_duration_ms"] += r.get("duration_ms", 0.0)
 
     result = []
@@ -48,7 +48,7 @@ def compute_sop_stats(records: List[dict]) -> List[dict]:
                 "total_runs": total,
                 "resolved_count": resolved,
                 "escalated_count": entry["escalated_count"],
-                "failed_count": entry["failed_count"],
+                "needs_human_count": entry["needs_human_count"],
                 "success_rate_pct": round(resolved / total * 100, 1) if total else 0.0,
                 "avg_duration_ms": round(avg_ms, 1),
             }

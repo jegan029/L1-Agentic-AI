@@ -41,6 +41,27 @@ class WebUIScraperAdapter(BaseAdapter):
     def adapter_name(self) -> str:
         return "WebUIScraper"
 
+    def _url_denied(self, url: str) -> str:
+        """Return a reason when the URL may not be visited, else an empty string.
+
+        HTTPS only, exact host match, and an empty allow list denies everything.
+        """
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            return "URL could not be parsed"
+        if parsed.scheme != "https":
+            return "Only https URLs are allowed"
+        if not host or parsed.username or parsed.password:
+            return "URL must name a host and must not carry credentials"
+        allowed = {d.strip().lower() for d in self._allowed_domains if d.strip()}
+        if host not in allowed:
+            return f"Host {host} is not in the allowed hosts list"
+        return ""
+
     async def health_check(self) -> bool:
         """Check that Selenium/ChromeDriver is available."""
         try:
@@ -49,7 +70,6 @@ class WebUIScraperAdapter(BaseAdapter):
 
             options = Options()
             options.add_argument("--headless")
-            options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             driver = webdriver.Chrome(options=options)
             driver.quit()
@@ -75,18 +95,9 @@ class WebUIScraperAdapter(BaseAdapter):
         if not url:
             return AdapterResult(success=False, error="No URL provided")
 
-        # Domain allow-list check
-        if self._allowed_domains:
-            from urllib.parse import urlparse
-
-            parsed = urlparse(url)
-            if parsed.hostname and not any(
-                parsed.hostname.endswith(d) for d in self._allowed_domains
-            ):
-                return AdapterResult(
-                    success=False,
-                    error=f"Domain {parsed.hostname} not in allowed domains list",
-                )
+        denied = self._url_denied(url)
+        if denied:
+            return AdapterResult(success=False, error=denied)
 
         check_type = parameters.get("check_type", "page_load")
 
@@ -399,7 +410,6 @@ class WebUIScraperAdapter(BaseAdapter):
 
         options = Options()
         options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")

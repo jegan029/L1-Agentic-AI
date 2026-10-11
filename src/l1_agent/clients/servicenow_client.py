@@ -85,7 +85,9 @@ class ServiceNowClient:
     async def get_incident(self, sys_id: str) -> Incident:
         """Fetch a single incident by sys_id."""
         table = self._settings.incident_table
-        result = await self._get(f"/api/now/table/{table}/{sys_id}")
+        result = await self._get(
+            f"/api/now/table/{table}/{sys_id}", {"sysparm_display_value": "all"}
+        )
         return Incident.from_servicenow(result.get("result", {}))
 
     async def update_incident(

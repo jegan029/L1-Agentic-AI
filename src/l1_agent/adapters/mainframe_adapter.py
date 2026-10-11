@@ -81,9 +81,6 @@ class MainframeAdapter(BaseAdapter):
             action (str): "async_status", "job_status", or "screen_check".
             job_name (str): Name of the job to check.
             transaction (str): CICS transaction ID to navigate to.
-            screen_navigation (list): List of navigation commands to reach
-                the desired screen. Each entry: {"key": "Enter|Tab|PF3|...",
-                "input": "text to type", "wait": seconds}.
             expected_status (str): Expected status string (default "inact ok").
         """
         action = parameters.get("action", "async_status")
@@ -122,10 +119,8 @@ class MainframeAdapter(BaseAdapter):
         """
         job_name = parameters.get("job_name", "")
         expected_status = parameters.get("expected_status", "inact ok")
-        screen_navigation = parameters.get(
-            "screen_navigation",
-            self._settings.default_navigation,
-        )
+        # Keystrokes come from connection configuration, never from the caller.
+        screen_navigation = self._settings.default_navigation
 
         # Run all blocking TN3270 operations in a thread to avoid
         # blocking the asyncio event loop.
@@ -209,7 +204,7 @@ class MainframeAdapter(BaseAdapter):
 
     async def _screen_check(self, parameters: Dict[str, Any]) -> AdapterResult:
         """Navigate to a screen and capture its content."""
-        screen_navigation = parameters.get("screen_navigation", [])
+        screen_navigation = self._settings.default_navigation
         expected_text = parameters.get("expected_text", "")
 
         # Run all blocking TN3270 operations in a thread.
@@ -270,7 +265,9 @@ class MainframeAdapter(BaseAdapter):
             from py3270 import Emulator
 
             emulator = Emulator(visible=False)
-            emulator.connect(f"{self._host}:{self._port}")
+            # The L: prefix makes x3270 negotiate TLS.
+            prefix = "L:" if self._settings.use_tls else ""
+            emulator.connect(f"{prefix}{self._host}:{self._port}")
             emulator.wait_for_field()
             logger.info("Connected to mainframe %s:%d", self._host, self._port)
             return emulator

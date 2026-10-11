@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import re
+import posixpath
 from typing import Any, Dict, List
 
 from src.l1_agent.adapters.base import AdapterResult, BaseAdapter
@@ -12,6 +12,9 @@ from src.l1_agent.utils.logging import get_logger
 from src.l1_agent.utils.metrics import metrics
 
 logger = get_logger("windows_share_adapter")
+
+MAX_LINES = 5000
+MAX_NEEDLES = 20
 
 
 class WindowsShareAdapter(BaseAdapter):
@@ -38,19 +41,19 @@ class WindowsShareAdapter(BaseAdapter):
 
         Parameters:
             unc_path (str): UNC path to the log file (e.g. //server/share/logs/app.log)
-            pattern (str): Regex pattern to filter lines (optional)
+            pattern (str): Literal text to filter lines; '|' separates alternatives (optional)
             last_n_lines (int): Tail N lines (default 100)
             time_window (str): ISO duration to filter recent entries (optional, not yet impl)
         """
         unc_path = parameters.get("unc_path", "")
         pattern = parameters.get("pattern", "")
-        last_n = int(parameters.get("last_n_lines", 100))
+        last_n = max(1, min(int(parameters.get("last_n_lines", 100)), MAX_LINES))
 
         if not unc_path:
             return AdapterResult(success=False, error="unc_path is required")
 
         # Validate against allow-list
-        normalised = unc_path.replace("\\", "/")
+        normalised = posixpath.normpath(unc_path.replace("\\", "/"))
         if not self._is_allowed(normalised):
             return AdapterResult(
                 success=False,
@@ -60,8 +63,9 @@ class WindowsShareAdapter(BaseAdapter):
         try:
             lines = await self._read_file(normalised, last_n)
             if pattern:
-                regex = re.compile(pattern, re.IGNORECASE)
-                lines = [ln for ln in lines if regex.search(ln)]
+                # Literal, case-insensitive matching. No pattern is ever compiled.
+                needles = [p.lower() for p in str(pattern).split("|") if p][:MAX_NEEDLES]
+                lines = [ln for ln in lines if any(n in ln.lower() for n in needles)]
 
             evidence = self._format_evidence(normalised, lines, last_n)
             metrics.increment("windows_share.reads")
@@ -80,15 +84,19 @@ class WindowsShareAdapter(BaseAdapter):
             return AdapterResult(success=False, error=str(exc))
 
     def _is_allowed(self, path: str) -> bool:
+        """True when the path is an allowed prefix or sits below one.
+
+        Compared by path segment, so //host/logs does not admit //host/logs-private.
+        An empty allow list denies everything.
+        """
         if not self._allowed_prefixes:
             return False
-        # Resolve path traversal sequences (e.g. /../) before checking prefix
-        import posixpath
-
         normalised = posixpath.normpath(path)
-        return any(
-            normalised.startswith(posixpath.normpath(prefix)) for prefix in self._allowed_prefixes
-        )
+        for prefix in self._allowed_prefixes:
+            base = posixpath.normpath(prefix).rstrip("/")
+            if normalised == base or normalised.startswith(base + "/"):
+                return True
+        return False
 
     async def _read_file(self, path: str, last_n: int) -> List[str]:
         """Read last N lines from a file.

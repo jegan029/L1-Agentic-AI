@@ -77,6 +77,7 @@ async def escalate_to_l2(
                 "type": "incident_escalated",
                 "incident_number": incident.number,
                 "reason": reason,
+                "outcome": summary.outcome_label,
                 "l2_team_name": l2_team["name"],
                 "l2_team_email": l2_team["email"],
                 "email_sent": email_sent,
@@ -111,6 +112,6 @@ def _build_email_body(
         "",
         "Please investigate and take appropriate action.",
         "",
-        "— L1 Virtual Engineer Agent (State Street Operations)",
+        "— L1 Engineer Agent",
     ]
     return "\n".join(lines)

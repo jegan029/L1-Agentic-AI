@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse,
 from pydantic import BaseModel, Field
 from starlette.responses import StreamingResponse
 
+from src.l1_agent.actions import store as action_store
 from src.l1_agent.api.access import (
     Denied,
     Routes,
@@ -83,6 +84,7 @@ class AppContext:
     webhook_open: bool = False
     hub: Optional[Any] = None  # ConnectorHub: this tenant's connectors and knowledge sources
     itsm: Optional[Any] = None  # the ITSM connector, which the ServiceNow KB source reads through
+    actions: Optional[Any] = None  # ActionService: the kill switches it sees, for display
 
 
 class TokenRequest(BaseModel):
@@ -111,6 +113,21 @@ class ApproveRequest(BaseModel):
 
 class ChangesRequest(BaseModel):
     note: str = Field(min_length=1, max_length=sop_store.MAX_NOTE)
+
+
+class ActionDecisionRequest(BaseModel):
+    # The hash of the action the approver was shown. The decision is about that action only.
+    action_hash: str = Field(min_length=64, max_length=64)
+    note: str = Field(default="", max_length=action_store.MAX_NOTE)
+
+
+class PolicyRequest(BaseModel):
+    autonomy: Optional[str] = Field(default=None, max_length=20)
+    rules: Optional[Dict[str, Any]] = None
+
+
+class KillSwitchRequest(BaseModel):
+    reason: str = Field(default="", max_length=action_store.MAX_NOTE)
 
 
 class ConnectionRequest(BaseModel):
@@ -698,6 +715,91 @@ def create_app(ctx: AppContext) -> FastAPI:
             }
         )
 
+    # ── Actions, approvals and policy (ADR 0008) ──────────────────────
+
+    @routes.get("/api/actions", requires(Permission.INCIDENTS_READ))
+    async def list_actions(
+        request: Request, status: str = "", run_id: str = "", limit: int = 100
+    ) -> dict:
+        items = await action_store.list_actions(
+            ctx.db, tenant(request), status=status[:20], run_id=run_id[:40], limit=limit
+        )
+        return {"items": items}
+
+    @routes.get("/api/actions/{action_id}", requires(Permission.INCIDENTS_READ))
+    async def action_detail(request: Request, action_id: uuid.UUID) -> dict:
+        return action_store.describe(await action_store.get(ctx.db, tenant(request), action_id))
+
+    @routes.post("/api/actions/{action_id}/approve", requires(Permission.ACTIONS_APPROVE))
+    async def approve_action(
+        request: Request, action_id: uuid.UUID, body: ActionDecisionRequest
+    ) -> dict:
+        principal = current(request)
+        return await action_store.decide(
+            ctx.db,
+            principal.tenant_id,
+            principal.actor,
+            action_id,
+            approve=True,
+            seen_hash=body.action_hash,
+            note_text=body.note,
+        )
+
+    @routes.post("/api/actions/{action_id}/reject", requires(Permission.ACTIONS_APPROVE))
+    async def reject_action(
+        request: Request, action_id: uuid.UUID, body: ActionDecisionRequest
+    ) -> dict:
+        principal = current(request)
+        return await action_store.decide(
+            ctx.db,
+            principal.tenant_id,
+            principal.actor,
+            action_id,
+            approve=False,
+            seen_hash=body.action_hash,
+            note_text=body.note,
+        )
+
+    async def policy_view(tenant_id: uuid.UUID) -> dict:
+        policy = await action_store.get_policy(ctx.db, tenant_id)
+        ceiling = settings.actions
+        local = bool(ctx.actions and ctx.actions._local_switch())
+        return {
+            **policy.to_dict(),
+            "global_kill_switch": await action_store.global_kill_switch(ctx.db),
+            "local_kill_switch": local,
+            "ceiling": {"max_tier": ceiling.max_tier, "max_autonomy": ceiling.max_autonomy},
+        }
+
+    @routes.get("/api/policy", requires(Permission.SYSTEM_READ))
+    async def get_policy(request: Request) -> dict:
+        return await policy_view(tenant(request))
+
+    @routes.put("/api/policy", requires(Permission.POLICY_MANAGE))
+    async def set_policy(request: Request, body: PolicyRequest) -> dict:
+        principal = current(request)
+        await action_store.set_policy(
+            ctx.db, principal.tenant_id, principal.actor, autonomy=body.autonomy, rules=body.rules
+        )
+        return await policy_view(principal.tenant_id)
+
+    @routes.post("/api/kill-switch/engage", requires(Permission.ACTIONS_STOP))
+    async def engage_kill_switch(request: Request, body: KillSwitchRequest) -> dict:
+        principal = current(request)
+        await action_store.set_kill_switch(
+            ctx.db, principal.tenant_id, principal.actor, True, body.reason
+        )
+        logger.warning("Kill switch engaged for tenant %s", principal.tenant_id)
+        return {"kill_switch": True}
+
+    @routes.post("/api/kill-switch/release", requires(Permission.POLICY_MANAGE))
+    async def release_kill_switch(request: Request, body: KillSwitchRequest) -> dict:
+        principal = current(request)
+        await action_store.set_kill_switch(
+            ctx.db, principal.tenant_id, principal.actor, False, body.reason
+        )
+        return {"kill_switch": False}
+
     # ── Audit ─────────────────────────────────────────────────────────
 
     @routes.get("/api/audit/events", requires(Permission.AUDIT_READ))
@@ -732,6 +834,10 @@ def create_app(ctx: AppContext) -> FastAPI:
 
     @app.exception_handler(sop_store.SopError)
     async def on_sop_error(request: Request, exc: sop_store.SopError) -> JSONResponse:
+        return JSONResponse({"error": str(exc), "problems": exc.problems}, status_code=exc.status)
+
+    @app.exception_handler(action_store.ActionError)
+    async def on_action_error(request: Request, exc: action_store.ActionError) -> JSONResponse:
         return JSONResponse({"error": str(exc), "problems": exc.problems}, status_code=exc.status)
 
     @app.exception_handler(Denied)

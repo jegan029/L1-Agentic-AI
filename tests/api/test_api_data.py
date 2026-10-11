@@ -15,7 +15,7 @@ from src.l1_agent.connectors import hub as connections
 from src.l1_agent.demo import DEMO_INCIDENTS
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.sop import store as sop_store
-from tests.api.support import ADMIN, build, client, session, token_headers
+from tests.api.support import ADMIN, build, client, seed_action, session, token_headers
 
 INTAKE = Actor.system("test-intake")
 ALL_READ = ("incidents.read", "system.read", "metrics.read", "audit.read")
@@ -152,8 +152,12 @@ class TestTenantIsolationOverHttp:
         # An SOP version and a connection in each tenant. The run numbers index them, so
         # the walk below asks tenant A for tenant B's version by its id.
         self.versions = {}
+        self.actions = {}
         for tenant_id, numbers, label in ((ctx.tenant_id, a_numbers, "a"), (b, b_numbers, "b")):
             for number in numbers:
+                self.actions[number] = await seed_action(
+                    ctx.db, tenant_id, number, f"{label.upper()}_ONLY_JOB"
+                )
                 self.versions[number] = await sop_store.create_draft(
                     ctx.db,
                     tenant_id,
@@ -176,6 +180,7 @@ class TestTenantIsolationOverHttp:
             "b-token",
             "b-only-sop",
             "b-splunk.example",
+            "B_ONLY_JOB",
             str(b),
             DEMO_INCIDENTS[0]["short_description"],
         ]
@@ -191,6 +196,7 @@ class TestTenantIsolationOverHttp:
                 for number in [*b_numbers, a_numbers[0]]:
                     path = route.path.replace("{incident_number}", number)
                     path = path.replace("{version_id}", str(self.versions[number]))
+                    path = path.replace("{action_id}", str(self.actions[number]))
                     resp = await http.get(path, params={"limit": 500, "per_page": 100})
                     if "{" in route.path and number in b_numbers:
                         assert resp.status_code == 404, path

@@ -1,0 +1,154 @@
+{
+  "sop_id": "SOP-AUTOSYS-002",
+  "title": "Nightly Settlement Job Failure - Restart",
+  "status": "published",
+  "change_template": "L1 Agent - Autosys job restart",
+  "applicable_services": [
+    "Settlement"
+  ],
+  "applicable_categories": [
+    "Batch"
+  ],
+  "applicable_assignment_groups": [
+    "L1-Batch-Support"
+  ],
+  "keywords": [
+    "settlement",
+    "nightly",
+    "restart",
+    "rerun"
+  ],
+  "parameters": [
+    {
+      "name": "job_name",
+      "type": "string",
+      "description": "Autosys job named in the ticket",
+      "source": {
+        "kind": "extraction",
+        "fields": [
+          "short_description",
+          "description"
+        ],
+        "regex": "\\b[Jj]ob\\s+([A-Z][A-Z0-9_.\\-]{2,63})\\b"
+      },
+      "pattern": "[A-Z][A-Z0-9_.\\-]{2,63}",
+      "max_length": 64
+    }
+  ],
+  "steps": [
+    {
+      "step_id": "step-status",
+      "step_type": "CHECK",
+      "capability": "autosys.job.status",
+      "description": "Read the job's current status",
+      "parameters": {
+        "job_name": "${job_name}",
+        "query_type": "status"
+      },
+      "on_success": "step-is-failed",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-is-failed",
+      "step_type": "DECISION",
+      "description": "Is the job still failed or terminated?",
+      "parameters": {
+        "rule": "steps[\"step-status\"].jobs[0].status in [\"FA\", \"TE\"]"
+      },
+      "on_success": "step-logs",
+      "on_failure": "step-verify"
+    },
+    {
+      "step_id": "step-logs",
+      "step_type": "CHECK",
+      "capability": "splunk.search",
+      "description": "Collect the job's recent errors as evidence",
+      "parameters": {
+        "query": "index=batch_logs \"${job_name}\" (FAILURE OR ERROR)",
+        "time_range": {
+          "earliest": "-4h",
+          "latest": "now"
+        }
+      },
+      "on_success": "step-restart",
+      "on_failure": "step-escalate"
+    },
+    {
+      "step_id": "step-restart",
+      "step_type": "ACTION",
+      "capability": "autosys.job.force_start",
+      "description": "Force start the failed job",
+      "parameters": {
+        "job_name": "${job_name}"
+      },
+      "verify": {
+        "retries": 5,
+        "wait_seconds": 2
+      },
+      "on_success": "step-verify",
+      "on_failure": "step-not-restarted"
+    },
+    {
+      "step_id": "step-verify",
+      "step_type": "VERIFY",
+      "description": "Confirm the job has completed successfully",
+      "parameters": {
+        "check": "autosys.job.status",
+        "parameters": {
+          "job_name": "${job_name}",
+          "query_type": "status"
+        },
+        "assert": "result.jobs[0].status == \"SU\""
+      },
+      "on_success": "step-resolve",
+      "on_failure": "step-still-failed"
+    },
+    {
+      "step_id": "step-resolve",
+      "step_type": "RESOLVE",
+      "description": "Job completed",
+      "parameters": {
+        "text": "The job completed successfully at verification."
+      }
+    },
+    {
+      "step_id": "step-not-restarted",
+      "step_type": "ESCALATE",
+      "description": "The restart was not carried out",
+      "parameters": {
+        "reason": "The job could not be restarted safely: it was not in a failed state at the pre-check, or it has already been restarted for this incident."
+      }
+    },
+    {
+      "step_id": "step-still-failed",
+      "step_type": "ESCALATE",
+      "description": "Job has not completed",
+      "parameters": {
+        "reason": "The job has not completed successfully. Evidence collected; handing over to L2."
+      }
+    },
+    {
+      "step_id": "step-escalate",
+      "step_type": "ESCALATE",
+      "description": "Escalation to L2",
+      "parameters": {
+        "reason": "The job's status or logs could not be read. Escalating to L2 with what was collected."
+      }
+    }
+  ],
+  "pre_checks": [
+    "Autosys CLI access on the agent host",
+    "The job is on the connection's force start list"
+  ],
+  "tools_required": [
+    "autosys",
+    "splunk"
+  ],
+  "escalation_criteria": {
+    "max_retry_count": 2,
+    "escalate_on_access_denied": true,
+    "escalate_on_ambiguous_result": true,
+    "escalate_on_write_action": false,
+    "custom_rules": []
+  }
+}

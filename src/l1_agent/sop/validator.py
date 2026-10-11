@@ -8,6 +8,7 @@ steps in between.
 
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Optional, Set, Tuple
 
 from src.l1_agent.adapters.schemas import (
@@ -35,6 +36,8 @@ VERIFY_ROOTS = DECISION_ROOTS | {"result"}
 MAX_VERIFY_RETRIES = 10
 MAX_VERIFY_WAIT_SECONDS = 300
 KNOWN_STEP_TYPES = frozenset(t.value for t in StepType)
+# The name goes into a ServiceNow query, so its characters are restricted.
+CHANGE_TEMPLATE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._\-]{0,99}$")
 
 
 class SOPValidationError(ValueError):
@@ -104,8 +107,10 @@ def _step_problems(step: SOPStep, index: Dict[str, SOPStep]) -> List[str]:
     if not step.on_success and not step.requires_approval:
         problems.append(f"{label}: on_success is required (end the run with ESCALATE or RESOLVE)")
 
-    if step.capability and step_type != StepType.CHECK.value:
-        problems.append(f"{label}: only a CHECK step names a capability")
+    if step.capability and step_type not in (StepType.CHECK.value, StepType.ACTION.value):
+        problems.append(f"{label}: only a CHECK or ACTION step names a capability")
+    if step.verify and step_type != StepType.ACTION.value:
+        problems.append(f"{label}: only an ACTION step has verify settings")
     if step_type in CHECK_STEP_TYPES:
         problems += [
             f"{label}: {p}"
@@ -113,6 +118,8 @@ def _step_problems(step: SOPStep, index: Dict[str, SOPStep]) -> List[str]:
         ]
     elif step_type == StepType.CHECK.value:
         problems += _capability_problems(label, step.capability, step.parameters)
+    elif step_type == StepType.ACTION.value:
+        problems += _action_problems(label, step)
     elif step_type == StepType.DECISION.value:
         rule = step.parameters.get("rule", "")
         if rule != LEGACY_ANY_FAILED_RULE:
@@ -169,6 +176,43 @@ def _capability_problems(label: str, capability_id: str, parameters: object) -> 
         f"{label}: {p}"
         for p in validate_step_parameters(capability_id, parameters, allow_placeholders=True)
     ]
+
+
+def _action_problems(label: str, step: SOPStep) -> List[str]:
+    """An action must name a write capability that exists, with parameters its schema accepts."""
+    capability = find_capability(step.capability) if step.capability else None
+    if capability is None or step.capability != capability.id:
+        return [f"{label}: unknown capability '{step.capability}'"]
+    if capability.kind is not Kind.WRITE:
+        return [f"{label}: '{step.capability}' is a read; use a CHECK step"]
+    if not is_step_capability(step.capability):
+        return [f"{label}: '{step.capability}' cannot be used in an SOP step"]
+    problems = [
+        f"{label}: {p}"
+        for p in validate_step_parameters(step.capability, step.parameters, allow_placeholders=True)
+    ]
+    if not isinstance(step.verify, dict):
+        return problems + [f"{label}: verify must be an object"]
+    extra = set(step.verify) - {"assert", "retries", "wait_seconds"}
+    if extra:
+        problems.append(f"{label}: unknown verify keys {sorted(extra)}")
+    if "assert" in step.verify:
+        problems += _expression_problems(
+            f"{label} verify assert", step.verify["assert"], frozenset({"result", "params"})
+        )
+    retries = step.verify.get("retries", 0)
+    wait = step.verify.get("wait_seconds", 0)
+    if isinstance(retries, bool) or not isinstance(retries, int) or not 0 <= retries <= 60:
+        problems.append(f"{label}: verify retries must be between 0 and 60")
+    if (
+        isinstance(wait, bool)
+        or not isinstance(wait, (int, float))
+        or not 0 <= wait <= MAX_VERIFY_WAIT_SECONDS
+    ):
+        problems.append(
+            f"{label}: verify wait_seconds must be between 0 and {MAX_VERIFY_WAIT_SECONDS}"
+        )
+    return problems
 
 
 def _has_cycle(start: str, index: Dict[str, SOPStep]) -> bool:
@@ -245,6 +289,15 @@ def validate_sop(sop: SOP) -> List[str]:
 
     for step in sop.steps:
         problems += _step_problems(step, index)
+    acts = any(s.step_type.upper() == StepType.ACTION.value for s in sop.steps)
+    if acts and not CHANGE_TEMPLATE_RE.match(sop.change_template or ""):
+        # Every write is made under a change record (ADR 0008).
+        problems.append(
+            "an SOP with an ACTION step must name a change_template "
+            "(letters, digits, spaces and . _ - only)"
+        )
+    if sop.change_template and not CHANGE_TEMPLATE_RE.match(sop.change_template):
+        problems.append("change_template may hold letters, digits, spaces and . _ - only")
     if problems:
         return problems
 

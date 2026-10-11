@@ -16,6 +16,7 @@ from src.l1_agent.ai.llm_client import LLMClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
 from src.l1_agent.connectors.itsm.base import ItsmUnavailable
 from src.l1_agent.engine.executor import SOPExecutor
+from src.l1_agent.engine.journal import RunSuspended
 from src.l1_agent.engine.resolution_memory import ResolutionMemory
 from src.l1_agent.engine.sop_matcher import MatchResult, SOPMatcher
 from src.l1_agent.engine.sop_parser import SOPParser
@@ -145,6 +146,8 @@ class IncidentProcessor:
             return await self._run(incident, journal, sops)
         except ItsmUnavailable:
             raise  # nothing was done; the job is tried again
+        except RunSuspended:
+            raise  # waiting for an approval; the run is parked
         except Exception as exc:
             # Nothing may leave an incident without an outcome a person can see.
             logger.error("Unhandled error processing %s: %s", incident.number, exc)

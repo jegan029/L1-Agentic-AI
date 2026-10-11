@@ -69,5 +69,8 @@ def capability_for(step_type: str, capability: str = "") -> Optional[str]:
     return STEP_CAPABILITIES.get((step_type or "").upper())
 
 
-def connectors_for_adapters(adapters: Mapping[str, BaseAdapter]) -> ConnectorSet:
-    return connectors_from_adapters(default_registry(), adapters, ADAPTER_CONNECTORS)
+def connectors_for_adapters(
+    adapters: Mapping[str, BaseAdapter],
+    settings: Optional[Mapping[str, Mapping[str, object]]] = None,
+) -> ConnectorSet:
+    return connectors_from_adapters(default_registry(), adapters, ADAPTER_CONNECTORS, settings)

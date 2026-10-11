@@ -85,6 +85,11 @@ class ConnectorSet:
     def connectors(self) -> Dict[str, Connector]:
         return dict(self._connectors)
 
+    def authorise_writes(self, verifier: Any) -> None:
+        """Give every connector the verifier its writes are checked with (ADR 0008)."""
+        for connector in self._connectors.values():
+            connector.grant_verifier = verifier
+
     def tool_name(self, capability_id: str) -> str:
         owner = self._registry.owner(capability_id)
         connector = self._connectors.get(owner or "")
@@ -107,9 +112,17 @@ class ConnectorSet:
             return [str(exc)]
 
     async def invoke(
-        self, capability_id: str, parameters: Mapping[str, Any], context: Optional[StepContext]
+        self,
+        capability_id: str,
+        parameters: Mapping[str, Any],
+        context: Optional[StepContext],
+        grant: Any = None,
+        *,
+        dry_run: bool = False,
     ) -> AdapterResult:
-        return await self._owner(capability_id).invoke(capability_id, parameters, context)
+        return await self._owner(capability_id).invoke(
+            capability_id, parameters, context, grant, dry_run=dry_run
+        )
 
     async def close(self) -> None:
         for connector in self._connectors.values():
@@ -127,10 +140,13 @@ def connectors_from_adapters(
     registry: Registry,
     adapters: Mapping[str, BaseAdapter],
     adapter_keys: Mapping[str, str],
+    settings: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> ConnectorSet:
     """Wrap ready adapters (the mocks, or a test's fakes) as connectors.
 
     `adapter_keys` maps the original adapter key ("ir360") to a connector id ("ibm_mq").
+    `settings` gives a connector's connection settings; without it every allow
+    list admits the mock's own targets.
     """
     built: Dict[str, Connector] = {}
     for key, adapter in adapters.items():
@@ -139,9 +155,10 @@ def connectors_from_adapters(
         if cls is None:
             raise LookupError(f"No connector is registered for adapter '{key}'")
         allow = {
-            binding.config_key: list(_MOCK_ALLOW)
+            binding.config_key: ["*"] if binding.match == "pattern" else list(_MOCK_ALLOW)
             for capability in cls.manifest.capabilities
             for binding in capability.allow_lists
         }
+        allow.update((settings or {}).get(connector_id, {}))
         built[connector_id] = cls(allow, demo_mode=True, fixed=adapter)
     return ConnectorSet(registry, built)

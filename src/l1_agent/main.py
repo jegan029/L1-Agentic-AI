@@ -10,6 +10,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI
 
+from src.l1_agent.actions.service import ActionService
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.llm_client import LLMClient
 from src.l1_agent.ai.mock_llm import MockLLMClient
@@ -23,7 +24,12 @@ from src.l1_agent.connectors.catalog import connectors_for_adapters
 from src.l1_agent.connectors.hub import ConnectorHub, servicenow_secrets
 from src.l1_agent.connectors.sdk.secrets import SecretResolver
 from src.l1_agent.db.engine import Database
-from src.l1_agent.demo import MockServiceNowClient, build_mock_adapters, seed_demo_sops
+from src.l1_agent.demo import (
+    MockServiceNowClient,
+    build_mock_adapters,
+    seed_demo_policy,
+    seed_demo_sops,
+)
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.sop_matcher import SOPMatcher
@@ -111,7 +117,9 @@ class L1AgentService:
 
     # ── Engine ────────────────────────────────────────────────────────
 
-    def _build_processor(self, db: Database, hub: ConnectorHub) -> IncidentProcessor:
+    def _build_processor(
+        self, db: Database, hub: ConnectorHub, actions: ActionService
+    ) -> IncidentProcessor:
         settings = self._settings
         agent = settings.agent
         events = DbEventBus(db)
@@ -128,6 +136,7 @@ class L1AgentService:
                 retry_max_attempts=agent.retry_max_attempts,
                 retry_base_delay=agent.retry_base_delay_seconds,
                 event_bus=events,
+                actions=actions,
             ),
             confidence_threshold=agent.sop_confidence_threshold,
             llm_client=self._llm_client,
@@ -163,6 +172,7 @@ class L1AgentService:
         if demo:
             # Demo mode starts with the sample SOPs published and one waiting for review.
             await seed_demo_sops(db, tenant_id)
+            await seed_demo_policy(db, tenant_id)
             logger.info("Demo mode: mock connectors and the sample SOPs")
 
         self._hub = ConnectorHub(
@@ -171,9 +181,12 @@ class L1AgentService:
             self._resolver,
             fixed=connectors_for_adapters(build_mock_adapters()) if demo else None,
         )
+        # Every write goes through this: policy, approvals, change record, kill switch.
+        actions = ActionService(db, self._snow_client, settings.actions)
         runs = RunService(
             db,
-            self._build_processor(db, self._hub),
+            self._build_processor(db, self._hub, actions),
+            actions=actions,
             visibility_timeout_seconds=settings.worker.visibility_timeout_seconds,
             max_attempts=settings.worker.max_attempts,
             sops_from_store=True,
@@ -197,6 +210,7 @@ class L1AgentService:
             webhook_open=webhook_open(settings),
             hub=self._hub,
             itsm=self._snow_client,
+            actions=actions,
         )
         return self._ctx
 

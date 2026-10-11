@@ -25,6 +25,7 @@ from src.l1_agent.connectors.catalog import (
 from src.l1_agent.connectors.sdk.base import Refused, StepContext
 from src.l1_agent.connectors.sdk.registry import ConnectorSet
 from src.l1_agent.engine import expressions
+from src.l1_agent.engine.journal import RunSuspended
 from src.l1_agent.engine.parameters import ParameterError, bind_parameters, render
 from src.l1_agent.engine.state_machine import (
     RunEvent,
@@ -60,6 +61,10 @@ class _Run:
     connectors: ConnectorSet
     tenant_id: Any = None
     run_id: str = ""
+    # For an ACTION step: the SOP version, the run's own id, and where notes go.
+    sop: Optional[SOP] = None
+    journal_run_id: Any = None
+    note: Any = None
 
 
 class _AdapterFailure(Exception):
@@ -100,7 +105,10 @@ class SOPExecutor:
         event_bus: Optional["EventPublisher"] = None,
         connectors: Any = None,
         breaker_factory: Optional[Any] = None,
+        actions: Any = None,
     ) -> None:
+        # The action pipeline (ADR 0008). Without one, an ACTION step is refused.
+        self._actions = actions
         self._hub = connectors or _FixedConnectors(connectors_for_adapters(adapters or {}))
         self._circuit_breakers = circuit_breakers or {}
         self._breaker_factory = breaker_factory
@@ -174,10 +182,18 @@ class SOPExecutor:
                     connectors=await self._hub.for_tenant(tenant_id),
                     tenant_id=tenant_id,
                     run_id=str(getattr(journal, "run_id", "") or incident.number),
+                    sop=sop,
+                    journal_run_id=getattr(journal, "run_id", None),
+                    note=work_note_callback,
                 )
+                if self._actions is not None:
+                    # Writes by these connectors are checked against this pipeline's grants.
+                    run.connectors.authorise_writes(self._actions)
                 state, reason, verified_by = await self._run_steps(
                     incident, steps, values, summary, work_note_callback, journal, run
                 )
+        except RunSuspended:
+            raise  # waiting for a person; the run has no outcome yet
         except Exception as exc:  # engine fault: never leave a run without an outcome
             logger.error("SOP execution aborted by an internal error: %s", exc)
             if not is_terminal(state):
@@ -290,7 +306,26 @@ class SOPExecutor:
 
             # Decide the transition and the next step.
             next_id = ""
-            if result.status == StepStatus.ERROR:
+            path = result.data.get("events") if step_type == StepType.ACTION.value else None
+            if path:
+                # An action reports its route through the table; the table decides the state.
+                state = transition(state, RunEvent.ACTION_STARTED)
+                for name in path:
+                    state = transition(state, RunEvent(name))
+                verified_by = ""
+                if is_terminal(state):
+                    reason = result.error_message or result.output_summary
+                elif state != RunState.EXECUTING:
+                    state = transition(state, RunEvent.ERROR)
+                    reason = f"Action {step.step_id} ended in an unexpected state"
+                elif result.status == StepStatus.FAIL:
+                    next_id = step.on_failure
+                    if not next_id:
+                        state = transition(state, RunEvent.ESCALATE)
+                        reason = f"Step {step.step_id} was not done: {result.error_message}"
+                else:
+                    next_id = step.on_success
+            elif result.status == StepStatus.ERROR:
                 state = transition(state, RunEvent.ERROR)
                 reason = f"Step {step.step_id} could not run: {result.error_message}"
             elif result.status == StepStatus.ESCALATED:
@@ -346,6 +381,7 @@ class SOPExecutor:
             description=step.description,
             parameters=render(step.parameters, values),
             capability=step.capability,
+            verify=step.verify,
             expected_output=step.expected_output,
             on_success=step.on_success,
             on_failure=step.on_failure,
@@ -413,7 +449,11 @@ class SOPExecutor:
                 )
             if step_type in CONNECTOR_STEP_TYPES:
                 return await self._handle_adapter_step(step, run)
+            if step_type == StepType.ACTION.value:
+                return await self._handle_action_step(step, incident, run)
             return self._error(step, f"Unknown step type: {step.step_type}", "none")
+        except RunSuspended:
+            raise
         except Exception as exc:
             logger.error("Step %s raised: %s", step.step_id, exc)
             return self._error(step, f"{type(exc).__name__}: {exc}", step.step_type)
@@ -514,6 +554,43 @@ class SOPExecutor:
             data=dict(adapter_result.data)
             if adapter_result and status == StepStatus.SUCCESS
             else {},
+        )
+
+    async def _handle_action_step(
+        self, step: SOPStep, incident: Incident, run: Optional["_Run"]
+    ) -> StepResult:
+        """Hand a write to the action pipeline. The engine itself never makes one."""
+        if self._actions is None or run is None or run.sop is None:
+            text = "Actions are not enabled here; the step was not carried out"
+            return StepResult(
+                step_id=step.step_id,
+                step_type=step.step_type,
+                status=StepStatus.ESCALATED,
+                error_message=text,
+                tool_called="action",
+                input_summary=f"{step.capability} {step.parameters}",
+                output_summary=text,
+                data={"events": [RunEvent.POLICY_DENIED.value]},
+            )
+        from src.l1_agent.actions.service import ActionCall
+
+        async def read(name: str, parameters: Dict[str, Any]) -> tuple:
+            return await self._call_adapter(name, parameters, run, step.step_id)
+
+        async def note(text: str) -> None:
+            await self._note(run.note, incident, text, f"action {step.step_id}")
+
+        return await self._actions.perform(
+            ActionCall(
+                step=step,
+                incident=incident,
+                sop=run.sop,
+                tenant_id=run.tenant_id,
+                run_id=run.journal_run_id,
+                connectors=run.connectors,
+                read=read,
+                note=note,
+            )
         )
 
     async def _handle_verify_step(

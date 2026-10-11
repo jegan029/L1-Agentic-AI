@@ -1,0 +1,88 @@
+{
+  "note": "Hand-written from the ServiceNow Change Management API and Table API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/sys_user_grmember",
+        "query": {
+          "sysparm_query": "group.name=CAB^user.active=true",
+          "sysparm_fields": "user"
+        }
+      },
+      "response": {
+        "json": {
+          "result": [
+            {
+              "user": {
+                "link": "https://x/api/now/table/sys_user/11111111111111111111111111111111",
+                "value": "11111111111111111111111111111111"
+              }
+            },
+            {
+              "user": {
+                "link": "https://x/api/now/table/sys_user/22222222222222222222222222222222",
+                "value": "22222222222222222222222222222222"
+              }
+            },
+            {
+              "user": {
+                "link": "https://x/api/now/table/sys_user/11111111111111111111111111111111",
+                "value": "11111111111111111111111111111111"
+              }
+            }
+          ]
+        },
+        "headers": {
+          "X-Total-Count": "3"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/sysapproval_approver",
+        "query": {
+          "sysparm_query": "sysapproval=cccccccccccccccccccccccccccccccc",
+          "sysparm_fields": "approver"
+        }
+      },
+      "response": {
+        "json": {
+          "result": [
+            {
+              "approver": {
+                "link": "https://x/api/now/table/sys_user/22222222222222222222222222222222",
+                "value": "22222222222222222222222222222222"
+              }
+            }
+          ]
+        },
+        "headers": {
+          "X-Total-Count": "1"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/api/now/table/sysapproval_approver",
+        "json": {
+          "sysapproval": "cccccccccccccccccccccccccccccccc",
+          "document_id": "cccccccccccccccccccccccccccccccc",
+          "source_table": "change_request",
+          "approver": "11111111111111111111111111111111",
+          "state": "requested"
+        }
+      },
+      "response": {
+        "status": 201,
+        "json": {
+          "result": {
+            "sys_id": "99999999999999999999999999999999"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -28,7 +28,7 @@ from src.l1_agent.audit.log import Actor
 from src.l1_agent.db.engine import Database, utcnow
 from src.l1_agent.db.models import events, incidents, jobs, run_steps, runs
 from src.l1_agent.engine.incident_processor import IncidentProcessor
-from src.l1_agent.engine.journal import StoredMatch
+from src.l1_agent.engine.journal import RunSuspended, StoredMatch
 from src.l1_agent.models.evidence import ExecutionOutcome, ExecutionSummary, StepResult
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.models.sop import SOP, SOPStep
@@ -332,8 +332,11 @@ class RunService:
         visibility_timeout_seconds: int = 300,
         max_attempts: int = 3,
         sops_from_store: bool = False,
+        actions: Any = None,
     ) -> None:
         self._db = db
+        # The action pipeline: its approval requests are swept by the worker.
+        self._actions = actions
         self._processor = processor
         # True in the service: each run matches against the tenant's published versions.
         # False leaves the processor with the SOP list it was built with (unit tests).
@@ -511,10 +514,48 @@ class RunService:
         heartbeat = asyncio.create_task(self._heartbeat(tenant_id, job.id))
         try:
             summary = await self._processor.run_once(incident, journal, sops)
+        except RunSuspended as waiting:
+            await self._park(tenant_id, job, incident, str(waiting))
+            return
         finally:
             heartbeat.cancel()
             _current_run.reset(token)
         await self._conclude(tenant_id, job, incident, summary, "done")
+
+    async def _park(
+        self, tenant_id: uuid.UUID, job: ClaimedJob, incident: Incident, reason: str
+    ) -> None:
+        """Set a run aside until a person decides. It keeps its place and has no outcome."""
+        async with self._db.tenant(tenant_id) as conn:
+            await conn.execute(
+                sa.update(jobs)
+                .where(jobs.c.id == job.id)
+                .values(status="waiting", locked_until=None, attempts=0)
+            )
+            await conn.execute(
+                sa.update(runs)
+                .where(runs.c.tenant_id == tenant_id, runs.c.id == job.run_id)
+                .values(state="awaiting_approval")
+            )
+            await audit.append(
+                conn,
+                tenant_id,
+                WORKER,
+                "run.suspended",
+                {"number": incident.number, "reason": reason},
+                correlation_id=str(job.run_id),
+            )
+            await write_event(
+                conn,
+                tenant_id,
+                job.run_id,
+                {
+                    "type": "awaiting_approval",
+                    "incident_number": incident.number,
+                    "reason": reason,
+                },
+            )
+        metrics.increment("runs.suspended")
 
     async def _published(self, tenant_id: uuid.UUID, journal: DbJournal) -> List[SOP]:
         """The tenant's published SOPs, plus the exact version a resumed run started with."""
@@ -625,6 +666,11 @@ class RunService:
         """Claim and run at most one job per tenant. Returns True if any ran."""
         worked = False
         for tenant_id in tenant_ids or await self._db.active_tenants():
+            if self._actions is not None:
+                try:
+                    await self._actions.sweep(tenant_id)
+                except Exception as exc:
+                    logger.error("Approval sweep failed: %s", type(exc).__name__)
             job = await self.claim(tenant_id)
             if job is None:
                 continue

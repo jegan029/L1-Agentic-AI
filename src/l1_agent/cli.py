@@ -12,6 +12,8 @@
     connection set|remove|list|test   a connector's settings and credential references
     connectors                  the connectors in this build and what each can do
     knowledge sync              pull changed articles from the SOP sources as drafts
+    policy show|set             the autonomy level and the policy rules for actions
+    killswitch on|off|status    stop every write for the tenant (--global: for all, migration role)
     breakglass hash             hash a break-glass password
 
 Commands that change access write to the audit log as actor `system:cli`.
@@ -28,6 +30,7 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
+from src.l1_agent.actions import store as actions
 from src.l1_agent.api.security import SecurityConfigError
 from src.l1_agent.audit import log as audit
 from src.l1_agent.audit.log import Actor
@@ -101,6 +104,18 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("connectors")
     sub.add_parser("knowledge").add_subparsers(dest="action", required=True).add_parser("sync")
 
+    policy = sub.add_parser("policy").add_subparsers(dest="action", required=True)
+    policy.add_parser("show")
+    changed = policy.add_parser("set")
+    changed.add_argument("--autonomy", choices=["shadow", "recommend", "approval", "automatic"])
+    changed.add_argument("--rules", help="a JSON file with the policy rules")
+    kill = sub.add_parser("killswitch").add_subparsers(dest="action", required=True)
+    kill.add_parser("status")
+    for action in ("on", "off"):
+        p = kill.add_parser(action)
+        p.add_argument("--global", dest="everywhere", action="store_true")
+        p.add_argument("--reason", default="")
+
     bg = sub.add_parser("breakglass").add_subparsers(dest="action", required=True)
     bg.add_parser("hash")
     return parser
@@ -131,9 +146,46 @@ async def _run(args: argparse.Namespace, settings: Settings) -> int:
         print(f"tenant {args.slug} {tenant_id}")
         return 0
 
+    if args.command == "killswitch" and args.action != "status" and args.everywhere:
+        # The global switch is the platform operator's: it needs the migration role.
+        owner = Database.create(_migration_url(settings), demo_mode=False)
+        try:
+            tenants = await actions.set_global_kill_switch(
+                owner, CLI, args.action == "on", args.reason
+            )
+        finally:
+            await owner.close()
+        print(f"global kill switch {args.action} ({tenants} tenant(s))")
+        return 0
+
     db = Database.create(settings.database.url, demo_mode=settings.agent.demo_mode)
     try:
         tenant_id = await _tenant(db, settings)
+        if args.command == "killswitch":
+            if args.action != "status":
+                await actions.set_kill_switch(db, tenant_id, CLI, args.action == "on", args.reason)
+            policy = await actions.get_policy(db, tenant_id)
+            everywhere = await actions.global_kill_switch(db)
+            print(f"tenant kill switch: {'ON' if policy.kill_switch else 'off'}")
+            print(f"global kill switch: {'ON' if everywhere['on'] else 'off'}")
+            return 0
+
+        if args.command == "policy":
+            if args.action == "set":
+                rules = None
+                if args.rules:
+                    rules = json.loads(Path(args.rules).read_text(encoding="utf-8"))
+                if rules is None and args.autonomy is None:
+                    raise ConfigError("policy set needs --autonomy, --rules, or both")
+                try:
+                    await actions.set_policy(
+                        db, tenant_id, CLI, autonomy=args.autonomy, rules=rules
+                    )
+                except actions.ActionError as exc:
+                    raise ConfigError("; ".join([str(exc)] + exc.problems)) from None
+            print(json.dumps((await actions.get_policy(db, tenant_id)).to_dict(), indent=2))
+            return 0
+
         if args.command == "roles":
             if args.action == "list":
                 for m in await store.list_role_mappings(db, tenant_id):

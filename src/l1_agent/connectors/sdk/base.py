@@ -4,8 +4,9 @@
 checks that the capability is declared, that the caller supplied a step
 context, that the parameters satisfy the capability's closed schema and that
 every allow-listed parameter has something to be checked against. A write
-capability is refused outright: nothing can authorise one until the policy
-engine exists (Phase 4).
+capability also needs a grant, which only the policy engine mints after it
+has recorded a decision (ADR 0008). A connector that has not been given a
+grant verifier refuses every write.
 """
 
 from __future__ import annotations
@@ -15,10 +16,12 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from fnmatch import fnmatchcase
 from typing import Any, ClassVar, Dict, List, Mapping, Optional
 
 from src.l1_agent.adapters.base import AdapterResult, BaseAdapter
 from src.l1_agent.config.settings import ConfigError
+from src.l1_agent.connectors.sdk.grant import GrantVerifier, call_digest
 from src.l1_agent.connectors.sdk.manifest import Capability, Kind, Manifest, validate_parameters
 from src.l1_agent.connectors.sdk.secrets import ConnectionSecrets, SecretError, SecretResolver
 from src.l1_agent.utils.logging import get_logger
@@ -93,6 +96,8 @@ class Connector(ABC):
             if problems:
                 raise ConfigError("; ".join(problems))
         self._seen: Dict[str, str] = {}
+        # Set by the engine for a run. Without one, no write can be made.
+        self.grant_verifier: Optional[GrantVerifier] = None
 
     @property
     def id(self) -> str:
@@ -110,6 +115,8 @@ class Connector(ABC):
         parameters: Mapping[str, Any],
         context: Optional[StepContext],
         grant: Any = None,
+        *,
+        dry_run: bool = False,
     ) -> AdapterResult:
         capability = self.manifest.capability(capability_id)
         if capability is None:
@@ -117,10 +124,7 @@ class Connector(ABC):
         if context is None:
             raise PermissionError("A capability can only be called with a step context")
         if capability.kind is Kind.WRITE:
-            raise WriteNotAuthorized(
-                f"'{capability_id}' is a write; no action grant can be issued before the "
-                "policy engine exists"
-            )
+            return await self._invoke_write(capability, parameters, context, grant, dry_run)
         problems = self.refusals(capability_id, parameters)
         if problems:
             raise Refused("; ".join(problems))
@@ -134,6 +138,42 @@ class Connector(ABC):
         except SecretError as exc:
             return AdapterResult(success=False, error=f"credential unavailable: {exc}")
         return result
+
+    async def _invoke_write(
+        self,
+        capability: Capability,
+        parameters: Mapping[str, Any],
+        context: StepContext,
+        grant: Any,
+        dry_run: bool,
+    ) -> AdapterResult:
+        """A write, or its dry run. The write itself is made only against a redeemed grant."""
+        if not dry_run and (grant is None or self.grant_verifier is None):
+            raise WriteNotAuthorized(
+                f"'{capability.id}' is a write and needs a grant from the policy engine"
+            )
+        problems = self.refusals(capability.id, parameters)
+        if problems:
+            raise Refused("; ".join(problems))
+        try:
+            if dry_run:
+                if not capability.supports_dry_run:
+                    raise Refused(f"'{capability.id}' has no dry run")
+                return await self._dry_run(capability, dict(parameters))
+            # Redeemed last, so that a refused call does not use the grant up, and
+            # immediately before the call, so that nothing can come between them.
+            await self.grant_verifier.redeem(
+                grant,
+                tenant_id=context.tenant_id,
+                run_id=context.run_id,
+                step_id=context.step_id,
+                capability_id=capability.id,
+                digest=call_digest(capability.id, parameters),
+            )
+            # A write is never repeated here: whether it is safe to is not this layer's call.
+            return await self._execute_write(capability, dict(parameters))
+        except SecretError as exc:
+            return AdapterResult(success=False, error=f"credential unavailable: {exc}")
 
     def refusals(self, capability_id: str, parameters: Mapping[str, Any]) -> List[str]:
         """Why this call would be refused before it is made. Empty means it may proceed."""
@@ -161,6 +201,12 @@ class Connector(ABC):
                 problems.append(
                     f"parameter '{binding.parameter}' is not on allow list '{binding.config_key}'"
                 )
+            elif binding.match == "pattern" and not any(
+                fnmatchcase(str(value), str(a)) for a in allowed
+            ):
+                problems.append(
+                    f"parameter '{binding.parameter}' is not on allow list '{binding.config_key}'"
+                )
         return problems
 
     # ── Credentials ───────────────────────────────────────────────────
@@ -185,6 +231,16 @@ class Connector(ABC):
     @abstractmethod
     async def _execute(self, capability: Capability, parameters: Dict[str, Any]) -> AdapterResult:
         """Run a validated read capability."""
+
+    async def _execute_write(
+        self, capability: Capability, parameters: Dict[str, Any]
+    ) -> AdapterResult:
+        """Make a validated, granted write. Called once per grant."""
+        raise NotImplementedError(f"{self.id} does not implement '{capability.id}'")
+
+    async def _dry_run(self, capability: Capability, parameters: Dict[str, Any]) -> AdapterResult:
+        """Ask the target whether the write would be accepted, changing nothing."""
+        raise NotImplementedError(f"{self.id} has no dry run for '{capability.id}'")
 
     @abstractmethod
     async def health(self) -> Health:

@@ -11,6 +11,21 @@ class ConfigError(ValueError):
     """The configuration is unsafe or inconsistent; the service must not start."""
 
 
+def _action_settings(get) -> "ActionSettings":
+    max_tier = get("ACTIONS_MAX_TIER", "T2").upper()
+    max_autonomy = get("ACTIONS_MAX_AUTONOMY", "automatic").lower()
+    if max_tier not in ("T0", "T1", "T2"):
+        raise ConfigError("ACTIONS_MAX_TIER must be T0, T1 or T2")
+    if max_autonomy not in ("shadow", "recommend", "approval", "automatic"):
+        raise ConfigError("ACTIONS_MAX_AUTONOMY must be shadow, recommend, approval or automatic")
+    return ActionSettings(
+        max_tier=max_tier,
+        max_autonomy=max_autonomy,
+        kill_switch_file=get("ACTIONS_KILL_SWITCH_FILE", ""),
+        servicenow_poll_seconds=float(get("ACTIONS_SERVICENOW_POLL_SECONDS", "30")),
+    )
+
+
 def _csv(val: str) -> List[str]:
     return [v.strip() for v in val.split(",") if v.strip()]
 
@@ -78,6 +93,9 @@ class IR360Settings:
 class AutosysSettings:
     cli_path: str = "autorep"
     allowed_commands: tuple = ("autorep",)
+    sendevent_path: str = "sendevent"
+    # Jobs the force start may be used on: exact names or patterns. Empty means none.
+    force_start_jobs: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -231,6 +249,17 @@ class WorkerSettings:
 
 
 @dataclass(frozen=True)
+class ActionSettings:
+    """What this deployment allows at most, whatever a tenant's policy says (ADR 0008)."""
+
+    max_tier: str = "T2"  # T0 (no writes), T1 or T2
+    max_autonomy: str = "automatic"  # shadow, recommend, approval or automatic
+    # While this file exists, no write is made by this process.
+    kill_switch_file: str = ""
+    servicenow_poll_seconds: float = 30.0
+
+
+@dataclass(frozen=True)
 class Settings:
     servicenow: ServiceNowSettings = field(default_factory=ServiceNowSettings)
     splunk: SplunkSettings = field(default_factory=SplunkSettings)
@@ -248,6 +277,7 @@ class Settings:
     auth: AuthSettings = field(default_factory=AuthSettings)
     worker: WorkerSettings = field(default_factory=WorkerSettings)
     knowledge: KnowledgeSettings = field(default_factory=KnowledgeSettings)
+    actions: ActionSettings = field(default_factory=ActionSettings)
     # Credential references given as <NAME>_REF, for example
     # SPLUNK_TOKEN_REF=file:/run/secrets/splunk-token. They take the place of <NAME>.
     secret_refs: Mapping[str, str] = field(default_factory=dict)
@@ -331,7 +361,10 @@ class Settings:
             autosys=AutosysSettings(
                 cli_path=get("AUTOSYS_CLI_PATH", "autorep"),
                 allowed_commands=tuple(_csv(get("AUTOSYS_ALLOWED_COMMANDS", "autorep"))),
+                sendevent_path=get("AUTOSYS_SENDEVENT_PATH", "sendevent"),
+                force_start_jobs=tuple(_csv(get("AUTOSYS_FORCE_START_JOBS", ""))),
             ),
+            actions=_action_settings(get),
             windows_share=WindowsShareSettings(
                 allowed_unc_prefixes=_csv(get("WINDOWS_SHARE_ALLOWED_PREFIXES", "")),
                 smb_username=get("SMB_USERNAME", ""),

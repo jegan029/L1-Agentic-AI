@@ -2,6 +2,8 @@
 
 Shows each terminal outcome the engine can reach from the sample SOPs:
 a verified resolution, escalations with evidence, and a no-SOP escalation.
+Then three incidents whose SOP restarts a failed job: one done automatically,
+one that waits for an approval, and one whose restart does not work.
 Nothing here talks to a real system.
 """
 
@@ -9,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import uuid
 from pathlib import Path
 from typing import List
 
@@ -23,7 +26,12 @@ from src.l1_agent.adapters.mock_adapters import (
 )
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.mock_llm import MockLLMClient
-from src.l1_agent.connectors.itsm.base import ClaimResult
+from src.l1_agent.connectors.itsm.base import (
+    ChangeApproval,
+    ChangeRef,
+    ChangeUnavailable,
+    ClaimResult,
+)
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.sop_matcher import SOPMatcher
@@ -127,6 +135,37 @@ DEMO_INCIDENTS: List[dict] = [
 ]
 
 
+# Incidents for the restart SOP (SOP-AUTOSYS-002). See `seed_demo_policy` for why each
+# takes the route it does.
+def _restart_incident(sys_id: str, number: str, job: str, why: str) -> dict:
+    return {
+        "sys_id": sys_id,
+        "number": number,
+        "short_description": f"Nightly settlement job {job} failed - restart required",
+        "description": f"The nightly settlement run stopped at job {job}. {why}",
+        "category": "Batch",
+        "subcategory": "Scheduling",
+        "cmdb_ci": "Settlement",
+        "assignment_group": "L1-Batch-Support",
+        "priority": "3",
+        "state": "1",
+    }
+
+
+ACTION_DEMO_INCIDENTS: List[dict] = [
+    _restart_incident(
+        "demo-restart-001", "INC0009006", "NIGHTLY_SETTLEMENT_LOAD", "A rerun is usually enough."
+    ),
+    _restart_incident(
+        "demo-restart-002", "INC0009007", "PAYROLL_GL_POST", "This job posts to the ledger."
+    ),
+    _restart_incident(
+        "demo-restart-003", "INC0009008", "NIGHTLY_RECON_LOAD", "It failed on its input file."
+    ),
+]
+DEMO_RESTART_SOP = "SOP-AUTOSYS-002"
+
+
 def sample_sop_contents() -> List[dict]:
     """The sample SOP files as they are on disk."""
     return [
@@ -172,6 +211,42 @@ async def seed_demo_sops(db, tenant_id) -> None:
         await store.submit(db, tenant_id, store.SAMPLE_AUTHOR, version_id)
 
 
+async def seed_demo_policy(db, tenant_id) -> None:
+    """Let the demo tenant act, so the demo shows more than shadow mode.
+
+    Nightly jobs are restarted automatically. Payroll jobs are raised to T2, so
+    they wait for an approval. A tenant that already has a policy is left alone.
+    Nothing here applies outside demo mode, where a new tenant starts in shadow.
+    """
+    from src.l1_agent.actions import store as actions
+    from src.l1_agent.audit.log import Actor
+    from src.l1_agent.sop import store
+
+    if (await actions.get_policy(db, tenant_id)).updated_at is not None:
+        return
+    restart = next(
+        (s for s in await store.published(db, tenant_id) if s.sop_id == DEMO_RESTART_SOP), None
+    )
+    if restart is None:
+        return
+    capability = "autosys.job.force_start"
+    await actions.set_policy(
+        db,
+        tenant_id,
+        Actor.system("demo-setup"),
+        autonomy="automatic",
+        rules={
+            "sop_autonomy": {
+                DEMO_RESTART_SOP: {"level": "automatic", "content_hash": restart.content_hash}
+            },
+            "automatic": [
+                {"sop_id": DEMO_RESTART_SOP, "capability": capability, "targets": ["NIGHTLY_*"]}
+            ],
+            "raise_tier": [{"capability": capability, "targets": ["PAYROLL_*"]}],
+        },
+    )
+
+
 def build_mock_adapters() -> dict:
     return {
         "splunk": MockSplunkAdapter(),
@@ -190,6 +265,10 @@ class MockServiceNowClient:
     def __init__(self) -> None:
         self.work_notes: list = []
         self.updates: list = []
+        # Change records, keyed by number. `change_templates` None accepts any template name.
+        self.changes: dict = {}
+        self.change_templates = None
+        self.approval_groups: dict = {}  # group name -> number of members
 
     async def add_work_note(self, sys_id: str, note: str) -> dict:
         self.work_notes.append({"sys_id": sys_id, "note": note})
@@ -205,6 +284,63 @@ class MockServiceNowClient:
     async def claim(self, incident: Incident) -> ClaimResult:
         return ClaimResult(True)
 
+    # ── Change records (ADR 0008) ─────────────────────────────────────
+
+    async def open_change(
+        self,
+        template: str,
+        *,
+        correlation: str,
+        short_description: str,
+        description: str,
+        incident_sys_id: str,
+    ) -> ChangeRef:
+        for number, change in self.changes.items():
+            if change["correlation"] == correlation:
+                return ChangeRef(change["sys_id"], number)
+        if self.change_templates is not None and template not in self.change_templates:
+            raise ChangeUnavailable(f"there is no active standard change template '{template}'")
+        number = f"CHG{len(self.changes) + 30001:07d}"
+        self.changes[number] = {
+            "sys_id": f"chg-{len(self.changes) + 1}",
+            "template": template,
+            "correlation": correlation,
+            "short_description": short_description,
+            "description": description,
+            "incident": incident_sys_id,
+            "notes": [],
+            "asked": "",
+            "approval": ChangeApproval("requested"),
+            "closed": None,
+        }
+        return ChangeRef(self.changes[number]["sys_id"], number)
+
+    async def request_change_approval(self, change: ChangeRef, group: str) -> int:
+        members = self.approval_groups.get(group, 1)
+        if not members:
+            raise ChangeUnavailable(f"approval group '{group}' has no active members")
+        self.changes[change.number]["asked"] = group
+        return members
+
+    async def change_approval(self, change: ChangeRef) -> ChangeApproval:
+        record = self.changes[change.number]
+        found: ChangeApproval = record["approval"]
+        return ChangeApproval(
+            found.state, found.approver, found.approver_email, found.comment, record["correlation"]
+        )
+
+    def decide_change(
+        self, number: str, state: str, approver: str, email: str = "", comment: str = ""
+    ) -> None:
+        """What an approver does in ServiceNow: approve or reject the change."""
+        self.changes[number]["approval"] = ChangeApproval(state, approver, email, comment)
+
+    async def note_change(self, change: ChangeRef, note: str) -> None:
+        self.changes[change.number]["notes"].append(note)
+
+    async def close_change(self, change: ChangeRef, successful: bool, notes: str) -> None:
+        self.changes[change.number]["closed"] = {"successful": successful, "notes": notes}
+
     async def get_sops(self, query: str = "", limit: int = 50) -> list:
         return []
 
@@ -215,7 +351,9 @@ class MockServiceNowClient:
         pass
 
 
-def build_demo_processor(snow: MockServiceNowClient, event_bus=None) -> IncidentProcessor:
+def build_demo_processor(
+    snow: MockServiceNowClient, event_bus=None, actions=None
+) -> IncidentProcessor:
     """The same processor the service uses, wired to mocks.
 
     It is built with no SOPs of its own: the run service hands it the
@@ -231,6 +369,7 @@ def build_demo_processor(snow: MockServiceNowClient, event_bus=None) -> Incident
             retry_max_attempts=1,
             retry_base_delay=0,
             event_bus=event_bus,
+            actions=actions,
         ),
         confidence_threshold=0.6,
         llm_client=llm,
@@ -247,6 +386,8 @@ async def run_demo() -> List[dict]:
     the audit log, on a throwaway SQLite database.
     """
     # Imported here: the service layer imports this module for its mocks.
+    from src.l1_agent.actions import store as action_store
+    from src.l1_agent.actions.service import ActionService
     from src.l1_agent.audit.log import Actor, verify
     from src.l1_agent.db.engine import DEMO_TENANT_SLUG, Database
     from src.l1_agent.service.runs import DbEventBus, RunService, record_by_number
@@ -263,13 +404,40 @@ async def run_demo() -> List[dict]:
         await db.create_schema_for_demo()
         tenant_id = await db.ensure_tenant(DEMO_TENANT_SLUG, "Demo tenant")
         await seed_demo_sops(db, tenant_id)
-        service = RunService(db, build_demo_processor(snow, DbEventBus(db)), sops_from_store=True)
+        await seed_demo_policy(db, tenant_id)
+        actions = ActionService(db, snow)
+        service = RunService(
+            db,
+            build_demo_processor(snow, DbEventBus(db), actions),
+            sops_from_store=True,
+            actions=actions,
+        )
         intake = Actor.system("demo")
-        for payload in DEMO_INCIDENTS:
+        for payload in DEMO_INCIDENTS + ACTION_DEMO_INCIDENTS:
             incident = Incident.from_servicenow(payload)
             await service.ingest(tenant_id, incident, intake)
             await service.work_once([tenant_id])
             record = await record_by_number(db, tenant_id, incident.number)
+            waited = record is None
+            if waited:
+                # The run is parked, waiting for a person. Here the person is the demo.
+                asked = (await action_store.list_actions(db, tenant_id, status="pending"))[0]
+                print(f"\n--- {incident.number}: {incident.short_description}")
+                print(
+                    f"  Waiting for approval: {asked['capability']} {asked['parameters']} "
+                    f"(tier {asked['tier']}, change {asked['change_number']})"
+                )
+                await action_store.decide(
+                    db,
+                    tenant_id,
+                    Actor("user", "demo|approver"),
+                    uuid.UUID(asked["id"]),
+                    approve=True,
+                    seen_hash=asked["action_hash"],
+                )
+                print("  Approved by demo|approver; the run resumes")
+                await service.work_once([tenant_id])
+                record = await record_by_number(db, tenant_id, incident.number)
             assert record is not None
             rows.append(
                 {
@@ -280,7 +448,8 @@ async def run_demo() -> List[dict]:
                     "reason": record["escalation_reason"],
                 }
             )
-            print(f"\n--- {incident.number}: {incident.short_description}")
+            if not waited:
+                print(f"\n--- {incident.number}: {incident.short_description}")
             print(f"  SOP:      {record['sop_id'] or '(no SOP matched)'}")
             print(f"  Outcome:  {record['outcome'].upper()}")
             if record["verified_by"]:
@@ -298,6 +467,7 @@ async def run_demo() -> List[dict]:
 
         chain = await verify(db, tenant_id)
         print(f"\nWork notes posted to the mock ServiceNow: {len(snow.work_notes)}")
+        print(f"Change records opened in the mock ServiceNow: {len(snow.changes)}")
         print(
             f"Audit log: {chain.events_checked} events, "
             f"hash chain {'verified' if chain.ok else 'BROKEN'}"

@@ -86,6 +86,7 @@ def concrete(path: str) -> str:
         ("{incident_number}", "INC1"),
         ("{token_id}", NO_SUCH_ID),
         ("{version_id}", NO_SUCH_ID),
+        ("{action_id}", NO_SUCH_ID),
         ("{connector_id}", "splunk"),
         ("{sop_id}", "SOP-NONE"),
     ):
@@ -309,6 +310,14 @@ class TestPermissions:
         admin = ROLE_PERMISSIONS[Role.TENANT_ADMIN]
         assert Permission.AUDIT_READ not in admin
         assert Permission.ACTIONS_APPROVE not in admin and Permission.SOPS_APPROVE not in admin
+        # Whoever sets how far the agent may go does not approve what it does, and the
+        # other way round. An operator can stop the agent and cannot start it again.
+        approver = ROLE_PERMISSIONS[Role.APPROVER]
+        assert approver == {Permission.INCIDENTS_READ, Permission.ACTIONS_APPROVE}
+        holders = {p: {r for r in Role if p in ROLE_PERMISSIONS[r]} for p in Permission}
+        assert holders[Permission.ACTIONS_APPROVE] == {Role.APPROVER}
+        assert holders[Permission.POLICY_MANAGE] == {Role.TENANT_ADMIN}
+        assert holders[Permission.ACTIONS_STOP] == {Role.OPERATOR, Role.TENANT_ADMIN}
         assert Permission.SOPS_APPROVE not in ROLE_PERMISSIONS[Role.SOP_AUTHOR]
         assert Permission.SOPS_AUTHOR not in ROLE_PERMISSIONS[Role.SOP_APPROVER]
         assert ROLE_PERMISSIONS[Role.VIEWER] == {Permission.INCIDENTS_READ}

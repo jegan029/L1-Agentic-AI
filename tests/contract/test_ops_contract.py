@@ -266,6 +266,113 @@ class TestAutosys:
         )
         assert not result.success and commands == []
 
+    # ── The force start (ADR 0008). The reads above stay in the read-only adapter. ──
+
+    def writer(self, **config):
+        """A connector that will accept a grant minted by the returned function."""
+        from src.l1_agent.actions.grants import GrantAuthority
+        from src.l1_agent.connectors.sdk.grant import call_digest
+
+        connector = AutosysConnector({"force_start_jobs": ["NIGHTLY_*"], **config})
+        authority = GrantAuthority()
+
+        class Verifier:
+            async def redeem(self, grant, **call):
+                authority.redeem(grant, **call)
+
+        connector.grant_verifier = Verifier()
+
+        def grant(job: str):
+            return authority.mint(
+                decision_id="d-1",
+                tenant_id="None",
+                run_id="run-1",
+                step_id="step-1",
+                capability_id="autosys.job.force_start",
+                call_digest=call_digest("autosys.job.force_start", {"job_name": job}),
+            )
+
+        return connector, grant
+
+    @pytest.fixture
+    def sendevent(self, monkeypatch) -> List[tuple]:
+        seen: List[tuple] = []
+        self.answer = FakeProcess("", 0)
+
+        async def fake_exec(*argv, **kwargs):
+            seen.append((argv, kwargs))
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return self.answer
+
+        monkeypatch.setattr(
+            "src.l1_agent.connectors.ops.autosys.asyncio.create_subprocess_exec", fake_exec
+        )
+        return seen
+
+    async def test_force_start_is_an_argument_list_from_configuration(self, sendevent):
+        connector, grant = self.writer(sendevent_path="/opt/CA/bin/sendevent")
+        job = "NIGHTLY_SETTLEMENT_LOAD"
+        result = await connector.invoke(
+            "autosys.job.force_start", {"job_name": job}, CTX, grant(job)
+        )
+        assert result.success and result.data == {"job_name": job, "event": "FORCE_STARTJOB"}
+        argv, kwargs = sendevent[0]
+        assert argv == ("/opt/CA/bin/sendevent", "-E", "FORCE_STARTJOB", "-J", job)
+        assert "shell" not in kwargs and len(sendevent) == 1
+
+    async def test_a_refused_event_is_a_failed_write_with_the_schedulers_message(self, sendevent):
+        self.answer = FakeProcess("", 1, load("autosys/sendevent_refused.txt"))
+        connector, grant = self.writer()
+        result = await connector.invoke(
+            "autosys.job.force_start", {"job_name": "NIGHTLY_X"}, CTX, grant("NIGHTLY_X")
+        )
+        assert not result.success and "CAUAJM_E_10281" in result.error
+        assert len(sendevent) == 1, "a write is not retried"
+
+    async def test_a_missing_executable_is_a_failed_write(self, sendevent):
+        self.answer = FileNotFoundError("sendevent")
+        connector, grant = self.writer()
+        result = await connector.invoke(
+            "autosys.job.force_start", {"job_name": "NIGHTLY_X"}, CTX, grant("NIGHTLY_X")
+        )
+        assert not result.success and "could not be run" in result.error
+
+    async def test_a_job_off_the_allow_list_never_reaches_a_command(self, sendevent):
+        connector, grant = self.writer()
+        for job in ("PAYROLL_POST", "nightly_x", "X; rm -rf /", "NIGHTLY_X -E KILLJOB"):
+            with pytest.raises(Refused):
+                await connector.invoke(
+                    "autosys.job.force_start", {"job_name": job}, CTX, grant(job)
+                )
+        assert sendevent == []
+
+    async def test_a_listed_name_with_unsafe_characters_is_still_not_run(self, sendevent):
+        """The allow list is the tenant's; the character check is the connector's own."""
+        connector, grant = self.writer(force_start_jobs=["*"])
+        capability = connector.manifest.capability("autosys.job.force_start")
+        for job in ("X; rm -rf /", "$(reboot)", "A B", "--help -J X", "NIGHTLY_X\n"):
+            # Refused by the capability's schema, before the grant is used...
+            with pytest.raises(Refused, match="characters that are not allowed"):
+                await connector.invoke(
+                    "autosys.job.force_start", {"job_name": job}, CTX, grant(job)
+                )
+            # ...and by the connector itself, were the schema ever loosened.
+            result = await connector._execute_write(capability, {"job_name": job})
+            assert not result.success and result.error == "Invalid job name"
+        assert sendevent == []
+
+    async def test_no_grant_no_command(self, sendevent):
+        from src.l1_agent.connectors.sdk.base import WriteNotAuthorized
+
+        connector, grant = self.writer()
+        for given in (None, object(), grant("NIGHTLY_OTHER")):
+            with pytest.raises(WriteNotAuthorized):
+                await connector.invoke(
+                    "autosys.job.force_start", {"job_name": "NIGHTLY_X"}, CTX, given
+                )
+        assert sendevent == []
+
     def test_the_only_commands_the_adapter_runs_are_reads(self):
         from src.l1_agent.adapters.autosys_adapter import SAFE_COMMANDS
 

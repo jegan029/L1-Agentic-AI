@@ -13,10 +13,12 @@ from datetime import timedelta
 import pytest
 import sqlalchemy as sa
 
+from src.l1_agent.actions import store as action_store
 from src.l1_agent.audit.log import Actor, append
 from src.l1_agent.connectors import hub as connections
 from src.l1_agent.db.engine import Database, UnsafeDatabaseRole, utcnow
 from src.l1_agent.db.models import (
+    GLOBAL_TABLES,
     TENANT_TABLES,
     api_tokens,
     login_states,
@@ -33,6 +35,7 @@ from src.l1_agent.models.incident import Incident
 from src.l1_agent.service.runs import recent_records, record_by_number
 from src.l1_agent.sop import ingest
 from src.l1_agent.sop import store as sop_store
+from tests.api.support import seed_action
 from tests.conftest import make_service
 
 INTAKE = Actor.system("test-intake")
@@ -104,6 +107,8 @@ async def seed(pg, tenant: uuid.UUID, incident_index: int) -> str:
     )
     await sop_store.create_draft(pg.db, tenant, INTAKE, {"sop_id": "SOP-ISO", "steps": []})
     await ingest._record(pg.db, tenant, INTAKE, ingest.SyncResult("git"), "0" * 40)
+    await action_store.set_policy(pg.db, tenant, INTAKE, autonomy="recommend")
+    await seed_action(pg.db, tenant, incident.number, "JOB_A")
     return incident.number
 
 
@@ -117,8 +122,12 @@ async def two_tenants(pg):
 
 class TestSchemaCoversEveryTable:
     def test_every_table_but_tenants_carries_a_tenant(self):
+        # Two tables have no tenant: the list of tenants, and the deployment-wide
+        # switches. A third would have to be added here by name.
+        assert GLOBAL_TABLES == ("tenants", "platform_flags")
         for table in metadata.sorted_tables:
-            if table.name == "tenants":
+            if table.name in GLOBAL_TABLES:
+                assert "tenant_id" not in table.c
                 continue
             assert "tenant_id" in table.c, f"{table.name} has no tenant_id"
             assert not table.c.tenant_id.nullable or table.c.tenant_id.primary_key
@@ -147,6 +156,38 @@ class TestSchemaCoversEveryTable:
             assert table.name in policies, f"{table.name} has no tenant policy"
         # Nothing exists in the database that the model, and so this test, does not know about.
         assert set(flags) - {"alembic_version"} == {t.name for t in metadata.sorted_tables}
+
+
+class TestGlobalTables:
+    """The tables without a tenant hold nothing of a tenant's, and the application cannot write them."""
+
+    def test_the_global_flags_table_has_no_column_that_could_hold_tenant_data(self):
+        from src.l1_agent.db.models import platform_flags
+
+        assert [c.name for c in platform_flags.c] == [
+            "name",
+            "enabled",
+            "reason",
+            "set_by",
+            "set_at",
+        ]
+
+    async def test_the_application_role_can_read_the_global_flags_and_cannot_change_them(self, pg):
+        async with pg.db.platform() as conn:
+            rights = (
+                await conn.execute(
+                    sa.text(
+                        "SELECT has_table_privilege(current_user, 'platform_flags', 'SELECT'), "
+                        "has_table_privilege(current_user, 'platform_flags', 'INSERT'), "
+                        "has_table_privilege(current_user, 'platform_flags', 'UPDATE'), "
+                        "has_table_privilege(current_user, 'platform_flags', 'DELETE')"
+                    )
+                )
+            ).one()
+        assert tuple(rights) == (True, False, False, False)
+        with pytest.raises(Exception, match="permission denied"):
+            await action_store.set_global_kill_switch(pg.db, INTAKE, True, "not mine to set")
+        assert (await action_store.global_kill_switch(pg.db))["on"] is False
 
 
 class TestReadsWithNoFilter:

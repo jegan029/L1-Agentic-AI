@@ -25,6 +25,11 @@ class RunState(str, Enum):
     EXECUTING = "executing"
     VERIFYING = "verifying"
     VERIFIED = "verified"
+    # An ACTION step (ADR 0008)
+    POLICY_CHECK = "policy_check"
+    AWAITING_APPROVAL = "awaiting_approval"
+    ACTING = "acting"
+    ROLLING_BACK = "rolling_back"
     # Terminal
     RESOLVED = "resolved"
     ESCALATED = "escalated"
@@ -46,6 +51,18 @@ class RunEvent(str, Enum):
     VERIFY_STARTED = "verify_started"
     VERIFY_PASSED = "verify_passed"
     VERIFY_FAILED = "verify_failed"
+    ACTION_STARTED = "action_started"
+    POLICY_DENIED = "policy_denied"
+    POLICY_SHADOW = "policy_shadow"  # recorded, not done; the run goes on
+    POLICY_RECOMMEND = "policy_recommend"  # proposed on the ticket, not done
+    POLICY_ALLOWED = "policy_allowed"
+    APPROVAL_REQUIRED = "approval_required"
+    APPROVAL_GRANTED = "approval_granted"
+    APPROVAL_REFUSED = "approval_refused"  # rejected, expired, or no longer valid
+    ACTION_NOT_DONE = "action_not_done"  # a pre-check or dry run said no; nothing changed
+    ACTION_VERIFIED = "action_verified"
+    ACTION_FAILED = "action_failed"  # the write or its verification failed
+    ROLLBACK_DONE = "rollback_done"  # rolled back, or nothing to roll back
     ESCALATE = "escalate"
     RESOLVE = "resolve"
     STEPS_EXHAUSTED = "steps_exhausted"
@@ -82,6 +99,21 @@ TRANSITIONS: Dict[Tuple[RunState, RunEvent], RunState] = {
     (_S.VERIFIED, _E.VERIFY_STARTED): _S.VERIFYING,
     (_S.VERIFIED, _E.ESCALATE): _S.ESCALATED,
     (_S.VERIFIED, _E.RESOLVE): _S.RESOLVED,
+    # An action. Nothing here leads to VERIFIED: a passed action is not a
+    # verification of the incident, and a VERIFY step must still follow.
+    (_S.EXECUTING, _E.ACTION_STARTED): _S.POLICY_CHECK,
+    (_S.VERIFIED, _E.ACTION_STARTED): _S.POLICY_CHECK,
+    (_S.POLICY_CHECK, _E.POLICY_DENIED): _S.ESCALATED,
+    (_S.POLICY_CHECK, _E.POLICY_SHADOW): _S.EXECUTING,
+    (_S.POLICY_CHECK, _E.POLICY_RECOMMEND): _S.ESCALATED,
+    (_S.POLICY_CHECK, _E.POLICY_ALLOWED): _S.ACTING,
+    (_S.POLICY_CHECK, _E.APPROVAL_REQUIRED): _S.AWAITING_APPROVAL,
+    (_S.AWAITING_APPROVAL, _E.APPROVAL_GRANTED): _S.ACTING,
+    (_S.AWAITING_APPROVAL, _E.APPROVAL_REFUSED): _S.ESCALATED,
+    (_S.ACTING, _E.ACTION_NOT_DONE): _S.EXECUTING,
+    (_S.ACTING, _E.ACTION_VERIFIED): _S.EXECUTING,
+    (_S.ACTING, _E.ACTION_FAILED): _S.ROLLING_BACK,
+    (_S.ROLLING_BACK, _E.ROLLBACK_DONE): _S.ESCALATED,
 }
 # Every non-terminal state can be stopped or can fail into a human's hands.
 for _state in RunState:

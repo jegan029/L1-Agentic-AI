@@ -128,7 +128,7 @@ def capabilities_of(content: Dict[str, Any]) -> List[Dict[str, Any]]:
     registry = default_registry()
     for step in content.get("steps", []):
         step_type = str(step.get("step_type", "")).upper()
-        if step_type in CONNECTOR_STEP_TYPES:
+        if step_type in CONNECTOR_STEP_TYPES or step_type == StepType.ACTION.value:
             name = step.get("capability") or step_type
         elif step_type == StepType.VERIFY.value:
             name = str((step.get("parameters") or {}).get("check", ""))

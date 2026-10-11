@@ -180,7 +180,18 @@ class MockWindowsShareAdapter(BaseAdapter):
 
 
 class MockAutosysAdapter(BaseAdapter):
-    """Returns sample Autosys job status."""
+    """Returns sample Autosys job status, and stands in for the scheduler on a force start.
+
+    Every job reads as failed (FA) until it is force started. After that it
+    reads RU once and SU from then on. `FAILS_AGAIN` is the job that fails
+    again after a force start.
+    """
+
+    FAILS_AGAIN = "NIGHTLY_RECON_LOAD"
+
+    def __init__(self) -> None:
+        self.force_starts: List[str] = []
+        self._reads_since_start: Dict[str, int] = {}
 
     @property
     def adapter_name(self) -> str:
@@ -189,9 +200,35 @@ class MockAutosysAdapter(BaseAdapter):
     async def health_check(self) -> bool:
         return True
 
+    async def force_start(self, job_name: str) -> AdapterResult:
+        self.force_starts.append(job_name)
+        self._reads_since_start[job_name] = 0
+        return AdapterResult(
+            success=True,
+            data={"job_name": job_name, "event": "FORCE_STARTJOB"},
+            evidence_snippet=f"Command: sendevent -E FORCE_STARTJOB -J {job_name}\nAccepted.",
+        )
+
+    def _status_after_start(self, job_name: str) -> AdapterResult:
+        reads = self._reads_since_start[job_name]
+        self._reads_since_start[job_name] = reads + 1
+        if job_name == self.FAILS_AGAIN:
+            status = "RU" if reads == 0 else "FA"
+        else:
+            status = "RU" if reads == 0 else "SU"
+        data = {"jobs": [{"job_name": job_name, "status": status}]}
+        return AdapterResult(
+            success=True,
+            data=data,
+            raw_output=json.dumps(data),
+            evidence_snippet=f"Autosys status for {job_name}:\n  Status: {status}",
+        )
+
     async def execute(self, parameters: Dict[str, Any]) -> AdapterResult:
         job_name = parameters.get("job_name", "BATCH_PAYMENT_PROCESS")
         query_type = parameters.get("query_type", "status")
+        if query_type != "dependencies" and job_name in self._reads_since_start:
+            return self._status_after_start(job_name)
 
         if query_type == "dependencies":
             data = {

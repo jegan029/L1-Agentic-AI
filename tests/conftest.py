@@ -25,10 +25,11 @@ import pytest
 
 from src.l1_agent.adapters.base import BaseAdapter
 from src.l1_agent.config.settings import Settings
+from src.l1_agent.connectors.catalog import connectors_for_adapters
 from src.l1_agent.db.engine import Database
 from src.l1_agent.db.migrate import upgrade
 from src.l1_agent.demo import MockServiceNowClient, build_mock_adapters, load_sample_sops
-from src.l1_agent.engine.executor import SOPExecutor
+from src.l1_agent.engine.executor import SOPExecutor, _FixedConnectors
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.sop_matcher import SOPMatcher
 from src.l1_agent.engine.sop_parser import SOPParser
@@ -190,18 +191,29 @@ def make_service(
     worker_id: str = "",
     wrap: Optional[Callable[[IncidentProcessor], IncidentProcessor]] = None,
     sops_from_store: bool = False,
+    actions=None,
+    connector_settings: Optional[Dict[str, dict]] = None,
 ) -> RunService:
-    """A run service wired like the real one, with mock adapters and mock ServiceNow."""
+    """A run service wired like the real one, with mock adapters and mock ServiceNow.
+
+    `actions` is the action pipeline (an ActionService); without one, ACTION steps are
+    refused. `connector_settings` gives a mock connector real connection settings, for
+    example an allow list.
+    """
     bus = DbEventBus(db)
+    fixed = _FixedConnectors(
+        connectors_for_adapters(adapters or build_mock_adapters(), connector_settings)
+    )
     processor = IncidentProcessor(
         snow_client=snow or MockServiceNowClient(),  # type: ignore[arg-type]
         sop_matcher=SOPMatcher(confidence_threshold=0.6),
         sop_parser=SOPParser(),
         executor=SOPExecutor(
-            adapters=adapters or build_mock_adapters(),
+            connectors=fixed,
             retry_max_attempts=1,
             retry_base_delay=0,
             event_bus=bus,  # type: ignore[arg-type]
+            actions=actions,
         ),
         # With the version store, the processor has no SOPs of its own.
         sop_cache=None if sops_from_store else load_sample_sops(),
@@ -218,6 +230,7 @@ def make_service(
         visibility_timeout_seconds=lease_seconds,
         max_attempts=max_attempts,
         sops_from_store=sops_from_store,
+        actions=actions,
     )
 
 

@@ -1,0 +1,37 @@
+{
+  "note": "Hand-written from the ServiceNow Change Management API and Table API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/change_request",
+        "query": {
+          "sysparm_query": "correlation_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sysparm_fields": "sys_id,number",
+          "sysparm_limit": "1"
+        }
+      },
+      "response": {
+        "json": {
+          "result": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/std_change_record_producer",
+        "query": {
+          "sysparm_query": "name=L1 Agent - Autosys job restart^active=true",
+          "sysparm_fields": "sys_id",
+          "sysparm_limit": "1"
+        }
+      },
+      "response": {
+        "json": {
+          "result": []
+        }
+      }
+    }
+  ]
+}

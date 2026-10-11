@@ -1,0 +1,23 @@
+{
+  "note": "Hand-written from the ServiceNow Change Management API and Table API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/sys_user_grmember",
+        "query": {
+          "sysparm_query": "group.name=CAB^user.active=true",
+          "sysparm_fields": "user"
+        }
+      },
+      "response": {
+        "json": {
+          "result": []
+        },
+        "headers": {
+          "X-Total-Count": "0"
+        }
+      }
+    }
+  ]
+}

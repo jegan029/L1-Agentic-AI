@@ -32,6 +32,7 @@ from src.l1_agent.connectors.sdk.manifest import (
     Family,
     Kind,
     Manifest,
+    PreCheck,
     RiskTier,
     Verify,
     lint,
@@ -61,7 +62,7 @@ FORCE_START = Capability(
     allow_lists=(AllowListBinding("job_name", "allowed_jobs", "exact"),),
     target_parameters=("job_name",),
     idempotent=False,
-    pre_checks=("demo.job.status",),
+    pre_checks=(PreCheck("demo.job.status", "result.status == 'FA'"),),
     verify=Verify("demo.job.status", "result.status == 'RU'"),
     rollback="none: a started job cannot be un-started",
 )
@@ -96,10 +97,18 @@ class TestShippedConnectors:
             assert capability.parameters["additionalProperties"] is False, capability_id
             assert capability.tier is not None, capability_id
 
-    def test_no_write_capability_exists_before_the_policy_engine(self):
+    def test_the_write_capabilities_are_exactly_the_reviewed_ones(self):
+        """A new write is a decision, not a side effect of a change: it has to be added here.
+
+        That none of them can be invoked without a policy decision is proved in
+        tests/unit/actions/test_write_needs_a_decision.py.
+        """
         registry = default_registry()
         writes = [c for c in registry.capability_ids() if registry.capability(c).kind is Kind.WRITE]
-        assert writes == [], "writes arrive in Phase 4, behind policy and approvals"
+        assert writes == ["autosys.job.force_start"]
+        force_start = registry.capability("autosys.job.force_start")
+        assert force_start.tier is RiskTier.T1 and not force_start.idempotent
+        assert force_start.rollback.startswith("none:") and not force_start.supports_dry_run
 
     def test_every_check_step_type_names_a_registered_read_capability(self):
         assert set(STEP_CAPABILITIES) == set(CHECK_STEP_TYPES)
@@ -133,7 +142,22 @@ class TestWriteCapabilityRules:
             (dict(target_parameters=()), "must name its target parameters"),
             (dict(rollback=""), "declare a rollback"),
             (dict(rollback="demo.job.absent"), "rollback names unknown capability"),
-            (dict(pre_checks=("demo.job.absent",)), "pre-check names unknown capability"),
+            (
+                dict(pre_checks=(PreCheck("demo.job.absent", "result.ok"),)),
+                "pre-check names unknown capability",
+            ),
+            (dict(pre_checks=("demo.job.status",)), "a pre-check is a capability with"),
+            (dict(pre_checks=(PreCheck("demo.job.status", ""),)), "needs an assertion"),
+            (dict(pre_checks=(PreCheck("demo.job.status", "result =="),)), "does not parse"),
+            (
+                dict(pre_checks=(PreCheck("demo.job.status", "incident.priority == 1"),)),
+                "unknown name",
+            ),
+            (dict(verify=Verify("demo.job.status", "result ==")), "does not parse"),
+            (
+                dict(verify=Verify("demo.job.status", "result.ok", retries=1000)),
+                "verify waits at most",
+            ),
             (
                 dict(parameters={"type": "object", "properties": {"job_name": {}}}),
                 "additionalProperties false",

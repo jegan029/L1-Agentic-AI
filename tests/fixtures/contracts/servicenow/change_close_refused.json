@@ -1,0 +1,24 @@
+{
+  "note": "Hand-written from the ServiceNow Change Management API and Table API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/change_request/cccccccccccccccccccccccccccccccc",
+        "json": {
+          "state": "-2"
+        }
+      },
+      "response": {
+        "status": 403,
+        "json": {
+          "error": {
+            "message": "Operation Failed",
+            "detail": "Invalid state transition"
+          },
+          "status": "failure"
+        }
+      }
+    }
+  ]
+}

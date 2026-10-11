@@ -1,0 +1,92 @@
+{
+  "note": "Hand-written from the ServiceNow Change Management API and Table API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/change_request/cccccccccccccccccccccccccccccccc",
+        "json": {
+          "work_notes": "L1 Agent ran autosys.job.force_start."
+        }
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "result": {
+            "sys_id": "cccccccccccccccccccccccccccccccc"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/change_request/cccccccccccccccccccccccccccccccc",
+        "json": {
+          "state": "-2"
+        }
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "result": {
+            "sys_id": "cccccccccccccccccccccccccccccccc"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/change_request/cccccccccccccccccccccccccccccccc",
+        "json": {
+          "state": "-1"
+        }
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "result": {
+            "sys_id": "cccccccccccccccccccccccccccccccc"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/change_request/cccccccccccccccccccccccccccccccc",
+        "json": {
+          "state": "0"
+        }
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "result": {
+            "sys_id": "cccccccccccccccccccccccccccccccc"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/change_request/cccccccccccccccccccccccccccccccc",
+        "json": {
+          "state": "3",
+          "close_code": "successful",
+          "close_notes": "Verified"
+        }
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "result": {
+            "sys_id": "cccccccccccccccccccccccccccccccc"
+          }
+        }
+      }
+    }
+  ]
+}

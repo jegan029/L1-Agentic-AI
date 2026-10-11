@@ -214,7 +214,12 @@ def environment_connections(settings: Settings) -> Dict[str, Connection]:
         )
     found["autosys"] = made(
         "autosys",
-        {"cli_path": s.autosys.cli_path, "allowed_commands": list(s.autosys.allowed_commands)},
+        {
+            "cli_path": s.autosys.cli_path,
+            "allowed_commands": list(s.autosys.allowed_commands),
+            "sendevent_path": s.autosys.sendevent_path,
+            "force_start_jobs": list(s.autosys.force_start_jobs),
+        },
     )
     if s.windows_share.allowed_unc_prefixes:
         found["fileshare"] = made(

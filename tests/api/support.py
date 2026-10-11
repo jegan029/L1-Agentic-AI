@@ -104,6 +104,40 @@ def signed_headers(body: bytes, secret: str = SECRET, ts: Optional[int] = None) 
     }
 
 
+async def seed_action(db, tenant_id, number: str, job: str, **overrides: Any) -> uuid.UUID:
+    """An action record for the run of incident `number`, as the policy engine would write it."""
+    import sqlalchemy as sa
+
+    from src.l1_agent.actions import store as action_store
+    from src.l1_agent.connectors.sdk.grant import call_digest
+    from src.l1_agent.db.models import runs
+
+    async with db.tenant(tenant_id) as conn:
+        run_id = (
+            await conn.execute(
+                sa.select(runs.c.id).where(runs.c.tenant_id == tenant_id, runs.c.number == number)
+            )
+        ).scalar_one()
+    parameters = {"job_name": job}
+    values = dict(
+        run_id=run_id,
+        incident_number=number,
+        step_id="step-restart",
+        sop_key="SOP-X",
+        capability_id="autosys.job.force_start",
+        parameters=parameters,
+        call_digest=call_digest("autosys.job.force_start", parameters),
+        action_hash=uuid.uuid4().hex * 2,
+        tier="T1",
+        verdict="shadow",
+        status="shadowed",
+        channels=[],
+    )
+    values.update(overrides)
+    row = await action_store.record_decision(db, tenant_id, values, {"step_id": "step-restart"})
+    return row.id
+
+
 async def audit_types(ctx: AppContext, tenant_id=None) -> List[str]:
     return [
         e["event_type"] for e in await events_for(ctx.db, tenant_id or ctx.tenant_id, limit=500)

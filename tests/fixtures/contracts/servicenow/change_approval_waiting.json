@@ -1,0 +1,54 @@
+{
+  "note": "Hand-written from the ServiceNow Change Management API and Table API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/change_request/cccccccccccccccccccccccccccccccc",
+        "query": {
+          "sysparm_fields": "correlation_id",
+          "sysparm_display_value": "false"
+        }
+      },
+      "response": {
+        "json": {
+          "result": {
+            "correlation_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/sysapproval_approver",
+        "query": {
+          "sysparm_query": "sysapproval=cccccccccccccccccccccccccccccccc^ORDERBYsys_updated_on",
+          "sysparm_fields": "state,approver.user_name,approver.email,comments",
+          "sysparm_display_value": "false"
+        }
+      },
+      "response": {
+        "json": {
+          "result": [
+            {
+              "state": "requested",
+              "approver.user_name": "alice.cab",
+              "approver.email": "alice.cab@example.com",
+              "comments": ""
+            },
+            {
+              "state": "requested",
+              "approver.user_name": "bob.cab",
+              "approver.email": "bob.cab@example.com",
+              "comments": ""
+            }
+          ]
+        },
+        "headers": {
+          "X-Total-Count": "2"
+        }
+      }
+    }
+  ]
+}

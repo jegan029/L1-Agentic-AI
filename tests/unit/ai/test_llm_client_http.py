@@ -103,11 +103,13 @@ class TestWireFormat:
         assert sent["path"] == "/v1/chat/completions"
         assert sent["headers"]["Authorization"] == f"Bearer {KEY}"
         assert sent["body"]["model"] == "vendor/model-x"
-        assert sent["body"]["tool_choice"] == "required"
-        assert {t["function"]["name"] for t in sent["body"]["tools"]} == {
-            "select_sop",
-            "escalate_no_sop",
+        assert sent["body"]["tool_choice"] == {
+            "type": "function",
+            "function": {"name": "select_sop"},
         }
+        sop_id_schema = sent["body"]["tools"][0]["function"]["parameters"]["properties"]["sop_id"]
+        assert sop_id_schema["enum"] == ["SOP-MQ-001", "SOP-AUTOSYS-001", "NONE"]
+        assert [t["function"]["name"] for t in sent["body"]["tools"]] == ["select_sop"]
         assert result.sop is SOPS[0] and result.confidence == 0.9
 
     @pytest.mark.asyncio
@@ -144,6 +146,23 @@ class TestBadProviderBehaviour:
             tool_call_response("select_sop", "{not json"),
             tool_call_response("select_sop", '{"sop_id": "SOP-INVENTED", "confidence": 1}'),
             tool_call_response("run_shell", '{"cmd": "rm -rf /"}'),
+            tool_call_response(
+                "select_sop", '{"sop_id": "NONE", "confidence": 0.1, "rationale": "n"}'
+            ),
+            tool_call_response("select_sop", '{"sop_id": "SOP-MQ-001", "confidence": 7}'),
+            tool_call_response("select_sop", '{"sop_id": "SOP-MQ-001", "confidence": "high"}'),
+            tool_call_response("select_sop", '{"sop_id": ["SOP-MQ-001"], "confidence": 0.9}'),
+            # A provider that ignores tool_choice and writes the call as text:
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": '[[{"name": "select_sop", "parameters": {"sop_id": "SOP-MQ-001", "confidence": 0.95}}]',
+                        }
+                    }
+                ]
+            },
             {"choices": [{"message": {"role": "assistant", "content": "I pick SOP-MQ-001"}}]},
             {"choices": []},
             {},

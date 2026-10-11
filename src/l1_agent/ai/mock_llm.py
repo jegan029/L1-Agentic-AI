@@ -43,7 +43,7 @@ class MockLLMClient(LLMClient):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: str = "auto",
+        tool_choice: Any = "auto",
     ) -> LLMResponse:
         """Return the next scripted response, or auto-generate one."""
         self._conversation_history = messages

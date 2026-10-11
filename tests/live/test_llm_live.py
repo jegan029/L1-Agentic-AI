@@ -135,14 +135,14 @@ class TestProvider:
 
     @pytest.mark.asyncio
     async def test_forced_function_call(self, client):
-        """The ranking task depends on the provider honouring tool_choice=required."""
+        """The ranking task depends on the provider honouring a named tool_choice."""
         result = await AIAnalyzer(client).select_sop(incident("INC0012345"), load_sample_sops())
         response = client.received[-1]
         print(
             f"\n  tool_calls={[tc.function_name for tc in response.tool_calls]} usage={response.usage}"
         )
         assert response.tool_calls, "provider returned no function call"
-        assert response.tool_calls[0].function_name in {"select_sop", "escalate_no_sop"}
+        assert response.tool_calls[0].function_name == "select_sop"
         assert (
             isinstance(response.tool_calls[0].arguments, dict) and response.tool_calls[0].arguments
         )

@@ -47,14 +47,14 @@ class LLMClient:
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: str = "auto",
+        tool_choice: Any = "auto",
     ) -> LLMResponse:
         """Send a chat completion request to the LLM endpoint.
 
         Args:
             messages: Chat messages in OpenAI format.
             tools: Tool/function definitions for function calling.
-            tool_choice: "auto", "none", or "required".
+            tool_choice: "auto", "none", "required", or a dict naming one function.
 
         Returns:
             LLMResponse with the model's reply and any tool calls.

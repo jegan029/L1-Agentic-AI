@@ -6,6 +6,7 @@ import Icon from './Icon'
 export const NAV_ITEMS = [
   { key: 'dashboard', label: 'Live dashboard',  short: 'Dashboard',  icon: 'activity',   href: '#/dashboard' },
   { key: 'incidents', label: 'Incident feed',   short: 'Incidents',  icon: 'clock',      href: '#/incidents' },
+  { key: 'library',   label: 'SOP library',     short: 'Library',    icon: 'book',       href: '#/library' },
   { key: 'sops',      label: 'SOP performance', short: 'SOPs',       icon: 'list-check', href: '#/sops' },
   { key: 'activity',  label: 'Activity feed',   short: 'Activity',   icon: 'zap',        href: '#/activity' },
 ]

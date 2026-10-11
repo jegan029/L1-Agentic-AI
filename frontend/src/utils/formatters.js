@@ -68,7 +68,7 @@ const OUTCOME_TONES = {
   resolved: 'resolved',
   escalated: 'escalated',
   needs_human: 'failed',
-  aborted: 'failed',
+  aborted: 'neutral',
   failed: 'failed',
   partial: 'failed',
 }

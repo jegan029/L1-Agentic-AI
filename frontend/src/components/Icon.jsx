@@ -15,6 +15,12 @@ const PATHS = {
       <polyline points="19 12 12 19 5 12" />
     </>
   ),
+  'arrow-left': (
+    <>
+      <line x1="19" y1="12" x2="5" y2="12" />
+      <polyline points="12 19 5 12 12 5" />
+    </>
+  ),
   'arrow-up': (
     <>
       <line x1="12" y1="19" x2="12" y2="5" />

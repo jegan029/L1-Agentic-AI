@@ -611,3 +611,26 @@ dialog.drawer::backdrop { background: rgba(2, 11, 91, 0.3); }
 .utilbar__account { display: inline-flex; align-items: center; gap: 12px; white-space: nowrap; }
 .utilbar__signout { text-decoration: underline; color: inherit; padding: 4px 0; }
 .utilbar__signout:hover { text-decoration-thickness: 2px; }
+
+/* ── SOP library and review ────────────────────────────────────── */
+.back-link { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--brand-blue); margin-bottom: 4px; }
+.back-link:hover { text-decoration: underline; }
+.btn--primary { background: var(--brand-blue); border-color: var(--brand-blue); color: #fff; }
+.btn--primary:hover:not(:disabled) { background: var(--brand-navy); border-color: var(--brand-navy); color: #fff; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; }
+.actions__note { flex: 1; min-width: 220px; }
+.card__body > .muted { font-size: 13px; color: var(--text-muted); }
+.card__body > .actions + .muted { margin-top: 10px; }
+.card__title label { font: inherit; color: inherit; letter-spacing: inherit; }
+.code-editor {
+  display: block; width: 100%; min-height: 360px; padding: 12px; margin-bottom: 12px; resize: vertical;
+  font: 12px/1.5 ui-monospace, 'Cascadia Mono', Consolas, monospace; white-space: pre; tab-size: 2;
+}
+.source-text {
+  max-height: 420px; overflow: auto; padding: 12px; margin-top: 8px;
+  font: 12px/1.5 ui-monospace, 'Cascadia Mono', Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: var(--bg-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+}
+.plain-list { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
+.plain-list li + li { margin-top: 2px; }
+.chip--inline { margin-left: 8px; }

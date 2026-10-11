@@ -7,6 +7,7 @@ import { brand } from './brand'
 import NavBar, { NAV_ITEMS } from './components/NavBar'
 import LiveDashboard from './components/LiveDashboard'
 import IncidentFeed from './components/IncidentFeed'
+import SopLibrary from './components/SopLibrary'
 import SopPerformance from './components/SopPerformance'
 import ActivityFeed from './components/ActivityFeed'
 import SignIn from './components/SignIn'
@@ -25,7 +26,7 @@ function EscalationAnnouncer() {
 }
 
 function Shell() {
-  const { page, incident } = useHashRoute()
+  const { page, incident, version } = useHashRoute()
   const lastPage = useRef(page)
 
   useEffect(() => {
@@ -54,6 +55,7 @@ function Shell() {
       <main id="main" className="main" tabIndex={-1}>
         {page === 'dashboard' && <LiveDashboard />}
         {page === 'incidents' && <IncidentFeed />}
+        {page === 'library' && <SopLibrary version={version} />}
         {page === 'sops' && <SopPerformance />}
         {page === 'activity' && <ActivityFeed />}
       </main>

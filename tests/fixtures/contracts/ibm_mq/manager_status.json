@@ -1,0 +1,16 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/queuemanagers/QMPROD01/status"
+      },
+      "response": {
+        "json": {
+          "status": "RUNNING"
+        }
+      }
+    }
+  ]
+}

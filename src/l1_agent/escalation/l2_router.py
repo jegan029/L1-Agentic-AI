@@ -29,7 +29,10 @@ class L2Router:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception as exc:
             logger.error("Failed to load L2 routing config from %s: %s", path, exc)
-            return {"default_team": {"name": "L2-General", "email": "l2-general@statestreet.com"}, "ci_mappings": {}}
+            return {
+                "default_team": {"name": "L2-General", "email": ""},
+                "ci_mappings": {},
+            }
 
     def resolve_l2_team(self, ci_name: str) -> Dict[str, str]:
         """Return the L2 team dict for *ci_name*.
@@ -44,6 +47,6 @@ class L2Router:
                     logger.debug("CI '%s' matched pattern '%s' -> %s", ci, pattern, team["name"])
                     return dict(team)
 
-        default = self._routing.get("default_team", {"name": "L2-General", "email": "l2-general@statestreet.com"})
+        default = self._routing.get("default_team", {"name": "L2-General", "email": ""})
         logger.debug("CI '%s' -> default team %s", ci, default["name"])
         return dict(default)

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any, Dict, Optional
 
 import aiohttp
@@ -24,6 +25,8 @@ from src.l1_agent.utils.metrics import metrics
 logger = get_logger("ir360_adapter")
 
 _VALID_ACTIONS = frozenset({"depth", "browse", "status"})
+# MQ object names. '/' is legal in MQ but would change the request path, so it is refused.
+_MQ_NAME_RE = re.compile(r"^[A-Za-z0-9._%]{1,48}$")
 
 
 class IR360Adapter(BaseAdapter):
@@ -66,6 +69,8 @@ class IR360Adapter(BaseAdapter):
 
         if not qm:
             return AdapterResult(success=False, error="queue_manager is required")
+        if not _MQ_NAME_RE.match(qm) or (queue and not _MQ_NAME_RE.match(queue)):
+            return AdapterResult(success=False, error="Invalid queue manager or queue name")
 
         if action not in _VALID_ACTIONS:
             return AdapterResult(
@@ -85,7 +90,9 @@ class IR360Adapter(BaseAdapter):
         try:
             session = self._get_session()
             url = f"{self._settings.base_url.rstrip('/')}/api/v1/health"
-            async with session.get(url, headers=self._auth_headers(), ssl=False) as resp:
+            async with session.get(
+                url, headers=self._auth_headers(), ssl=self._settings.verify_ssl
+            ) as resp:
                 healthy = resp.status == 200
                 if healthy:
                     metrics.increment("ir360.health_checks_ok")
@@ -125,7 +132,7 @@ class IR360Adapter(BaseAdapter):
                 f"{base}{endpoint}",
                 headers=self._auth_headers(),
                 params=params,
-                ssl=False,
+                ssl=self._settings.verify_ssl,
             ) as resp:
                 resp.raise_for_status()
                 data = await resp.json()

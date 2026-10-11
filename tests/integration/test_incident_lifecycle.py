@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import Any, List
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -25,11 +25,9 @@ from src.l1_agent.adapters.mock_adapters import (
     MockWebUIScraperAdapter,
     MockWindowsShareAdapter,
 )
-from src.l1_agent.ai.ai_executor import AIExecutor
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.mock_llm import MockLLMClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
-from src.l1_agent.config.settings import AgentSettings, Settings
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.sop_matcher import SOPMatcher
@@ -47,7 +45,7 @@ def load_sample_sop(filename: str) -> SOP:
     path = os.path.join(DATA_DIR, filename)
     with open(path) as f:
         raw = json.load(f)
-    sop = parser.parse(raw)
+    sop = parser.parse_from_json(raw)
     assert sop is not None, f"Failed to parse SOP from {filename}"
     return sop
 
@@ -96,11 +94,9 @@ def make_processor(
 
     llm_client = None
     ai_analyzer = None
-    ai_executor = None
     if use_ai:
         llm_client = MockLLMClient()
         ai_analyzer = AIAnalyzer(llm_client)
-        ai_executor = AIExecutor(llm_client=llm_client, adapters=adapters)
 
     return IncidentProcessor(
         snow_client=snow_client,
@@ -111,7 +107,6 @@ def make_processor(
         confidence_threshold=0.3,
         llm_client=llm_client,
         ai_analyzer=ai_analyzer,
-        ai_executor=ai_executor,
     )
 
 
@@ -119,6 +114,7 @@ def make_mock_snow() -> ServiceNowClient:
     snow = MagicMock(spec=ServiceNowClient)
     snow.add_work_note = AsyncMock(return_value=True)
     snow.update_incident = AsyncMock(return_value=True)
+    snow.resolve_incident = AsyncMock(return_value=True)
     snow.get_sops = AsyncMock(return_value=[])
     return snow
 
@@ -139,7 +135,7 @@ class TestRuleBasedMQIncident:
         incident = make_incident()
         processor = make_processor([mq_sop], snow, use_ai=False)
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.incident_number == "INC0000001"
         assert summary.sop_id == "SOP-MQ-001"
@@ -171,7 +167,7 @@ class TestRuleBasedMQIncident:
         )
         processor = make_processor([], snow, use_ai=False)
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.outcome == ExecutionOutcome.ESCALATED
         assert "No" in summary.escalation_reason or "no" in summary.escalation_reason.lower()
@@ -199,7 +195,7 @@ class TestRuleBasedMQIncident:
             confidence_threshold=0.95,
         )
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
         assert summary.outcome == ExecutionOutcome.ESCALATED
 
 
@@ -223,7 +219,7 @@ class TestRuleBasedAutosysIncident:
         )
         processor = make_processor([autosys_sop], snow, use_ai=False)
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.incident_number == "INC0000002"
         assert summary.outcome in (ExecutionOutcome.RESOLVED, ExecutionOutcome.ESCALATED)
@@ -241,7 +237,7 @@ class TestRuleBasedAutosysIncident:
         )
         processor = make_processor([mq_sop, autosys_sop], snow, use_ai=False)
 
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.sop_id == "SOP-MQ-001"
 
@@ -260,10 +256,11 @@ class TestAIDrivenProcessing:
         processor = make_processor([mq_sop], snow, use_ai=True)
 
         assert processor.ai_enabled
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
 
         assert summary.incident_number == "INC0000001"
-        assert summary.outcome in (ExecutionOutcome.RESOLVED, ExecutionOutcome.ESCALATED, ExecutionOutcome.PARTIAL)
+        # The mock queue is still backed up, so verification fails and L2 gets it.
+        assert summary.outcome == ExecutionOutcome.ESCALATED
         # AI mode posts at least the initial analysis note
         assert snow.add_work_note.call_count >= 1
 
@@ -292,7 +289,7 @@ class TestSOPMatchingIntegration:
             category="Middleware",
         )
         processor = make_processor([mq_sop], snow, use_ai=False)
-        summary = await processor.process_incident(incident)
+        summary = (await processor.process_incident(incident)).summary
         assert summary.sop_id == "SOP-MQ-001"
 
     @pytest.mark.asyncio
@@ -303,9 +300,7 @@ class TestSOPMatchingIntegration:
         processor = make_processor([mq_sop], snow, use_ai=False)
         await processor.process_incident(incident)
 
-        all_notes = " ".join(
-            str(call.args[1]) for call in snow.add_work_note.call_args_list
-        )
+        all_notes = " ".join(str(call.args[1]) for call in snow.add_work_note.call_args_list)
         assert "SOP" in all_notes or "mq" in all_notes.lower() or "queue" in all_notes.lower()
 
 
@@ -330,14 +325,28 @@ class TestAdapterHealthChecks:
     @pytest.mark.asyncio
     async def test_all_mock_adapters_execute(self) -> None:
         cases = [
-            (MockSplunkAdapter(), {"query": "index=app_logs ERROR", "time_range": {"earliest": "-1h", "latest": "now"}}),
+            (
+                MockSplunkAdapter(),
+                {
+                    "query": "index=app_logs ERROR",
+                    "time_range": {"earliest": "-1h", "latest": "now"},
+                },
+            ),
             (MockIR360Adapter(), {"queue_manager": "QM1", "queue": "TEST.Q", "action": "depth"}),
-            (MockWindowsShareAdapter(), {"unc_path": r"\\server\share\app.log", "pattern": "ERROR"}),
+            (
+                MockWindowsShareAdapter(),
+                {"unc_path": r"\\server\share\app.log", "pattern": "ERROR"},
+            ),
             (MockAutosysAdapter(), {"job_name": "BATCH_001", "query_type": "status"}),
             (MockDynatraceAdapter(), {"host_name": "prod-host-01", "check_type": "health"}),
-            (MockWebUIScraperAdapter(), {"url": "http://app.internal/health", "check_type": "page_load"}),
+            (
+                MockWebUIScraperAdapter(),
+                {"url": "http://app.internal/health", "check_type": "page_load"},
+            ),
             (MockMainframeAdapter(), {"job_name": "ASYNCJOB1", "expected_status": "inact ok"}),
         ]
         for adapter, params in cases:
             result = await adapter.execute(params)
-            assert result.success is True, f"{adapter.adapter_name}.execute() returned failure: {result.error}"
+            assert result.success is True, (
+                f"{adapter.adapter_name}.execute() returned failure: {result.error}"
+            )

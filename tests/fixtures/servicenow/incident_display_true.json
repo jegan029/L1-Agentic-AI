@@ -1,0 +1,28 @@
+{
+  "_comment": "Hand-written from the ServiceNow Table API documentation for sysparm_display_value=true. Not a recording from a live instance.",
+  "result": [
+    {
+      "sys_id": "9d385017c611228701d22104cc95c371",
+      "number": "INC0010023",
+      "short_description": "Autosys batch job failure - ETL pipeline job BATCH_PAYMENT_PROCESS status FA",
+      "description": "The Autosys job BATCH_PAYMENT_PROCESS has entered FA state. Job ran at 02:00 but failed with exit code 1.",
+      "category": "Batch",
+      "subcategory": "Scheduling",
+      "cmdb_ci": {
+        "display_value": "ETL-Pipeline",
+        "link": "https://example.service-now.com/api/now/table/cmdb_ci/b0c4030ac0a800090152e7a4564ca36c"
+      },
+      "assignment_group": {
+        "display_value": "L1-Batch-Support",
+        "link": "https://example.service-now.com/api/now/table/sys_user_group/287ebd7da9fe198100f92cc8d1d2154e"
+      },
+      "priority": "3 - Moderate",
+      "state": "New",
+      "caller_id": {
+        "display_value": "Monitoring Integration",
+        "link": "https://example.service-now.com/api/now/table/sys_user/5137153cc611227c000bbd1bd8cd2005"
+      },
+      "sys_created_on": "2026-04-13 19:06:11"
+    }
+  ]
+}

@@ -1,0 +1,101 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs",
+        "headers": {
+          "Authorization": "Bearer sp-one"
+        },
+        "form": {
+          "search": "search index=app_logs ERROR",
+          "output_mode": "json",
+          "earliest_time": "-1h",
+          "latest_time": "now"
+        }
+      },
+      "response": {
+        "status": 201,
+        "json": {
+          "sid": "1700000000.42"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/1700000000.42",
+        "headers": {
+          "Authorization": "Bearer sp-one"
+        }
+      },
+      "response": {
+        "json": {
+          "entry": [
+            {
+              "name": "search",
+              "content": {
+                "isDone": false,
+                "dispatchState": "RUNNING"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/1700000000.42",
+        "headers": {
+          "Authorization": "Bearer sp-one"
+        }
+      },
+      "response": {
+        "json": {
+          "entry": [
+            {
+              "name": "search",
+              "content": {
+                "isDone": true,
+                "dispatchState": "DONE"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/1700000000.42/results",
+        "query": {
+          "output_mode": "json",
+          "count": "100"
+        },
+        "headers": {
+          "Authorization": "Bearer sp-one"
+        }
+      },
+      "response": {
+        "json": {
+          "results": [
+            {
+              "_raw": "2026-03-01 09:00:00 ERROR PaymentService timeout",
+              "host": "app-01"
+            },
+            {
+              "_raw": "2026-03-01 09:01:00 ERROR PaymentService timeout",
+              "host": "app-01"
+            },
+            {
+              "_raw": "2026-03-01 09:02:00 ERROR PaymentService timeout",
+              "host": "app-01"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

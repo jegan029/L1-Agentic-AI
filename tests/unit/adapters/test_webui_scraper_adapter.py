@@ -25,10 +25,12 @@ class TestMockWebUIScraperAdapter:
 
     @pytest.mark.asyncio
     async def test_page_load_check(self, adapter):
-        result = await adapter.execute({
-            "url": "https://app.example.com/dashboard",
-            "check_type": "page_load",
-        })
+        result = await adapter.execute(
+            {
+                "url": "https://app.example.com/dashboard",
+                "check_type": "page_load",
+            }
+        )
         assert result.success is True
         assert result.data["status"] == "healthy"
         assert result.data["load_time_seconds"] > 0
@@ -44,25 +46,29 @@ class TestMockWebUIScraperAdapter:
 
     @pytest.mark.asyncio
     async def test_page_load_with_expected_text(self, adapter):
-        result = await adapter.execute({
-            "url": "https://app.example.com",
-            "check_type": "page_load",
-            "expected_text": "Dashboard",
-        })
+        result = await adapter.execute(
+            {
+                "url": "https://app.example.com",
+                "check_type": "page_load",
+                "expected_text": "Dashboard",
+            }
+        )
         assert result.success is True
         assert "Dashboard" in result.evidence_snippet
 
     @pytest.mark.asyncio
     async def test_click_path_check(self, adapter):
-        result = await adapter.execute({
-            "url": "https://app.example.com",
-            "check_type": "click_path",
-            "click_steps": [
-                {"action": "click", "selector": "#login-btn", "name": "click-login"},
-                {"action": "wait", "value": "2", "name": "wait-page-load"},
-                {"action": "assert_text", "value": "Welcome", "name": "verify-welcome"},
-            ],
-        })
+        result = await adapter.execute(
+            {
+                "url": "https://app.example.com",
+                "check_type": "click_path",
+                "click_steps": [
+                    {"action": "click", "selector": "#login-btn", "name": "click-login"},
+                    {"action": "wait", "value": "2", "name": "wait-page-load"},
+                    {"action": "assert_text", "value": "Welcome", "name": "verify-welcome"},
+                ],
+            }
+        )
         assert result.success is True
         assert result.data["all_passed"] is True
         # navigate + 3 steps
@@ -72,41 +78,50 @@ class TestMockWebUIScraperAdapter:
 
     @pytest.mark.asyncio
     async def test_click_path_empty_steps(self, adapter):
-        result = await adapter.execute({
-            "url": "https://app.example.com",
-            "check_type": "click_path",
-            "click_steps": [],
-        })
+        result = await adapter.execute(
+            {
+                "url": "https://app.example.com",
+                "check_type": "click_path",
+                "click_steps": [],
+            }
+        )
         assert result.success is True
         # Only the navigate step
         assert result.data["steps_executed"] == 1
 
     @pytest.mark.asyncio
     async def test_evidence_contains_url(self, adapter):
-        result = await adapter.execute({
-            "url": "https://gcas-launcher.example.com",
-            "check_type": "page_load",
-        })
+        result = await adapter.execute(
+            {
+                "url": "https://gcas-launcher.example.com",
+                "check_type": "page_load",
+            }
+        )
         assert "gcas-launcher.example.com" in result.evidence_snippet
 
     @pytest.mark.asyncio
     async def test_click_path_evidence_shows_steps(self, adapter):
-        result = await adapter.execute({
-            "url": "https://app.example.com",
-            "check_type": "click_path",
-            "click_steps": [
-                {"action": "click", "selector": "#btn", "name": "my-step"},
-            ],
-        })
+        result = await adapter.execute(
+            {
+                "url": "https://app.example.com",
+                "check_type": "click_path",
+                "click_steps": [
+                    {"action": "click", "selector": "#btn", "name": "my-step"},
+                ],
+            }
+        )
         assert "my-step" in result.evidence_snippet
         assert "[OK]" in result.evidence_snippet
 
     @pytest.mark.asyncio
     async def test_raw_output_is_json(self, adapter):
         import json
-        result = await adapter.execute({
-            "url": "https://app.example.com",
-            "check_type": "page_load",
-        })
+
+        result = await adapter.execute(
+            {
+                "url": "https://app.example.com",
+                "check_type": "page_load",
+            }
+        )
         parsed = json.loads(result.raw_output)
         assert "title" in parsed

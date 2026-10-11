@@ -47,20 +47,26 @@ class Incident:
 
     @classmethod
     def from_servicenow(cls, data: dict) -> "Incident":
-        """Create an Incident from a ServiceNow API response dict."""
+        """Create an Incident from a ServiceNow API response dict.
+
+        Works for every ``sysparm_display_value`` setting: with ``all`` each
+        field arrives as ``{"display_value": ..., "value": ...}``, otherwise
+        as a plain string. Identifiers use the raw value; text and reference
+        fields use the display value.
+        """
         return cls(
-            sys_id=data.get("sys_id", ""),
-            number=data.get("number", ""),
-            short_description=data.get("short_description", ""),
-            description=data.get("description", ""),
-            category=data.get("category", ""),
-            subcategory=data.get("subcategory", ""),
+            sys_id=_raw_value(data.get("sys_id", "")),
+            number=_display_value(data.get("number", "")),
+            short_description=_display_value(data.get("short_description", "")),
+            description=_display_value(data.get("description", "")),
+            category=_display_value(data.get("category", "")),
+            subcategory=_display_value(data.get("subcategory", "")),
             cmdb_ci=_display_value(data.get("cmdb_ci", "")),
             assignment_group=_display_value(data.get("assignment_group", "")),
             priority=_safe_int(data.get("priority", 4), 4),
             state=_safe_int(data.get("state", 1), 1),
             caller=_display_value(data.get("caller_id", "")),
-            created_on=data.get("sys_created_on", ""),
+            created_on=_raw_value(data.get("sys_created_on", "")),
         )
 
     def to_dict(self) -> dict:
@@ -81,10 +87,23 @@ class Incident:
 
 
 def _display_value(val: object) -> str:
-    """Extract display_value from a ServiceNow reference field."""
+    """Human-readable form of a ServiceNow field (label, name or text)."""
     if isinstance(val, dict):
-        return str(val.get("display_value", val.get("value", "")))
-    return str(val)
+        chosen = val.get("display_value")
+        if chosen in (None, ""):
+            chosen = val.get("value")
+        val = chosen
+    return "" if val is None else str(val)
+
+
+def _raw_value(val: object) -> str:
+    """Stored form of a ServiceNow field (sys_id, timestamp)."""
+    if isinstance(val, dict):
+        chosen = val.get("value")
+        if chosen in (None, ""):
+            chosen = val.get("display_value")
+        val = chosen
+    return "" if val is None else str(val)
 
 
 def _safe_int(val: object, default: int) -> int:

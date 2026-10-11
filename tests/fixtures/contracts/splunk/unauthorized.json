@@ -1,0 +1,22 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs"
+      },
+      "response": {
+        "status": 401,
+        "json": {
+          "messages": [
+            {
+              "type": "WARN",
+              "text": "call not properly authenticated"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,743 +1,149 @@
-# L1 Virtual Engineer Agent — Architecture & Design Document
+# L1 Engineer Agent: architecture as built
 
-## 1. Overview
+This describes the code as it stands after Phase 3 of the [delivery plan](docs/delivery-plan.md). Where the product is going is in [docs/target-architecture.md](docs/target-architecture.md); the reasons for the main choices are in [docs/adr/](docs/adr/).
 
-The L1 Virtual Engineer Agent automates L1 incident triage and resolution by:
-1. Ingesting incidents from ServiceNow (webhook or polling)
-2. Matching incidents to Standard Operating Procedures (SOPs)
-3. Executing SOP steps using approved tool integrations
-4. Updating the ServiceNow incident with evidence and outcomes
-5. Escalating to L2 when appropriate
+What has run against a real system: the ServiceNow connector with basic authentication, including paging, the claim step and hand-over to another group (one developer instance), the model client (one hosted provider), the database layer (PostgreSQL 16 in a container) and the Git source (local repositories). ServiceNow OAuth, and every operations connector, have only run against mocks and against fixtures written by hand from vendor documentation. Sign-in has only run against identity providers faked in the tests.
 
-## 2. Component Architecture
+## 1. Shape
 
 ```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                          L1 Agent Service                                 │
-│                                                                           │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐  │
-│  │ Webhook      │  │ Polling      │  │ Health Check │  │ Prometheus  │  │
-│  │ Listener     │  │ Worker       │  │ GET /health  │  │ GET /metrics│  │
-│  │ POST /webhook│  │ (async loop) │  └──────────────┘  └─────────────┘  │
-│  └──────┬───────┘  └──────┬───────┘                                      │
-│         │                 │                                               │
-│         └────────┬────────┘                                               │
-│                  ▼                                                        │
-│  ┌───────────────────────────────────┐                                    │
-│  │        Incident Processor         │                                    │
-│  │  - Idempotency check              │                                    │
-│  │  - AI or rule-based routing       │                                    │
-│  │  - SOP matching / execution       │                                    │
-│  │  - Incident update                │                                    │
-│  │  - Escalation handling            │                                    │
-│  │  - Resolution memory recording    │                                    │
-│  └───────────┬───────────────────────┘                                    │
-│              │                                                            │
-│      ┌───────┴──────┐                                                     │
-│      ▼              ▼                                                     │
-│  ┌──────────────────────────┐   ┌─────────────────────────────┐          │
-│  │    AI / LLM Engine       │   │   Rule-Based Engine          │          │
-│  │  ┌────────────────────┐  │   │  ┌──────────┐  ┌─────────┐  │          │
-│  │  │ LLM Client         │  │   │  │ SOP      │  │ SOP     │  │          │
-│  │  │ (OpenAI-compat.)   │  │   │  │ Matcher  │  │ Parser  │  │          │
-│  │  └────────────────────┘  │   │  │ + Memory │  └─────────┘  │          │
-│  │  ┌────────────────────┐  │   │  │  Boost   │               │          │
-│  │  │ AI Analyzer        │  │   │  └──────────┘  ┌──────────┐ │          │
-│  │  │ (SOP selection)    │  │   │                │ SOP      │ │          │
-│  │  └────────────────────┘  │   │                │ Executor │ │          │
-│  │  ┌────────────────────┐  │   │                └──────────┘ │          │
-│  │  │ AI Executor        │  │   └─────────────────────────────┘          │
-│  │  │ (tool-calling loop)│  │                                            │
-│  │  └────────────────────┘  │                                            │
-│  └──────────────────────────┘                                            │
-│                                                                           │
-│  ┌───────────────────────────────────────────────────────────────────┐   │
-│  │                        Tool Adapters                               │   │
-│  │  ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌───────────────────────┐  │   │
-│  │  │ Splunk  │ │  IR360  │ │ Autosys  │ │   Windows Share       │  │   │
-│  │  │ REST API│ │ MQ API  │ │ CLI      │ │   SMB Reader          │  │   │
-│  │  └─────────┘ └─────────┘ └──────────┘ └───────────────────────┘  │   │
-│  │  ┌───────────┐ ┌──────────────┐ ┌─────────────────────────────┐  │   │
-│  │  │ Dynatrace │ │ Web UI       │ │ Mainframe TN3270            │  │   │
-│  │  │ REST API  │ │ Scraper      │ │ BEIM ASYNC                  │  │   │
-│  │  └───────────┘ └──────────────┘ └─────────────────────────────┘  │   │
-│  └───────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  ┌───────────────────────────────────────────────────────────────────┐   │
-│  │                       New in v2                                    │   │
-│  │  ┌─────────────────┐  ┌─────────────────┐  ┌──────────────────┐  │   │
-│  │  │ SOP Authoring   │  │ Resolution       │  │ Secrets Vault    │  │   │
-│  │  │ UI              │  │ Memory           │  │ Provider         │  │   │
-│  │  │ GET /sop-editor │  │ (learning loop)  │  │ Vault / AWS SSM  │  │   │
-│  │  └─────────────────┘  └─────────────────┘  └──────────────────┘  │   │
-│  └───────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  ┌───────────────────────────────────────────────────────────────────┐   │
-│  │                  New in v3 — Escalation Engine                     │   │
-│  │  ┌─────────────────┐  ┌──────────────────┐  ┌─────────────────┐  │   │
-│  │  │ L2Router        │  │ EmailNotifier     │  │ EventBus /      │  │   │
-│  │  │ (CI→team        │  │ (SMTP/TLS         │  │ IncidentHistory │  │   │
-│  │  │  fnmatch rules) │  │  best-effort)     │  │ Store (SSE+JSONL│  │   │
-│  │  └─────────────────┘  └──────────────────┘  └─────────────────┘  │   │
-│  │  ┌──────────────────────────────────────────────────────────────┐  │   │
-│  │  │ escalate_to_l2(): route → SNOW update → email → history →SSE │  │   │
-│  │  └──────────────────────────────────────────────────────────────┘  │   │
-│  └───────────────────────────────────────────────────────────────────┘   │
-│                                                                           │
-│  ┌───────────────────────────────────────────────────────────────────┐   │
-│  │                       Observability                                │   │
-│  │  ┌──────────────┐  ┌────────────────┐  ┌──────────────────────┐  │   │
-│  │  │ Structured   │  │ Metrics        │  │ Audit Trail          │  │   │
-│  │  │ JSON Logging │  │ (Prometheus)   │  │ (per-step evidence)  │  │   │
-│  │  └──────────────┘  └────────────────┘  └──────────────────────┘  │   │
-│  └───────────────────────────────────────────────────────────────────┘   │
-└───────────────────────────────────────────────────────────────────────────┘
+ServiceNow ──signed webhook──▶ API process ─┐
+ServiceNow ◀──poll (New, one group)── poller ┤
+                                             ▼
+                         intake: one transaction
+                         incident + run + job + audit event     ◀── unique constraint:
+                                             │                      one run per ticket
+                                             ▼
+                                   PostgreSQL (jobs table)
+                                             │  claim with a lease (SKIP LOCKED)
+                                             ▼
+                                         worker(s)
+                         IncidentProcessor ─▶ SOPMatcher ─▶ SOPExecutor
+                                             │                 │
+                                journal: SOP choice and        └─▶ adapters (read only)
+                                each step result, committed
+                                with its audit event
+                                             ▼
+                         outcome ─▶ ServiceNow update ─▶ run record + audit event
+                                             │
+                    events table ─▶ server-sent events ─▶ React dashboard
 ```
 
-## 3. Data Flow
+Processes: `l1-agent serve` runs the HTTP listener, the poller and, by default, workers in the same process. `l1-agent worker` runs workers alone, so they can be scaled and restarted separately. All state is in the database; a process can be killed at any point.
 
-### 3.1 Incident Lifecycle
+## 2. One engine
 
-```
-1. INTAKE        ServiceNow incident arrives (webhook POST or polling query)
-                 ↓
-2. DEDUP         Check idempotency (have we processed this incident number?)
-                 ↓
-3. SOP MATCH     Match short_description + CI/category/assignment_group to SOP
-                 → Memory-boosted scores applied (+/- 10% based on history)
-                 → If no SOP or confidence < threshold → ESCALATE
-                 ↓
-4. EXECUTE       Parse SOP steps; execute sequentially via tool adapters
-                 → Post work notes at each step
-                 → Collect evidence (tool output summaries)
-                 → Handle DECISION branching
-                 → If step requires approval → ESCALATE
-                 ↓
-5. UPDATE        Post final work note with execution summary
-                 Set incident state (Resolved or escalated)
-                 ↓
-6. COMPLETE      Log audit trail; update metrics; write resolution memory
-```
+There is one execution path and it is deterministic ([ADR 0001](docs/adr/0001-one-execution-engine.md)). A model never chooses a tool, a step or an argument. If a model is configured it is asked one question: which of the candidate SOPs fits this ticket, or none. Its answer is used only if the SOP it names already clears the confidence threshold on the matcher's own score.
 
-### 3.2 AI-Driven Mode (Primary)
+## 3. Outcomes
 
-When `LLM_ENABLED=true`, the LLM is the primary decision-maker:
+Every run ends in exactly one of four outcomes ([ADR 0002](docs/adr/0002-fail-closed-outcomes.md)).
 
-```
-1. INTAKE        Incident arrives
-                 ↓
-2. AI ANALYSIS   LLM reads ticket (short_description, description, CI, category)
-                 → Returns preliminary analysis and key observations
-                 ↓
-3. AI SOP MATCH  LLM selects the best SOP via function calling (select_sop tool)
-                 → Returns SOP ID, confidence, and rationale
-                 → If no match or low confidence → ESCALATE
-                 ↓
-4. AI EXECUTION  LLM drives a tool-calling loop:
-                 → LLM decides which tool to call next (splunk_search, mq_check, etc.)
-                 → Tool adapter executes the call, returns results
-                 → LLM interprets results and decides next action
-                 → Repeats until LLM calls resolve_incident or escalate_to_l2
-                 ↓
-5. UPDATE        Post conclusion work note with evidence summary
-                 → Write outcome to ResolutionMemory if resolved
-```
+| Outcome | Reached when |
+|---|---|
+| `resolved` | A VERIFY step passed, the SOP then reached a RESOLVE step, and ServiceNow accepted the Resolved update. |
+| `escalated` | The SOP reached an ESCALATE step, a check failed with no other route, no SOP matched, or the match was below the threshold. |
+| `needs_human` | The engine could not continue safely: invalid SOP, unbound parameter, missing adapter, open circuit breaker, internal error, ServiceNow refused the Resolved update, or the run kept dying and was stopped. |
+| `aborted` | Reserved for an operator stop. Nothing triggers it yet. |
 
-### 3.3 Rule-Based Mode (Fallback)
+Three independent layers stop an unverified resolution: the SOP validator (`sop/validator.py`), the run state machine (`engine/state_machine.py`, a data table in which `RESOLVED` is reachable only from `VERIFIED`), and the summary type (`models/evidence.py`), which raises if `RESOLVED` is set without the step that verified it. `tests/unit/engine/test_no_unverified_resolve.py` searches for a route around them.
 
-When `LLM_ENABLED=false` or the LLM is unreachable, the system falls back to
-deterministic keyword/regex matching and sequential step execution.
+## 4. SOP matching and execution
 
-### 3.4 Rule-Based SOP Matching Algorithm
+The engine is handed the tenant's published SOP versions for each run, read through the `published_sops` view (section 10). `engine/sop_matcher.py` scores each published, valid SOP on keywords (0.50), CI (0.20), category (0.15) and assignment group (0.15). A signal is scored only when the ticket carries it and the SOP declares it; otherwise it is left out and the other weights are rescaled. The run proceeds only if the best score reaches `AGENT_SOP_CONFIDENCE_THRESHOLD` (default 0.6).
 
-The rule-based matcher scores each SOP against the incident using weighted criteria:
+An SOP is a JSON document of typed parameters and a graph of steps. Parameters are bound and validated before any step runs. Each check step calls one connector capability, named directly (`CHECK` with `capability`) or through one of the older typed step names; its parameters are validated against the closed schema in the connector's manifest before anything is called (section 9). DECISION and VERIFY steps evaluate a small expression language (`engine/expressions.py`); nothing is passed to `eval`.
 
-| Criterion | Weight | Method |
-|-----------|--------|--------|
-| Keyword match in short_description | 0.50 | Exact substring + regex patterns |
-| CI (CMDB CI) match | 0.20 | Exact match against applicable_services |
-| Category match | 0.15 | Exact match against applicable_categories |
-| Assignment group match | 0.15 | Exact match against applicable_assignment_groups |
+## 5. Durable runs ([ADR 0004](docs/adr/0004-persistence-and-queue.md))
 
-After base scoring, historical success rate (from ResolutionMemory) is applied:
+- **One run per ticket.** Intake inserts the incident with `ON CONFLICT DO NOTHING` on `(tenant, source, external id)`. Whoever inserts the row creates the run and its job in the same transaction; a repeat delivery creates nothing. A partial unique index allows one open run per incident.
+- **Queue.** A `jobs` table. A worker claims a job by taking a lease with `SELECT ... FOR UPDATE SKIP LOCKED` and renews it while the run makes progress. A lease that is not renewed expires, and another worker takes the job.
+- **Resume.** The engine writes a journal: the SOP it chose, and each step's result as it completes, each committed with its audit event. A resumed run reuses the recorded SOP choice and replays recorded step results without calling the target systems again. The route through an SOP depends only on step results, so replay reaches the point of interruption. Only the step that was in flight is executed again.
+- **Giving up.** A run that does not finish within `WORKER_MAX_ATTEMPTS` is recorded as `needs_human` and routed to a team.
+- **Events.** Progress events are rows in an `events` table, so the dashboard stream works whichever process did the work.
 
-| Historical Success Rate | Boost Factor |
-|------------------------|--------------|
-| ≥ 70 % | +up to 10 % |
-| 30–70 % | neutral |
-| ≤ 30 % | −up to 10 % |
-| < 3 records | no adjustment (insufficient data) |
+Demo mode uses the same code on a throwaway SQLite file. SQLite is refused outside demo mode.
 
-- Score >= threshold (default 0.6): proceed with SOP
-- Score < threshold: escalate to L2 with explanation
+## 6. Tenancy ([ADR 0003](docs/adr/0003-deployment-shape.md))
 
-### 3.5 Step Execution
+The lead deployment is one tenant in the customer's environment. Isolation is enforced as if there were many, so that a hosted, multi-tenant shape is a deployment change and not a rewrite.
 
-Each SOP step is dispatched to the appropriate tool adapter:
+- Every table except `tenants` carries `tenant_id`. PostgreSQL row level security is enabled and forced on each, with a policy that compares `tenant_id` to a setting on the transaction.
+- All tenant data is reached through `Database.tenant(tenant_id)`, which sets that value. A query that forgets its own filter still sees one tenant.
+- The application connects as a role that does not own the tables, cannot bypass row level security, cannot create a tenant and cannot change audit rows. At start-up the service checks its own role and refuses to run otherwise. Migrations and tenant creation use a separate role.
+- A credential carries its tenant (`<tenant>.<secret>` for a session, `l1t_<tenant>_<secret>` for a token) and is looked up inside that tenant only.
 
-| Step Type | Adapter | Parameters |
-|-----------|---------|------------|
-| `SPLUNK_SEARCH` | SplunkAdapter | query, time_range, index |
-| `MQ_CHECK` | IR360Adapter | queue_manager, queue, action (depth/browse/status) |
-| `FILE_CHECK` | WindowsShareAdapter | unc_path, pattern, last_n_lines, time_window |
-| `AUTOSYS_STATUS` | AutosysAdapter | job_name, action (status/dependencies) |
-| `DYNATRACE_VM_CHECK` | DynatraceAdapter | host_name, host_group |
-| `DYNATRACE_METRICS` | DynatraceAdapter | metric_selector, entity_selector, time_range |
-| `WEB_UI_CHECK` | WebUIScraperAdapter | url, check_type, click_steps, expected_text |
-| `MAINFRAME_CHECK` | MainframeAdapter | job_name, expected_status, action |
-| `DECISION` | Internal | rule (any_failed, all_success, custom) |
-| `NOTE` | Internal | text (posted as work note) |
+What is still per deployment and not per tenant: the ServiceNow connection, the webhook secret, the identity provider, the tool adapters and the L2 routing file. One process therefore takes incidents for one tenant. That changes in Phase 3 with the connector registry.
 
-## 4. Security Model
+## 7. Identity and access ([ADR 0006](docs/adr/0006-http-framework-and-identity.md))
 
-### 4.1 Principles
+- **Deny by default.** Every route is added through one registry (`api/access.py`) with a declaration: public with a stated reason, webhook signature, any signed-in principal, or a named permission. Building the application walks the route table and fails if anything is undeclared, including framework documentation routes. A check before every handler applies the declaration.
+- **Sign-in.** OpenID Connect (authorisation code with PKCE; ID token verified against the provider's keys, asymmetric algorithms only) and SAML 2.0 (signed assertions, answers to our own requests only). There are no local user passwords.
+- **Roles.** Viewer, operator, approver, SOP author, SOP approver, tenant administrator, auditor. A user gets roles only through a mapping from identity provider groups; no mapped group means no sign-in. Routes name permissions; the role-to-permission table is fixed in code. An administrator manages access but does not read the audit log or approve.
+- **Sessions.** Server-side, in the database, with an absolute and an idle lifetime. The cookie is HttpOnly, Secure and SameSite=Lax; only its hash is stored. State-changing requests need a CSRF token.
+- **Machine callers.** Scoped API tokens: hashed, expiring, revocable, and limited to read permissions.
+- **Webhook.** HMAC over timestamp and body, a five-minute window, and a replay record in the database.
+- **Break-glass.** One local administrator, disabled unless a password hash is configured, one-hour sessions, every attempt audited.
+- **Limits.** Request body size, a per-client rate limit (tighter on sign-in), listed-origin CORS, security headers on every response.
 
-- **Read-only by default**: All tool adapters perform read-only operations
-- **Approval gates**: Steps with `requires_approval: true` trigger escalation
-- **Least privilege**: Each adapter uses minimum required permissions
-- **No secrets in code**: All credentials via vault/SSM or environment variables
+## 8. Audit log ([ADR 0007](docs/adr/0007-audit-log.md))
 
-### 4.2 Input Validation
+`audit_events` is one hash chain per tenant. Each event holds a sequence number, the actor, a correlation id (the run), a type, a canonical JSON payload, the previous event's hash and its own. An event is appended in the same transaction as the change it describes.
 
-| Component | Validation |
-|-----------|------------|
-| Autosys CLI | Job name regex: `^[a-zA-Z0-9_.\-/]+$` (no shell metacharacters) |
-| Windows share | UNC paths validated against allow-list prefixes |
-| Splunk queries | Parameterized via REST API (no shell execution) |
-| IR360 | API calls with typed parameters; actions validated against allowlist |
-| SOP Editor | SOP IDs validated with `^[A-Za-z0-9_\-]+$`; JSON parsed before save |
+- The application role can insert and read. Update, delete and truncate are revoked, and blocked by a trigger for every role including the owner.
+- `l1-agent audit verify` recomputes the chain and reports a changed, removed, inserted or reordered event.
+- A chain cannot show that its newest events were removed or that the whole chain was rewritten. `l1-agent audit checkpoint` signs the head of the chain; kept outside the database, checkpoints make both detectable.
+- One run's timeline can be rebuilt from audit events alone (`l1-agent audit timeline --run`).
+- Free text is redacted and bounded before it enters the chain. Evidence is recorded as a digest.
 
-### 4.3 Log Redaction
+Recorded today: incident intake, SOP choice, each step start and result, the outcome, sign-in success and failure, sign-out, break-glass use, token and role-mapping changes, and refused access.
 
-Sensitive fields are automatically redacted in structured logs:
-- `password`, `token`, `secret`, `api_key`, `authorization`
+## 9. Connectors ([ADR 0005](docs/adr/0005-connector-sdk.md))
 
-### 4.4 RBAC
+Three families share one set of rules: ITSM (ServiceNow), knowledge (ServiceNow knowledge base, Git) and operations (Splunk, Dynatrace, IBM MQ, Autosys, file share, browser, mainframe).
 
-| Role | Permissions |
-|------|-------------|
-| Agent (service account) | Read incidents, read SOPs, post work notes, read-only tool access |
-| L2 Engineer | Approve write actions, override escalations |
-| Admin | Configure SOPs via SOP Editor, manage allow-lists, view audit logs |
+- **Manifest.** Each connector declares, as data, its settings, its credential slots and its capabilities: id, read or write, risk tier, a closed parameter schema, required scopes and which parameters are held to an allow list. `connectors/sdk/manifest.py` lints it. The registry (`connectors/sdk/registry.py`) lints every manifest when it is built and does not exist if one fails, so a write capability without a tier, verify operation, closed schema, scopes, rollback statement or allow list for its target cannot ship. Only the first-party list in `connectors/catalog.py` is loaded.
+- **One way in.** `Connector.invoke` checks that the capability is declared, that a step context was supplied, that the parameters fit the schema and that every allow-listed parameter has a non-empty list to be checked against, before any connector code runs. A write capability is refused outright: nothing can authorise one until the policy engine exists. No write capability is declared today.
+- **Credentials are references.** A connection holds `vault:`, `aws:`, `file:` or `env:` references (`connectors/sdk/secrets.py`). Values are read when a call needs them, cached for 30 seconds, and never written to the database, the environment or a log. When a call fails and the backend now holds a different value, the connector reads it and repeats the call once, so a rotation takes effect without a restart.
+- **HTTP.** `connectors/sdk/http.py` is used by the ServiceNow connectors: TLS verification on and https required outside demo mode, a timeout on every call, one re-read of the credential on `401`, and retries on `429`, `502`, `503` and `504` for reads only.
+- **Per tenant.** `connectors/hub.py` builds each tenant's operations connectors from its `connections` rows, falling back to the deployment's environment settings, and re-reads them every few seconds. One bad connection does not take the others down. The ServiceNow ITSM connection and the identity provider are still per deployment.
+- **The seven operations connectors** are the original adapters behind manifests (`connectors/ops/` over `adapters/`). Their own HTTP and parsing code is unchanged except for the defects found while writing the contract tests: Dynatrace host checks now follow paging and ask about every host, not the first 20; host names cannot break out of a Dynatrace selector; queue names cannot change the IR360 request path; and the Autosys status is read from the status column of real `autorep` output.
+- **ServiceNow.** Basic or OAuth 2.0 authentication, paged lists, and a claim step: the agent assigns the ticket to itself before working it and leaves alone a ticket someone else holds. If the claim cannot be attempted at all, the job is retried later; nothing is guessed. Handing a claimed ticket to another group clears the assignment in the same update, which a stock instance requires. The end of a paged list is taken from `X-Total-Count`, because a page can come back short or empty when access controls hide rows.
 
-## 5. Reliability
-
-### 5.1 Retry Strategy
-
-- Exponential backoff: `base_delay * 2^attempt` with jitter
-- Default: 3 attempts, 1s base delay
-- Configurable per adapter
-
-### 5.2 Circuit Breaker
-
-Each tool adapter has an independent circuit breaker:
-- **Closed** (normal): requests pass through
-- **Open** (tripped): requests fail immediately (after N consecutive failures)
-- **Half-open**: after reset timeout, allow one probe request
-
-Default: 5 failures to trip, 60s reset timeout.
-
-### 5.3 Concurrency
-
-- `asyncio.Semaphore` limits concurrent incident processing (default: 5)
-- Each incident processed in its own async task
-- Polling and webhook intake run concurrently
-
-### 5.4 Idempotency
-
-- Incident numbers tracked in a processed set
-- Re-processing the same incident is a no-op
-- Work notes include timestamps to detect duplicates
-
-## 6. Observability
-
-### 6.1 Structured Logging
-
-All logs are JSON-lines format with:
-- `timestamp` (ISO 8601)
-- `level` (INFO, WARNING, ERROR)
-- `correlation_id` (incident number)
-- `component` (module name)
-- `message`
-- `extra` (context-specific fields)
-
-### 6.2 Metrics
-
-In-process metrics collector (`utils/metrics.py`) tracks counters, histograms,
-and gauges, and exposes them via two endpoints:
-
-| Endpoint | Format | Use |
-|----------|--------|-----|
-| `GET /health` | JSON | Readiness probes, quick dashboard |
-| `GET /metrics` | Prometheus text | Grafana / Prometheus scrape target |
-
-Key metrics:
-- `l1_agent_incidents_received` (counter)
-- `l1_agent_incidents_resolved` (counter)
-- `l1_agent_incidents_escalated{reason=...}` (counter)
-- `l1_agent_ir360_api_calls` (counter)
-- `l1_agent_uptime_seconds` (gauge)
-
-### 6.3 Audit Trail
-
-Every step execution produces an audit record:
-```json
-{
-  "step_id": "step-2",
-  "step_type": "MQ_CHECK",
-  "status": "success",
-  "tool_called": "IR360",
-  "input_summary": "queue_manager=QM1, queue=PAYMENT.IN",
-  "output_summary": "depth=1523, status=RUNNING",
-  "evidence_snippet": "Queue depth: 1523 (threshold: 1000)",
-  "started_at": "2026-01-15T10:30:00Z",
-  "completed_at": "2026-01-15T10:30:02Z",
-  "duration_ms": 2100.0
-}
-```
-
-## 7. Escalation Design
-
-### 7.1 Escalation Triggers
-
-| Trigger | Action |
-|---------|--------|
-| No matching SOP | Post "No SOP found" note, route to L2 via CI mapping |
-| SOP confidence < threshold (or None) | Post alternatives, route to L2 via CI mapping |
-| Tool access denied | Post error details, route to L2 via CI mapping |
-| Ambiguous/inconsistent data | Post findings, route to L2 via CI mapping |
-| Write action required | Post approval request, pause execution |
-| Step execution failure (after retries) | Post error + evidence, route to L2 via CI mapping |
-
-### 7.2 Central Escalation Function
-
-All escalation paths funnel through a single `escalate_to_l2()` coroutine
-(`src/l1_agent/escalation/escalator.py`) that performs these steps in order:
+## 10. SOP versions
 
 ```
-1. ROUTE    L2Router.resolve_l2_team(incident.cmdb_ci)
-            → looks up config/l2_routing.json (fnmatch wildcard patterns)
-            → returns {"name": "L2-Database", "email": "l2-db@example.com"}
-
-2. SNOW     Update incident assignment_group to the resolved L2 team name
-
-3. EMAIL    send_escalation_email(team_email, subject, body)
-            → SMTP/TLS using SMTP_HOST/PORT/USER/PASSWORD/FROM env vars
-            → best-effort: logs warning if unconfigured, escalation continues
-
-4. HISTORY  history_store.record(incident, summary)   [if not already recorded]
-
-5. SSE      event_bus.publish({
-              "type":           "incident_escalated",
-              "incident_number": "INC0012345",
-              "reason":          "low_confidence",
-              "l2_team_name":    "L2-Database",
-              "l2_team_email":   "l2-db@example.com",
-              "email_sent":       true
-            })
+draft ──submit──▶ in_review ──approve──▶ approved ──publish──▶ published ──▶ superseded | retired
+             ◀──changes requested──
 ```
 
-### 7.3 CI-Based L2 Team Routing
-
-`L2Router` (`src/l1_agent/escalation/l2_router.py`) loads routing rules from
-`src/l1_agent/config/l2_routing.json` at startup. CI patterns use Python's
-`fnmatch` (case-insensitive):
-
-```json
-{
-  "default_team": { "name": "L2-General", "email": "l2-general@statestreet.com" },
-  "ci_mappings": {
-    "DB*":      { "name": "L2-Database",     "email": "l2-database@statestreet.com" },
-    "MQ*":      { "name": "L2-Middleware",   "email": "l2-middleware@statestreet.com" },
-    "APP*":     { "name": "L2-AppSupport",   "email": "l2-appsupport@statestreet.com" },
-    "MF*":      { "name": "L2-Mainframe",    "email": "l2-mainframe@statestreet.com" },
-    "AUTOSYS*": { "name": "L2-BatchScheduling", "email": "l2-batch@statestreet.com" }
-  }
-}
-```
-
-If no pattern matches or the CI is empty, the `default_team` is used.
-The routing file can be updated without restarting the service; reload by
-restarting the process or adding a hot-reload endpoint.
-
-### 7.4 Escalation Packet
-
-When escalating after partial SOP execution, the agent posts a structured summary:
-```
-[L1 Agent Escalation]
-Incident: INC0012345
-SOP: SOP-MQ-001 (MQ Queue Depth High)
-Reason: Step failed after 3 retries
-
-Checks performed:
-  [OK] step-1: MQ queue depth check - depth=1523
-  [OK] step-2: Splunk log search - 3 errors found
-  [FAIL] step-3: Autosys job status - Connection timeout
-
-Action needed: Verify Autosys connectivity; review job BATCH_PAYMENT_001
-Routed to: L2-Middleware (l2-middleware@statestreet.com)
-```
-
-## 8. SOP Schema
-
-### 8.1 SOP Definition
-
-```json
-{
-  "sop_id": "SOP-MQ-001",
-  "title": "MQ Queue Depth High - Investigation",
-  "applicable_services": ["PaymentService", "OrderService"],
-  "applicable_categories": ["Middleware"],
-  "applicable_assignment_groups": ["L1-Middleware-Support"],
-  "keywords": ["queue depth", "mq.*high", "message.*backlog"],
-  "steps": [...],
-  "pre_checks": ["Verify MQ monitoring access"],
-  "tools_required": ["IR360", "Splunk"],
-  "escalation_criteria": {
-    "max_retry_count": 3,
-    "escalate_on_access_denied": true,
-    "escalate_on_ambiguous_result": true,
-    "escalate_on_write_action": true
-  },
-  "version": "1.2"
-}
-```
-
-### 8.2 Step Definition
-
-```json
-{
-  "step_id": "step-2",
-  "step_type": "MQ_CHECK",
-  "description": "Check current queue depth",
-  "parameters": {
-    "queue_manager": "PROD.QM1",
-    "queue": "PAYMENT.IN",
-    "action": "depth"
-  },
-  "expected_output": "depth < 1000",
-  "on_success": "step-3",
-  "on_failure": "step-escalate",
-  "requires_approval": false,
-  "timeout_seconds": 30
-}
-```
-
-## 9. Technology Stack
-
-| Component | Technology |
-|-----------|------------|
-| Language | Python 3.11+ |
-| Async framework | asyncio + aiohttp |
-| Data validation | Pydantic v2 |
-| HTTP client | aiohttp.ClientSession |
-| Testing | pytest + pytest-asyncio |
-| Linting | ruff |
-| Security scan | bandit |
-| Container | Docker (python:3.11-slim) |
-| CI/CD | GitHub Actions |
-| Configuration | Environment variables (.env) |
-| Secrets | HashiCorp Vault / AWS SSM (optional) |
-
-## 10. AI / LLM Integration
-
-### 10.1 LLM Client
-
-The `LLMClient` (`src/l1_agent/ai/llm_client.py`) connects to any OpenAI-compatible
-API endpoint. It supports:
-
-- Chat completions with tool/function calling
-- Configurable model, temperature, max tokens, timeout
-- Automatic retry with exponential backoff
-- API key loaded from vault/SSM or `LLM_API_KEY` environment variable
-
-### 10.2 Tool Definitions
-
-`src/l1_agent/ai/tool_definitions.py` exposes adapters as LLM-callable functions:
-
-| Function | Adapter | Purpose |
-|----------|---------|--------|
-| `splunk_search` | SplunkAdapter | Search logs by query and time range |
-| `mq_check` | IR360Adapter | Check MQ queue depth / status |
-| `file_check` | WindowsShareAdapter | Read log file lines, filter by pattern |
-| `autosys_status` | AutosysAdapter | Query job status or dependencies |
-| `dynatrace_vm_check` | DynatraceAdapter | Check VM/host health |
-| `dynatrace_metrics_check` | DynatraceAdapter | Query CPU/memory metrics |
-| `web_ui_check` | WebUIScraperAdapter | Navigate URL click-path via headless Selenium |
-| `mainframe_async_check` | MainframeAdapter | Check MF BEIM ASYNC job status via TN3270 |
-| `post_work_note` | (internal) | Post a work note to the incident |
-| `escalate_to_l2` | (internal) | Escalate with reason and findings |
-| `resolve_incident` | (internal) | Resolve with summary and evidence |
-
-### 10.3 AI Analyzer
-
-`AIAnalyzer` sends the incident context to the LLM and asks it to:
-1. Produce a preliminary analysis (key observations, likely root cause)
-2. Select the best SOP via `select_sop` tool call (returns SOP ID + confidence + rationale)
-3. Interpret individual tool results when needed
-
-### 10.4 AI Executor
-
-`AIExecutor` runs an async tool-calling loop:
-1. Build a system prompt with SOP context, available tools, and investigation guidelines
-2. Send to LLM; receive response
-3. If response contains `tool_calls`, execute each via the appropriate adapter
-4. Feed tool results back as `tool` messages
-5. Repeat until the LLM calls `resolve_incident` or `escalate_to_l2` (or max iterations reached)
-
-### 10.5 Mock LLM
-
-`MockLLMClient` provides realistic responses without a real API. It supports:
-- **Scripted mode**: Pre-defined responses returned in order (for deterministic tests)
-- **Auto mode**: Generates contextual responses based on message content (for demos)
-
-## 11. Adapter Reference
-
-### 11.1 IR360 Adapter (`IR360Adapter`)
-
-Connects to the IR360 REST API or local CLI to check IBM MQ queue managers.
-
-**API mode** (default): Uses `aiohttp.ClientSession` with connection reuse, 30 s timeout,
-and `X-API-Key` header authentication. Validates action against an allowlist
-(`depth`, `browse`, `status`) before making any HTTP call.
-
-**CLI mode** (`IR360_USE_CLI=true`): Wraps the CLI binary with `asyncio.create_subprocess_exec`
-and enforces a 30 s timeout.
-
-Configuration: `IR360_BASE_URL`, `IR360_API_KEY`, `IR360_CLI_PATH`, `IR360_USE_CLI`.
-
-### 11.2 Dynatrace Adapter (`DynatraceAdapter`)
-
-- **VM Health Check**: Entities API + Problems API
-- **Metrics Check**: Metrics query API for CPU/memory time-series
-
-### 11.3 Web UI Scraper Adapter (`WebUIScraperAdapter`)
-
-Uses headless Selenium/ChromeDriver for automated click-path navigation.
-Supports `page_load` and `click_path` check types.
-
-### 11.4 Mainframe Adapter (`MainframeAdapter`)
-
-TN3270 terminal emulation via py3270. All operations read-only.
-Parses BEIM ASYNC job statuses: `inact ok`, `active`, `inact error`, etc.
-
-## 12. New Features (v2)
-
-### 12.1 Prometheus Metrics Endpoint
-
-`GET /metrics` returns all in-process metrics in Prometheus text exposition format.
-Scrape it from Prometheus with:
-
-```yaml
-# prometheus.yml
-scrape_configs:
-  - job_name: l1-agent
-    static_configs:
-      - targets: ['l1-agent:8080']
-    metrics_path: /metrics
-```
-
-Grafana datasource: add Prometheus pointing at your Prometheus server, then import
-dashboards querying `l1_agent_*` metrics.
-
-### 12.2 SOP Authoring UI
-
-A lightweight web UI for creating and editing SOPs without hand-editing JSON files.
-
-| Route | Description |
-|-------|-------------|
-| `GET /sop-editor/` | List all SOPs in the library |
-| `GET /sop-editor/new` | Blank SOP creation form |
-| `GET /sop-editor/{sop_id}` | Edit an existing SOP |
-| `POST /sop-editor/save` | Save (create or update) SOP to disk |
-| `POST /sop-editor/{sop_id}/delete` | Delete a SOP file |
-
-SOPs are stored as JSON files in `data/sample_sops/`. The SOP Editor validates
-the JSON before saving and enforces safe SOP IDs (`^[A-Za-z0-9_\-]+$`).
-
-### 12.3 Resolution Memory & Learning Loop
-
-`ResolutionMemory` (`src/l1_agent/engine/resolution_memory.py`) persists
-outcome data for each resolved incident to a JSON-lines file
-(`data/resolution_memory.jsonl`).
-
-**Learning loop mechanism:**
-1. When an incident resolves, a record is appended to the memory file.
-2. On next startup, all records are loaded back into memory.
-3. `SOPMatcher` applies a ±10 % boost/penalty to each SOP's score based on its
-   historical success rate (requires ≥ 3 data points to adjust).
-4. The `/health` endpoint exposes per-SOP stats (success rate, avg confidence,
-   boost factor).
-
-**Memory record schema:**
-```json
-{
-  "incident_number": "INC0001234",
-  "sop_id": "SOP-MQ-001",
-  "outcome": "resolved",
-  "confidence_used": 0.82,
-  "short_description": "MQ queue depth high on QMPROD01",
-  "category": "Middleware",
-  "cmdb_ci": "PaymentService",
-  "duration_ms": 4200.0,
-  "resolved_at": "2026-04-18T10:00:00+00:00"
-}
-```
-
-### 12.4 Secrets Vault Integration
-
-`SecretsProvider` (`src/l1_agent/utils/secrets.py`) fetches sensitive credentials
-at startup and injects them into `os.environ` before `Settings.from_env()` runs.
-The rest of the codebase is unchanged regardless of which backend is used.
-
-Select the backend with `SECRETS_BACKEND`:
-
-| Value | Backend | Required packages |
-|-------|---------|-------------------|
-| `env` (default) | Read from environment variables | none |
-| `vault` | HashiCorp Vault KV v2 | `pip install hvac` |
-| `aws` | AWS SSM Parameter Store | `pip install boto3` |
-
-**HashiCorp Vault configuration:**
-
-| Variable | Description |
-|----------|-------------|
-| `VAULT_ADDR` | Vault server URL (e.g. `https://vault.internal:8200`) |
-| `VAULT_TOKEN` | Token auth (recommended for CI) |
-| `VAULT_ROLE_ID` / `VAULT_SECRET_ID` | AppRole auth (recommended for prod) |
-| `VAULT_MOUNT` | KV v2 mount (default: `secret`) |
-| `VAULT_PATH_PREFIX` | Path prefix inside the mount (default: `l1-agent`) |
-
-**AWS SSM configuration:**
-
-| Variable | Description |
-|----------|-------------|
-| `AWS_REGION` | AWS region (default: `us-east-1`) |
-| `AWS_SSM_PREFIX` | Parameter path prefix (default: `/l1-agent`) |
-
-Secrets are mapped to environment variables via `_SECRET_MAPPINGS` in
-`utils/secrets.py`. Add entries there when introducing new integrations.
-
-### 12.5 GitHub Actions CI/CD Pipeline
-
-`.github/workflows/ci.yml` runs on every push and pull request to `main`/`develop`:
-
-| Job | Trigger | What it does |
-|-----|---------|--------------|
-| `lint` | always | `ruff format --check` + `ruff check` |
-| `unit-tests` | after lint | `pytest tests/unit/` with coverage ≥ 70 % |
-| `integration-tests` | after unit tests | `pytest tests/integration/` (mock adapters) |
-| `docker-build` | after unit tests | Build prod + demo images, smoke test |
-| `security-scan` | after lint | Bandit static analysis; fails on HIGH severity |
-
-Coverage reports are uploaded to Codecov. Bandit reports are stored as artifacts.
-
-## 13. HTTP API Reference
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/webhook/incident` | Receive ServiceNow webhook (JSON body) |
-| `GET` | `/health` | Service health + metrics snapshot + memory stats |
-| `GET` | `/metrics` | Prometheus text format metrics |
-| `GET` | `/sop-editor/` | SOP library list |
-| `GET` | `/sop-editor/new` | New SOP form |
-| `GET` | `/sop-editor/{id}` | Edit SOP form |
-| `POST` | `/sop-editor/save` | Save SOP |
-| `POST` | `/sop-editor/{id}/delete` | Delete SOP |
-| `GET` | `/api/dashboard/summary` | KPIs, outcome breakdown, escalation reasons, 7-day trend |
-| `GET` | `/api/incidents` | Paginated history (`?page=&per_page=&search=&outcome=&priority=`) |
-| `GET` | `/api/incidents/{n}` | Single incident with full step trace |
-| `GET` | `/api/sops/stats` | Per-SOP resolution statistics |
-| `GET` | `/api/stream` | SSE stream of real-time agent events |
-
-## 14. Configuration Reference
-
-All settings are environment-variable-driven. Copy `.env.example` and set values.
-
-### Core Agent
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_DEMO_MODE` | `false` | Use mock adapters and mock LLM |
-| `LLM_ENABLED` | `true` | Enable AI-driven mode |
-| `AGENT_SOP_CONFIDENCE_THRESHOLD` | `0.6` | Minimum score to proceed with SOP |
-| `AGENT_MAX_CONCURRENT_INCIDENTS` | `5` | Semaphore limit |
-| `AGENT_WEBHOOK_PORT` | `8080` | HTTP server port |
-| `AGENT_LOG_LEVEL` | `INFO` | Logging level |
-
-### Email (Escalation Notifications)
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SMTP_HOST` | — | SMTP server hostname (leave blank to skip email) |
-| `SMTP_PORT` | `587` | SMTP port (STARTTLS) |
-| `SMTP_USER` | — | SMTP login username |
-| `SMTP_PASSWORD` | — | SMTP login password |
-| `SMTP_FROM` | (`SMTP_USER`) | Sender address for escalation emails |
-
-### Secrets Backend
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SECRETS_BACKEND` | `env` | `env`, `vault`, or `aws` |
-| `VAULT_ADDR` | `http://127.0.0.1:8200` | Vault server address |
-| `VAULT_TOKEN` | | Vault token (CI/dev) |
-| `VAULT_ROLE_ID` / `VAULT_SECRET_ID` | | AppRole credentials (prod) |
-| `AWS_REGION` | `us-east-1` | AWS region for SSM |
-| `AWS_SSM_PREFIX` | `/l1-agent` | SSM parameter path prefix |
-
-## 15. New Features (v3)
-
-### 15.1 Intelligent Escalation Engine
-
-Three new modules implement a fully auditable L2 escalation pipeline:
-
-| Module | Path | Purpose |
-|--------|------|---------|
-| `L2Router` | `escalation/l2_router.py` | Resolves CI → L2 team via fnmatch wildcard rules |
-| `escalate_to_l2()` | `escalation/escalator.py` | Central coroutine: route, SNOW update, email, history, SSE |
-| `send_escalation_email()` | `notifications/email_notifier.py` | SMTP/TLS email, best-effort |
-| L2 routing config | `config/l2_routing.json` | CI pattern → team name + email (editable without code change) |
-
-**Confidence threshold enforcement** — both AI and rule-based paths now explicitly guard against `None` confidence scores in addition to below-threshold values. The check is `if confidence is None or confidence < threshold`.
-
-### 15.2 Frontend Dashboard (v3)
-
-A React + Vite customer-facing dashboard at `frontend/`:
-
-| Page | Data Source |
-|------|------------|
-| Live Dashboard | `GET /api/dashboard/summary` (polls every 10s) |
-| Incident Feed | `GET /api/incidents` with pagination + filters |
-| Incident Detail | `GET /api/incidents/{n}` (step-by-step trace) |
-| SOP Performance | `GET /api/sops/stats` (polls every 30s) |
-| Activity Feed | `GET /api/stream` (SSE, auto-reconnects) |
-
-The `incident_escalated` SSE event now carries `l2_team_name`, `l2_team_email`, and `email_sent` so the Activity Feed can display the routed team in real time.
-
-### 15.3 Bug Fixes
-
-| Bug | Root Cause | Fix |
-|-----|-----------|-----|
-| Backend hangs on restart when history exists | `ResolutionMemory.stats()` held `Lock` then called `success_rate()` / `average_confidence()` which re-acquired the same non-re-entrant `Lock` → deadlock | Compute all values inline within the single `with self._lock` block |
-| Demo SOPs not found when cwd differs | `_load_demo_sops()` used `Path("data/sample_sops")` relative to cwd | Changed to `Path(__file__).resolve().parent.parent.parent / "data" / "sample_sops"` with cwd fallback |
-
-### 15.4 Unit Tests
-
-| Test File | Tests | Coverage |
-|-----------|-------|---------|
-| `tests/unit/test_l2_router.py` | 11 | Wildcard match, case-insensitive, empty CI, missing config, copy safety |
-| `tests/unit/test_confidence_threshold.py` | 5 | None escalates, below threshold escalates, at threshold executes, above executes, no SOP escalates |
-
-Run with: `pytest tests/unit/ -v`
-
-## 16. Future Enhancements
-
-- **Kubernetes deployment**: Helm chart with HPA for auto-scaling
-- **Fine-tuned SOP matching model**: Train on historical incident-SOP pairs from ResolutionMemory
-- **Slack/Teams notifications**: Alert on-call on L2 escalation with incident summary
-- **Approval workflow UI**: Web dashboard for L2 engineers to approve write actions
-- **Event-driven intake**: Kafka/RabbitMQ consumer for high-throughput environments
-- **Multi-turn conversation**: Allow L2 engineers to chat with the agent about an incident
-- **RAG over SOP corpus**: Vector search over large SOP libraries
-- **Multi-tenant SOPs**: Scope SOPs by team so multiple teams share one agent instance
+`sop/store.py` holds the lifecycle; each transition writes its audit event in the same transaction.
+
+- **Only published versions run.** The engine reads SOPs through the `published_sops` view. A draft, a version in review, an approved-but-unpublished version and a retired one are not in it.
+- **Two people.** Submitting fixes the SHA-256 of the canonical content. Approval is of that hash, and the approver is not the author: the service checks it, and a table constraint (`approver_id <> author_id`) holds whatever the code does. A second constraint means no row can be approved, published or retired without an approver and a hash.
+- **Immutable.** On PostgreSQL a trigger refuses any change to a submitted version's content, hash or author, any change to an approved version's approver or number, and deletion of anything but a draft, for every role including the table owner. SQLite (demo) has the constraints but not the trigger.
+- **Runs record what they ran.** `runs` stores the SOP id, version number and hash. A run interrupted while a newer version is published finishes on the version it started with; if that version was retired, it stops as `needs_human`.
+- **Ingestion.** `sop/ingest.py` turns each changed article from a knowledge source into a draft, once per revision. A structured article keeps its steps; a prose article becomes a draft with no steps and the article text, stripped of markup, beside it. Nothing ingested can run until two people have acted on it.
+
+## 11. Other safeguards
+
+- **Model boundary.** Ticket text is redacted, length-limited and delimited before it is sent. Model output is never logged and is only ever read as an SOP choice.
+- **Logs and secrets.** Operational logs are JSON with pattern-based redaction. Secrets fetched from Vault or AWS are passed to the settings object and are not written to the process environment.
+
+## 12. What this design does not have yet
+
+| Gap | Consequence today | Phase |
+|---|---|---|
+| ITSM and identity provider are per deployment | One process serves one tenant's ServiceNow and identity provider. Operations connectors are per tenant. | 6 |
+| Connectors still run through the original adapters | Retries are not yet limited to the error classes a capability lists as retryable; per-call audit hooks are the engine's step events, not the SDK's. | 4 |
+| Connectors are not loaded through entry points, and there is no signed list of permitted connector versions | Only the first-party list in code is loaded. | 6 |
+| The engine role is not restricted to the published view | The view is the only path the engine code uses; the application role can still read the version table. | 6 |
+| Confluence and SharePoint sources; the `lookup` parameter source; drafting steps from prose | Prose articles become empty drafts for a person to structure. | 5 |
+| No screen for connections | Command line and API only. | 6 |
+| The browser connector uses a local Chrome | Marked preview and not in the default image. | 6 |
+| No write actions, policy engine or approvals | The agent diagnoses and verifies; it does not remediate. | 4 |
+| Runner not split out | Adapters run in the worker process, not behind the outbound-only runner protocol of ADR 0003. | 6 |
+| Audit export, retention, legal hold, evidence store | The chain stays in the database; checkpoints are stored by hand. | later phases |
+| Rate limit is per process | Behind several replicas the limit multiplies. | 6 |
+| A crash during the final ServiceNow update | The closing work notes can be posted twice. Not fixed in Phase 3. | 4 |
+| No model evaluation suite | Redaction and injection resistance are unit tested, not measured on a corpus. | 5 |

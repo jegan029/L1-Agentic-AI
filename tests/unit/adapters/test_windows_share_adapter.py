@@ -29,9 +29,7 @@ class TestWindowsShareAdapter:
         assert result == "/mnt/server/share/logs/app.log"
 
     def test_backslash_normalization(self):
-        settings = WindowsShareSettings(
-            allowed_unc_prefixes=["\\\\fileserver\\logs"]
-        )
+        settings = WindowsShareSettings(allowed_unc_prefixes=["\\\\fileserver\\logs"])
         adapter = WindowsShareAdapter(settings)
         assert adapter._is_allowed("//fileserver/logs/app.log") is True
 

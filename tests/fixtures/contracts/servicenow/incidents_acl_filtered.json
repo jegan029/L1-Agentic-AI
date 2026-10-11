@@ -1,0 +1,161 @@
+{
+  "note": "Shape observed on a developer instance: pages are cut before access controls are applied, so a page can be short or empty while rows remain. Values are made up.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident",
+        "query": {
+          "sysparm_limit": "2",
+          "sysparm_offset": "0"
+        }
+      },
+      "response": {
+        "headers": {
+          "X-Total-Count": "5"
+        },
+        "json": {
+          "result": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident",
+        "query": {
+          "sysparm_limit": "2",
+          "sysparm_offset": "2"
+        }
+      },
+      "response": {
+        "headers": {
+          "X-Total-Count": "5"
+        },
+        "json": {
+          "result": [
+            {
+              "sys_id": {
+                "display_value": "00000000000000000000000000000003",
+                "value": "00000000000000000000000000000003"
+              },
+              "number": {
+                "display_value": "INC0000003",
+                "value": "INC0000003"
+              },
+              "short_description": {
+                "display_value": "MQ queue depth high on ORDER.REQUEST (3)",
+                "value": "MQ queue depth high on ORDER.REQUEST (3)"
+              },
+              "description": {
+                "display_value": "Queue manager QMPROD01.",
+                "value": "Queue manager QMPROD01."
+              },
+              "category": {
+                "display_value": "Middleware",
+                "value": "middleware"
+              },
+              "subcategory": {
+                "display_value": "MQ",
+                "value": "mq"
+              },
+              "cmdb_ci": {
+                "display_value": "OrderService",
+                "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "assignment_group": {
+                "display_value": "L1-Middleware-Support",
+                "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "priority": {
+                "display_value": "3 - Moderate",
+                "value": "3"
+              },
+              "state": {
+                "display_value": "New",
+                "value": "1"
+              },
+              "caller_id": {
+                "display_value": "Monitoring",
+                "value": "cccccccccccccccccccccccccccccccc"
+              },
+              "sys_created_on": {
+                "display_value": "2026-03-01 09:03:00",
+                "value": "2026-03-01 09:03:00"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident",
+        "query": {
+          "sysparm_limit": "2",
+          "sysparm_offset": "4"
+        }
+      },
+      "response": {
+        "headers": {
+          "X-Total-Count": "5"
+        },
+        "json": {
+          "result": [
+            {
+              "sys_id": {
+                "display_value": "00000000000000000000000000000005",
+                "value": "00000000000000000000000000000005"
+              },
+              "number": {
+                "display_value": "INC0000005",
+                "value": "INC0000005"
+              },
+              "short_description": {
+                "display_value": "MQ queue depth high on ORDER.REQUEST (5)",
+                "value": "MQ queue depth high on ORDER.REQUEST (5)"
+              },
+              "description": {
+                "display_value": "Queue manager QMPROD01.",
+                "value": "Queue manager QMPROD01."
+              },
+              "category": {
+                "display_value": "Middleware",
+                "value": "middleware"
+              },
+              "subcategory": {
+                "display_value": "MQ",
+                "value": "mq"
+              },
+              "cmdb_ci": {
+                "display_value": "OrderService",
+                "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              },
+              "assignment_group": {
+                "display_value": "L1-Middleware-Support",
+                "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              },
+              "priority": {
+                "display_value": "3 - Moderate",
+                "value": "3"
+              },
+              "state": {
+                "display_value": "New",
+                "value": "1"
+              },
+              "caller_id": {
+                "display_value": "Monitoring",
+                "value": "cccccccccccccccccccccccccccccccc"
+              },
+              "sys_created_on": {
+                "display_value": "2026-03-01 09:05:00",
+                "value": "2026-03-01 09:05:00"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

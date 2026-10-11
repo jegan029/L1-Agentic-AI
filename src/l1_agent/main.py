@@ -1,369 +1,316 @@
-"""Main service: webhook listener + polling worker for L1 Virtual Engineer Agent."""
+"""Service assembly: HTTP listener, ServiceNow poller and run workers."""
 
 from __future__ import annotations
 
 import asyncio
-import json
-import signal
-from typing import Any, Dict
-
-import json
-import aiohttp_cors
-from aiohttp import web
 from pathlib import Path
+from typing import List, Optional
 
-from src.l1_agent.adapters.autosys_adapter import AutosysAdapter
-from src.l1_agent.adapters.base import BaseAdapter
-from src.l1_agent.adapters.dynatrace_adapter import DynatraceAdapter
-from src.l1_agent.adapters.ir360_adapter import IR360Adapter
-from src.l1_agent.adapters.mainframe_adapter import MainframeAdapter
-from src.l1_agent.adapters.mock_adapters import (
-    MockAutosysAdapter,
-    MockDynatraceAdapter,
-    MockIR360Adapter,
-    MockMainframeAdapter,
-    MockSplunkAdapter,
-    MockWebUIScraperAdapter,
-    MockWindowsShareAdapter,
-)
-from src.l1_agent.adapters.splunk_adapter import SplunkAdapter
-from src.l1_agent.adapters.webui_scraper_adapter import WebUIScraperAdapter
-from src.l1_agent.adapters.windows_share_adapter import WindowsShareAdapter
-from src.l1_agent.ai.ai_executor import AIExecutor
+import httpx
+import uvicorn
+from fastapi import FastAPI
+
 from src.l1_agent.ai.analyzer import AIAnalyzer
 from src.l1_agent.ai.llm_client import LLMClient
 from src.l1_agent.ai.mock_llm import MockLLMClient
+from src.l1_agent.api.app import AppContext, create_app
+from src.l1_agent.api.security import demo_open, validate_security_config, webhook_open
+from src.l1_agent.audit.log import Actor
+from src.l1_agent.auth.oidc import OidcClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
-from src.l1_agent.config.settings import Settings
+from src.l1_agent.config.settings import ConfigError, ServiceNowSettings, Settings
+from src.l1_agent.connectors.catalog import connectors_for_adapters
+from src.l1_agent.connectors.hub import ConnectorHub, servicenow_secrets
+from src.l1_agent.connectors.sdk.secrets import SecretResolver
+from src.l1_agent.db.engine import Database
+from src.l1_agent.demo import MockServiceNowClient, build_mock_adapters, seed_demo_sops
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.sop_matcher import SOPMatcher
-from src.l1_agent.engine.sop_parser import SOPParser
-from src.l1_agent.models.incident import Incident
-from src.l1_agent.engine.resolution_memory import ResolutionMemory
-from src.l1_agent.ui.sop_editor import SOPEditorRoutes
+from src.l1_agent.escalation.l2_router import L2Router
+from src.l1_agent.service.runs import DbEventBus, RunService
+from src.l1_agent.sop import ingest
 from src.l1_agent.utils.logging import get_logger, setup_logging
-from src.l1_agent.utils.metrics import metrics
 from src.l1_agent.utils.retry import CircuitBreaker
 from src.l1_agent.utils.secrets import SecretsProvider
-from src.l1_agent.events.event_bus import EventBus
-from src.l1_agent.store.incident_history import IncidentHistoryStore
-from src.l1_agent.escalation.l2_router import L2Router
-from src.l1_agent.api.dashboard import make_dashboard_handler
-from src.l1_agent.api.incidents import make_incidents_handler
-from src.l1_agent.api.sops import make_sops_handler
-from src.l1_agent.api.stream import handle_stream
 
 logger = get_logger("main")
 
+POLLER = Actor.system("poller")
+
+
+def check_servicenow_config(snow: ServiceNowSettings, references: tuple = ()) -> None:
+    """Refuse a real ServiceNow connection that is incomplete or unscoped.
+
+    Without an assignment group the poller would pick up every new incident on
+    the instance, write work notes to it and reassign it. `references` names
+    the credentials that are supplied as references instead of values.
+    """
+    required = [
+        ("SERVICENOW_BASE_URL", snow.base_url),
+        ("SERVICENOW_ASSIGNMENT_GROUP", snow.assignment_group),
+    ]
+    if snow.auth == "oauth":
+        required += [
+            ("SERVICENOW_OAUTH_CLIENT_ID", snow.oauth_client_id),
+            (
+                "SERVICENOW_OAUTH_CLIENT_SECRET",
+                snow.oauth_client_secret or "client_secret" in references,
+            ),
+        ]
+    else:
+        required += [
+            ("SERVICENOW_USERNAME", snow.username),
+            ("SERVICENOW_PASSWORD", snow.password or "password" in references),
+        ]
+    missing = [name for name, value in required if not value]
+    if missing:
+        raise ConfigError("ServiceNow connection needs: " + ", ".join(missing))
+    if not snow.base_url.lower().startswith("https://"):
+        raise ConfigError("SERVICENOW_BASE_URL must start with https://")
+
 
 class L1AgentService:
-    """Main service that manages the webhook listener and polling worker."""
+    """Builds the engine and, once `setup` has run, the HTTP application around it."""
 
     def __init__(self, settings: Settings) -> None:
+        validate_security_config(settings)
         self._settings = settings
-        self._snow_client = ServiceNowClient(settings.servicenow)
-        self._sop_matcher = SOPMatcher(settings.agent.sop_confidence_threshold)
-        self._sop_parser = SOPParser()
-        self._adapters = self._build_adapters(settings)
-        self._circuit_breakers = self._build_circuit_breakers(settings)
-        self._event_bus = EventBus()
-        self._history_store = IncidentHistoryStore()
-        self._l2_router = L2Router()
-        self._executor = SOPExecutor(
-            adapters=self._adapters,
-            circuit_breakers=self._circuit_breakers,
-            retry_max_attempts=settings.agent.retry_max_attempts,
-            retry_base_delay=settings.agent.retry_base_delay_seconds,
-            event_bus=self._event_bus,
-        )
-        # Wire AI components when LLM is enabled
-        self._llm_client = None
-        ai_analyzer = None
-        ai_executor = None
-        if settings.llm.enabled:
-            if settings.agent.demo_mode:
-                self._llm_client = MockLLMClient()
-                logger.info("AI mode enabled (demo: using MockLLMClient)")
-            else:
-                self._llm_client = LLMClient(settings.llm)
-                logger.info("AI mode enabled (endpoint: %s)", settings.llm.endpoint)
-            ai_analyzer = AIAnalyzer(self._llm_client)
-            ai_executor = AIExecutor(
-                llm_client=self._llm_client,
-                adapters=self._adapters,
-            )
 
-        self._memory = ResolutionMemory()
-        # In demo mode, pre-load sample SOPs from disk so incidents resolve properly
-        demo_sop_cache = self._load_demo_sops() if settings.agent.demo_mode else None
-
-        if settings.crewai.enabled:
-            from src.l1_agent.crew.crew_processor import CrewIncidentProcessor
-            logger.info(
-                "CrewAI mode enabled (model: %s, verbose: %s)",
-                settings.crewai.model,
-                settings.crewai.verbose,
-            )
-            self._processor = CrewIncidentProcessor(
-                snow_client=self._snow_client,
-                crewai_settings=settings.crewai,
-                sops=demo_sop_cache or [],
-                adapters=self._adapters,
-                event_bus=self._event_bus,
-                history_store=self._history_store,
-                l2_router=self._l2_router,
+        # Demo mode has no ServiceNow: notes and updates go to an in-memory stand-in.
+        # SERVICENOW_LIVE_IN_DEMO connects demo mode to a real instance for testing.
+        # Credentials given as references are read when needed, so a rotation takes effect.
+        self._resolver = SecretResolver.from_settings(settings.secrets)
+        self._live_servicenow = not settings.agent.demo_mode or settings.servicenow.live_in_demo
+        if self._live_servicenow:
+            itsm_secrets = servicenow_secrets(settings, self._resolver)
+            check_servicenow_config(settings.servicenow, itsm_secrets.slots if itsm_secrets else ())
+            self._snow_client = ServiceNowClient(
+                settings.servicenow, itsm_secrets, demo_mode=settings.agent.demo_mode
             )
         else:
-            self._processor = IncidentProcessor(
-                snow_client=self._snow_client,
-                sop_matcher=self._sop_matcher,
-                sop_parser=self._sop_parser,
-                executor=self._executor,
-                sop_cache=demo_sop_cache,
-                confidence_threshold=settings.agent.sop_confidence_threshold,
-                llm_client=self._llm_client,
-                ai_analyzer=ai_analyzer,
-                ai_executor=ai_executor,
-                memory=self._memory,
-                event_bus=self._event_bus,
-                history_store=self._history_store,
-                l2_router=self._l2_router,
-            )
-        self._running = False
-        self._semaphore = asyncio.Semaphore(settings.agent.max_concurrent_incidents)
+            self._snow_client = MockServiceNowClient()
+        self._hub: Optional[ConnectorHub] = None
 
-    def _load_demo_sops(self) -> list:
-        """Load all JSON SOPs from data/sample_sops/ for demo mode."""
-        from src.l1_agent.models.sop import SOP
-        sops = []
-        # Use path relative to this file so it works regardless of cwd
-        sop_dir = Path(__file__).resolve().parent.parent.parent / "data" / "sample_sops"
-        if not sop_dir.exists():
-            # Fallback to cwd-relative path
-            sop_dir = Path("data/sample_sops")
-        if not sop_dir.exists():
-            logger.warning("Demo SOP directory not found: %s", sop_dir)
-            return sops
-        for f in sop_dir.glob("*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                sops.append(SOP.from_dict(data))
-                logger.info("Demo: loaded SOP %s from %s", data.get("sop_id", f.name), f.name)
-            except Exception as exc:
-                logger.error("Failed to load demo SOP %s: %s", f.name, exc)
-        logger.info("Demo mode: pre-loaded %d SOPs", len(sops))
-        return sops
+        # The model only advises on SOP ranking; it never executes anything.
+        self._llm_client: Optional[LLMClient] = None
+        if settings.llm.enabled:
+            if settings.agent.demo_mode and not settings.llm.api_key:
+                self._llm_client = MockLLMClient()
+                logger.info("Model advice enabled (demo: deterministic mock)")
+            elif settings.llm.endpoint and settings.llm.api_key:
+                self._llm_client = LLMClient(settings.llm)
+                logger.info("Model advice enabled (model=%s)", settings.llm.model)
+            else:
+                logger.warning("LLM_ENABLED is true but no endpoint or key is set; model disabled")
 
-    def _build_adapters(self, settings: Settings) -> Dict[str, BaseAdapter]:
-        if settings.agent.demo_mode:
-            logger.info("Demo mode: using mock adapters")
-            return {
-                "splunk": MockSplunkAdapter(),
-                "ir360": MockIR360Adapter(),
-                "windows_share": MockWindowsShareAdapter(),
-                "autosys": MockAutosysAdapter(),
-                "dynatrace": MockDynatraceAdapter(),
-                "webui": MockWebUIScraperAdapter(),
-                "mainframe": MockMainframeAdapter(),
-            }
-        return {
-            "splunk": SplunkAdapter(settings.splunk),
-            "ir360": IR360Adapter(settings.ir360),
-            "windows_share": WindowsShareAdapter(settings.windows_share),
-            "autosys": AutosysAdapter(settings.autosys),
-            "dynatrace": DynatraceAdapter(settings.dynatrace),
-            "webui": WebUIScraperAdapter(settings.webui),
-            "mainframe": MainframeAdapter(settings.mainframe),
-        }
+        self._db: Optional[Database] = None
+        self._http: Optional[httpx.AsyncClient] = None
+        self._ctx: Optional[AppContext] = None
+        self._stop = asyncio.Event()
 
-    def _build_circuit_breakers(self, settings: Settings) -> Dict[str, CircuitBreaker]:
-        cb_args = {
-            "failure_threshold": settings.agent.circuit_breaker_failure_threshold,
-            "reset_timeout_seconds": settings.agent.circuit_breaker_reset_seconds,
-        }
-        return {
-            "splunk": CircuitBreaker(**cb_args),
-            "ir360": CircuitBreaker(**cb_args),
-            "windows_share": CircuitBreaker(**cb_args),
-            "autosys": CircuitBreaker(**cb_args),
-            "dynatrace": CircuitBreaker(**cb_args),
-            "webui": CircuitBreaker(**cb_args),
-            "mainframe": CircuitBreaker(**cb_args),
-        }
+    # ── Engine ────────────────────────────────────────────────────────
 
-    # ── Webhook listener ──────────────────────────────────────────────
-
-    async def _handle_webhook(self, request: web.Request) -> web.Response:
-        """Handle incoming ServiceNow webhook POST."""
-        try:
-            payload = await request.json()
-        except json.JSONDecodeError:
-            return web.json_response({"error": "Invalid JSON"}, status=400)
-
-        incident = Incident.from_servicenow(payload)
-        if not incident.number:
-            return web.json_response({"error": "Missing incident number"}, status=400)
-
-        logger.info("Webhook received incident: %s", incident.number)
-        asyncio.create_task(self._process_with_semaphore(incident))
-        return web.json_response({"status": "accepted", "incident": incident.number})
-
-    async def _handle_health(self, request: web.Request) -> web.Response:
-        return web.json_response({
-            "status": "healthy",
-            "metrics": metrics.snapshot(),
-            "memory": self._memory.stats(),
-        })
-
-    async def _handle_metrics(self, request: web.Request) -> web.Response:
-        """Prometheus-compatible /metrics endpoint for Grafana scraping."""
-        return web.Response(
-            text=metrics.prometheus_text(),
-            content_type="text/plain",
-            charset="utf-8",
+    def _build_processor(self, db: Database, hub: ConnectorHub) -> IncidentProcessor:
+        settings = self._settings
+        agent = settings.agent
+        events = DbEventBus(db)
+        return IncidentProcessor(
+            snow_client=self._snow_client,  # type: ignore[arg-type]
+            sop_matcher=SOPMatcher(agent.sop_confidence_threshold),
+            sop_parser=None,
+            executor=SOPExecutor(
+                connectors=hub,
+                breaker_factory=lambda: CircuitBreaker(
+                    failure_threshold=agent.circuit_breaker_failure_threshold,
+                    reset_timeout_seconds=agent.circuit_breaker_reset_seconds,
+                ),
+                retry_max_attempts=agent.retry_max_attempts,
+                retry_base_delay=agent.retry_base_delay_seconds,
+                event_bus=events,
+            ),
+            confidence_threshold=agent.sop_confidence_threshold,
+            llm_client=self._llm_client,
+            ai_analyzer=AIAnalyzer(self._llm_client) if self._llm_client else None,
+            event_bus=events,
+            l2_router=L2Router(Path(agent.l2_routing_path))
+            if agent.l2_routing_path
+            else L2Router(),
         )
 
-    def _create_app(self) -> web.Application:
-        app = web.Application()
-        app["event_bus"] = self._event_bus
-        app["history_store"] = self._history_store
+    # ── Set-up ────────────────────────────────────────────────────────
 
-        # Existing routes
-        app.router.add_post("/webhook/incident", self._handle_webhook)
-        app.router.add_get("/health", self._handle_health)
-        app.router.add_get("/metrics", self._handle_metrics)
+    async def setup(self) -> AppContext:
+        """Connect to the database and build everything that depends on it."""
+        if self._ctx is not None:
+            return self._ctx
+        settings = self._settings
+        demo = settings.agent.demo_mode
+        db = Database.create(settings.database.url, demo_mode=demo)
+        self._db = db
+        if db.is_postgres:
+            # Tenant isolation depends on the role this process connects as.
+            await db.check_role_is_safe()
+            tenant_id = await db.tenant_id_for(settings.database.tenant_slug)
+            if tenant_id is None:
+                raise ConfigError(
+                    f"Tenant '{settings.database.tenant_slug}' does not exist. Create it with "
+                    "`l1-agent tenant create` using the migration role."
+                )
+        else:
+            await db.create_schema_for_demo()
+            tenant_id = await db.ensure_tenant(settings.database.tenant_slug, "Demo tenant")
+        if demo:
+            # Demo mode starts with the sample SOPs published and one waiting for review.
+            await seed_demo_sops(db, tenant_id)
+            logger.info("Demo mode: mock connectors and the sample SOPs")
 
-        # Dashboard API routes
-        app.router.add_get("/api/dashboard/summary", make_dashboard_handler(self._history_store))
-        app.router.add_get("/api/incidents", make_incidents_handler(self._history_store))
-        app.router.add_get("/api/incidents/{incident_number}", make_incidents_handler(self._history_store))
-        app.router.add_get("/api/sops/stats", make_sops_handler(self._history_store))
-        app.router.add_get("/api/stream", handle_stream)
+        self._hub = ConnectorHub(
+            db,
+            settings,
+            self._resolver,
+            fixed=connectors_for_adapters(build_mock_adapters()) if demo else None,
+        )
+        runs = RunService(
+            db,
+            self._build_processor(db, self._hub),
+            visibility_timeout_seconds=settings.worker.visibility_timeout_seconds,
+            max_attempts=settings.worker.max_attempts,
+            sops_from_store=True,
+        )
+        oidc = saml = None
+        if settings.auth.oidc_issuer:
+            self._http = httpx.AsyncClient(timeout=10.0, follow_redirects=False)
+            oidc = OidcClient(settings.auth, self._http, allow_http=demo)
+        if settings.auth.saml_idp_metadata_path:
+            from src.l1_agent.auth.saml import SamlProvider
 
-        SOPEditorRoutes(sop_dir="data/sample_sops").register(app)
+            saml = SamlProvider(settings.auth, allow_http=demo)
+        self._ctx = AppContext(
+            settings=settings,
+            db=db,
+            runs=runs,
+            tenant_id=tenant_id,
+            oidc=oidc,
+            saml=saml,
+            demo_open=demo_open(settings),
+            webhook_open=webhook_open(settings),
+            hub=self._hub,
+            itsm=self._snow_client,
+        )
+        return self._ctx
 
-        # CORS — allow all origins (demo/showcase mode)
-        cors = aiohttp_cors.setup(app, defaults={
-            "*": aiohttp_cors.ResourceOptions(
-                allow_credentials=False,
-                expose_headers="*",
-                allow_headers="*",
-                allow_methods=["GET", "POST", "OPTIONS"],
-            )
-        })
-        for route in list(app.router.routes()):
-            try:
-                cors.add(route)
-            except Exception:
-                pass
+    async def create_app(self) -> FastAPI:
+        return create_app(await self.setup())
 
-        return app
+    async def close(self) -> None:
+        await self._snow_client.close()
+        if self._llm_client is not None:
+            await self._llm_client.close()
+        if self._http is not None:
+            await self._http.aclose()
+        if self._hub is not None:
+            await self._hub.close()
+        if self._db is not None:
+            await self._db.close()
 
-    # ── Polling worker ────────────────────────────────────────────────
+    # ── Background work ───────────────────────────────────────────────
 
-    async def _poll_loop(self) -> None:
-        """Continuously poll ServiceNow for new incidents."""
+    async def _poll_loop(self, ctx: AppContext) -> None:
+        """Poll ServiceNow for new incidents and queue each one once."""
         interval = self._settings.servicenow.poll_interval_seconds
         logger.info("Starting poll loop (interval=%ds)", interval)
-
-        while self._running:
+        while not self._stop.is_set():
             try:
-                incidents = await self._snow_client.get_new_incidents()
-                if incidents:
-                    logger.info("Polled %d new incident(s)", len(incidents))
-                for inc in incidents:
-                    asyncio.create_task(self._process_with_semaphore(inc))
+                for incident in await self._snow_client.get_new_incidents():
+                    result = await ctx.runs.ingest(ctx.tenant_id, incident, POLLER)
+                    if result.accepted:
+                        logger.info("Polled incident %s queued", incident.number)
             except Exception as exc:
                 logger.error("Poll cycle error: %s", exc)
-
-            await asyncio.sleep(interval)
-
-    async def _process_with_semaphore(self, incident: Incident) -> None:
-        """Process an incident with concurrency control."""
-        async with self._semaphore:
             try:
-                await self._processor.process_incident(incident)
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    async def _knowledge_loop(self, ctx: AppContext) -> None:
+        """Pull changed articles from the knowledge sources and add them as drafts."""
+        interval = self._settings.knowledge.sync_interval_seconds
+        logger.info("Starting knowledge sync (interval=%ds)", interval)
+        while not self._stop.is_set():
+            try:
+                sources = await ctx.hub.knowledge_sources(ctx.tenant_id, ctx.itsm)
+                for result in await ingest.sync_all(ctx.db, ctx.tenant_id, sources):
+                    if result.drafts or result.errors:
+                        logger.info("Knowledge sync: %s", result.to_dict())
             except Exception as exc:
-                logger.error(
-                    "Unhandled error processing %s: %s", incident.number, exc
-                )
+                logger.error("Knowledge sync error: %s", exc)
+            try:
+                await asyncio.wait_for(self._stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
+
+    def start_workers(self, ctx: AppContext) -> List[asyncio.Task]:
+        worker = self._settings.worker
+        return [
+            asyncio.create_task(ctx.runs.run_worker(self._stop, worker.poll_interval_seconds))
+            for _ in range(max(1, self._settings.agent.max_concurrent_incidents))
+        ]
 
     # ── Lifecycle ─────────────────────────────────────────────────────
 
     async def start(self) -> None:
-        """Start both the webhook server and the polling worker."""
-        self._running = True
-        setup_logging(self._settings.agent.log_level)
-        logger.info("L1 Agent Service starting (demo_mode=%s)", self._settings.agent.demo_mode)
+        """Serve HTTP, and run the poller and the embedded workers, until stopped."""
+        settings = self._settings
+        setup_logging(settings.agent.log_level)
+        logger.info("L1 Agent Service starting (demo_mode=%s)", settings.agent.demo_mode)
+        ctx = await self.setup()
+        app = create_app(ctx)
 
-        app = self._create_app()
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(
-            runner,
-            self._settings.agent.webhook_host,
-            self._settings.agent.webhook_port,
+        tasks: List[asyncio.Task] = []
+        if settings.worker.embedded:
+            tasks += self.start_workers(ctx)
+        if self._live_servicenow:
+            tasks.append(asyncio.create_task(self._poll_loop(ctx)))
+        if settings.knowledge.sync_interval_seconds > 0 and not settings.agent.demo_mode:
+            tasks.append(asyncio.create_task(self._knowledge_loop(ctx)))
+
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=settings.agent.webhook_host,
+                port=settings.agent.webhook_port,
+                log_config=None,
+                access_log=False,
+                server_header=False,
+            )
         )
-        await site.start()
-        logger.info(
-            "Webhook listener on %s:%d",
-            self._settings.agent.webhook_host,
-            self._settings.agent.webhook_port,
-        )
-
-        # Start poll loop as background task
-        poll_task = asyncio.create_task(self._poll_loop())
-
-        # Wait for shutdown signal (Windows-compatible)
-        stop_event = asyncio.Event()
-        loop = asyncio.get_running_loop()
         try:
-            for sig in (signal.SIGINT, signal.SIGTERM):
-                loop.add_signal_handler(sig, stop_event.set)
-        except NotImplementedError:
-            # Windows does not support add_signal_handler; use signal.signal instead
-            import threading
-            def _win_handler(signum, frame):
-                loop.call_soon_threadsafe(stop_event.set)
-            signal.signal(signal.SIGINT, _win_handler)
-            signal.signal(signal.SIGTERM, _win_handler)
-        await stop_event.wait()
+            await server.serve()  # returns on SIGINT or SIGTERM
+        finally:
+            logger.info("Shutting down...")
+            self._stop.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self.close()
 
-        logger.info("Shutting down...")
-        self._running = False
-        poll_task.cancel()
-        await runner.cleanup()
-        await self._snow_client.close()
-        if self._llm_client is not None:
-            await self._llm_client.close()
-
-    async def process_single(self, incident: Incident) -> Dict[str, Any]:
-        """Process a single incident (for demo/testing)."""
+    async def run_worker_only(self) -> None:
+        """A worker process with no listener: `l1-agent worker`."""
         setup_logging(self._settings.agent.log_level)
-        summary = await self._processor.process_incident(incident)
-        await self._snow_client.close()
-        if self._llm_client is not None:
-            await self._llm_client.close()
-        return {
-            "incident_number": summary.incident_number,
-            "outcome": summary.outcome.value,
-            "sop_id": summary.sop_id,
-            "sop_title": summary.sop_title,
-            "steps_executed": len(summary.step_results),
-            "duration_ms": summary.total_duration_ms,
-            "escalation_reason": summary.escalation_reason,
-            "work_note": summary.to_work_note(),
-        }
+        ctx = await self.setup()
+        try:
+            await asyncio.gather(*self.start_workers(ctx))
+        finally:
+            await self.close()
+
+
+def load_settings() -> Settings:
+    # Secrets go straight into the settings object, never into os.environ.
+    return Settings.from_env(secrets=SecretsProvider.from_env().fetch())
 
 
 def main() -> None:
     """Entry point for the L1 Agent Service."""
-    # Inject secrets from vault/SSM before loading settings
-    SecretsProvider.from_env().inject()
-    settings = Settings.from_env()
-    service = L1AgentService(settings)
-    asyncio.run(service.start())
+    asyncio.run(L1AgentService(load_settings()).start())
 
 
 if __name__ == "__main__":

@@ -48,17 +48,19 @@ class TestSOPParser:
     def test_parse_from_servicenow_json_content(self):
         record = {
             "sys_id": "abc123",
-            "sop_content": json.dumps({
-                "sop_id": "SOP-003",
-                "title": "From ServiceNow",
-                "steps": [
-                    {
-                        "step_id": "s1",
-                        "step_type": "SPLUNK_SEARCH",
-                        "parameters": {"query": "index=main"},
-                    }
-                ],
-            }),
+            "sop_content": json.dumps(
+                {
+                    "sop_id": "SOP-003",
+                    "title": "From ServiceNow",
+                    "steps": [
+                        {
+                            "step_id": "s1",
+                            "step_type": "SPLUNK_SEARCH",
+                            "parameters": {"query": "index=main"},
+                        }
+                    ],
+                }
+            ),
         }
         sop = self.parser.parse_from_servicenow(record)
         assert sop is not None

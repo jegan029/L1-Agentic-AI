@@ -1,0 +1,20 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/kb_knowledge"
+      },
+      "response": {
+        "status": 403,
+        "json": {
+          "error": {
+            "message": "Insufficient rights to query records",
+            "detail": ""
+          }
+        }
+      }
+    }
+  ]
+}

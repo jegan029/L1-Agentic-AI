@@ -1,0 +1,18 @@
+# Only src/, the sample SOPs under data/ and the requirements files belong in the image.
+.git
+.env
+.env.*
+!.env.example
+*.log
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.hypothesis
+.coverage
+coverage.xml
+frontend
+tests
+docs
+data/*.jsonl
+data/*.db*

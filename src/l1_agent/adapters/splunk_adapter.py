@@ -85,9 +85,7 @@ class SplunkAdapter(BaseAdapter):
             logger.error("Splunk search failed: %s", exc)
             return AdapterResult(success=False, error=str(exc))
 
-    async def _create_search(
-        self, query: str, time_range: Dict[str, str]
-    ) -> str:
+    async def _create_search(self, query: str, time_range: Dict[str, str]) -> str:
         """Create a Splunk search job and return the SID."""
         url = f"{self._base_url}/services/search/jobs"
         payload = {
@@ -161,5 +159,5 @@ class SplunkAdapter(BaseAdapter):
         snippet_lines = []
         for i, row in enumerate(results[:5]):
             raw = row.get("_raw", str(row))
-            snippet_lines.append(f"  [{i+1}] {raw[:200]}")
+            snippet_lines.append(f"  [{i + 1}] {raw[:200]}")
         return f"Splunk search returned {count} result(s):\n" + "\n".join(snippet_lines)

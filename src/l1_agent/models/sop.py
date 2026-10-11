@@ -16,8 +16,36 @@ class StepType(Enum):
     DYNATRACE_METRICS = "DYNATRACE_METRICS"
     WEB_UI_CHECK = "WEB_UI_CHECK"
     MAINFRAME_CHECK = "MAINFRAME_CHECK"
+    # A read check that names a connector capability in `capability`.
+    CHECK = "CHECK"
     DECISION = "DECISION"
     NOTE = "NOTE"
+    # Runs a read check and applies an assertion. The only route to RESOLVE.
+    VERIFY = "VERIFY"
+    # Explicit terminal steps.
+    ESCALATE = "ESCALATE"
+    RESOLVE = "RESOLVE"
+
+
+# Step types that call a tool adapter.
+CHECK_STEP_TYPES = frozenset(
+    {
+        StepType.SPLUNK_SEARCH.value,
+        StepType.MQ_CHECK.value,
+        StepType.FILE_CHECK.value,
+        StepType.AUTOSYS_STATUS.value,
+        StepType.DYNATRACE_VM_CHECK.value,
+        StepType.DYNATRACE_METRICS.value,
+        StepType.WEB_UI_CHECK.value,
+        StepType.MAINFRAME_CHECK.value,
+    }
+)
+# Every step type that calls a connector: the typed ones above and the generic CHECK.
+CONNECTOR_STEP_TYPES = CHECK_STEP_TYPES | {StepType.CHECK.value}
+TERMINAL_STEP_TYPES = frozenset({StepType.ESCALATE.value, StepType.RESOLVE.value})
+
+SOP_STATUS_PUBLISHED = "published"
+SOP_STATUS_DRAFT = "draft"
 
 
 @dataclass
@@ -33,10 +61,29 @@ class SOPStep:
     on_failure: str = ""
     requires_approval: bool = False
     timeout_seconds: int = 60
+    # For a CHECK step: the connector capability id, for example "splunk.search".
+    capability: str = ""
+
+    def to_dict(self) -> dict:
+        data = {
+            "step_id": self.step_id,
+            "step_type": self.step_type,
+            "description": self.description,
+            "parameters": self.parameters,
+            "expected_output": self.expected_output,
+            "on_success": self.on_success,
+            "on_failure": self.on_failure,
+            "requires_approval": self.requires_approval,
+            "timeout_seconds": self.timeout_seconds,
+        }
+        if self.capability:
+            data["capability"] = self.capability
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "SOPStep":
         return cls(
+            capability=data.get("capability", ""),
             step_id=data.get("step_id", ""),
             step_type=data.get("step_type", ""),
             description=data.get("description", ""),
@@ -47,6 +94,49 @@ class SOPStep:
             requires_approval=data.get("requires_approval", False),
             timeout_seconds=data.get("timeout_seconds", 60),
         )
+
+
+@dataclass
+class ParameterSpec:
+    """A typed SOP parameter, bound from the ticket before any step runs.
+
+    ``source`` is one of:
+      {"kind": "ticket_field", "field": "<incident field>"}
+      {"kind": "extraction", "fields": [...], "regex": "<pattern with one group>"}
+      {"kind": "constant", "value": ...}
+    A string parameter without ``pattern`` is held to a conservative default.
+    """
+
+    name: str = ""
+    type: str = "string"
+    source: Dict[str, Any] = field(default_factory=dict)
+    pattern: str = ""
+    enum: List[Any] = field(default_factory=list)
+    max_length: int = 128
+    description: str = ""
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ParameterSpec":
+        return cls(
+            name=data.get("name", ""),
+            type=data.get("type", "string"),
+            source=data.get("source", {}),
+            pattern=data.get("pattern", ""),
+            enum=data.get("enum", []),
+            max_length=data.get("max_length", 128),
+            description=data.get("description", ""),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "name": self.name,
+            "type": self.type,
+            "source": self.source,
+            "pattern": self.pattern,
+            "enum": self.enum,
+            "max_length": self.max_length,
+            "description": self.description,
+        }
 
 
 @dataclass
@@ -83,10 +173,18 @@ class SOP:
     steps: List[SOPStep] = field(default_factory=list)
     pre_checks: List[str] = field(default_factory=list)
     tools_required: List[str] = field(default_factory=list)
-    escalation_criteria: EscalationCriteria = field(
-        default_factory=EscalationCriteria
-    )
+    escalation_criteria: EscalationCriteria = field(default_factory=EscalationCriteria)
     version: str = "1.0"
+    parameters: List[ParameterSpec] = field(default_factory=list)
+    # A draft is never matched and never executed.
+    status: str = SOP_STATUS_PUBLISHED
+    # SHA-256 of the published version's canonical content. Empty for an SOP that
+    # did not come from the version store (tests, files).
+    content_hash: str = ""
+
+    @property
+    def is_draft(self) -> bool:
+        return self.status != SOP_STATUS_PUBLISHED
 
     @classmethod
     def from_dict(cls, data: dict) -> "SOP":
@@ -100,34 +198,23 @@ class SOP:
             steps=[SOPStep.from_dict(s) for s in data.get("steps", [])],
             pre_checks=data.get("pre_checks", []),
             tools_required=data.get("tools_required", []),
-            escalation_criteria=EscalationCriteria.from_dict(
-                data.get("escalation_criteria", {})
-            ),
+            escalation_criteria=EscalationCriteria.from_dict(data.get("escalation_criteria", {})),
             version=data.get("version", "1.0"),
+            parameters=[ParameterSpec.from_dict(p) for p in data.get("parameters", [])],
+            status=data.get("status", SOP_STATUS_PUBLISHED),
         )
 
     def to_dict(self) -> dict:
         return {
             "sop_id": self.sop_id,
             "title": self.title,
+            "status": self.status,
             "applicable_services": self.applicable_services,
             "applicable_categories": self.applicable_categories,
             "applicable_assignment_groups": self.applicable_assignment_groups,
             "keywords": self.keywords,
-            "steps": [
-                {
-                    "step_id": s.step_id,
-                    "step_type": s.step_type,
-                    "description": s.description,
-                    "parameters": s.parameters,
-                    "expected_output": s.expected_output,
-                    "on_success": s.on_success,
-                    "on_failure": s.on_failure,
-                    "requires_approval": s.requires_approval,
-                    "timeout_seconds": s.timeout_seconds,
-                }
-                for s in self.steps
-            ],
+            "parameters": [p.to_dict() for p in self.parameters],
+            "steps": [s.to_dict() for s in self.steps],
             "pre_checks": self.pre_checks,
             "tools_required": self.tools_required,
             "escalation_criteria": {

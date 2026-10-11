@@ -17,8 +17,7 @@ from src.l1_agent.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from src.l1_agent.clients.servicenow_client import ServiceNowClient
-    from src.l1_agent.events.event_bus import EventBus
-    from src.l1_agent.store.incident_history import IncidentHistoryStore
+    from src.l1_agent.engine.journal import EventPublisher
 
 logger = get_logger("escalator")
 
@@ -30,8 +29,7 @@ async def escalate_to_l2(
     l2_router: L2Router,
     sop_name: Optional[str] = None,
     confidence: Optional[float] = None,
-    event_bus: Optional["EventBus"] = None,
-    history_store: Optional["IncidentHistoryStore"] = None,
+    event_bus: Optional["EventPublisher"] = None,
     snow_client: Optional["ServiceNowClient"] = None,
 ) -> None:
     """Perform all L2 escalation side-effects in one call.
@@ -39,8 +37,7 @@ async def escalate_to_l2(
     1. Resolve the L2 team from the ticket's CI via L2Router.
     2. Update the SNOW ticket's assignment group.
     3. Send an escalation email (best-effort).
-    4. Record the incident in the history store (if not already recorded).
-    5. Emit an enriched ``incident_escalated`` SSE event.
+    4. Emit an enriched ``incident_escalated`` event.
     """
     l2_team = l2_router.resolve_l2_team(incident.cmdb_ci or "")
     logger.info(
@@ -59,29 +56,26 @@ async def escalate_to_l2(
                 {"assignment_group": l2_team["name"]},
             )
         except Exception as exc:
-            logger.warning(
-                "Failed to update SNOW assignment for %s: %s", incident.number, exc
-            )
+            logger.warning("Failed to update SNOW assignment for %s: %s", incident.number, exc)
 
     # Send email notification (best-effort)
     subject = f"[L1 Agent] Escalation: {incident.number} — {incident.short_description}"
     body = _build_email_body(incident, summary, reason, l2_team, sop_name, confidence)
     email_sent = send_escalation_email(l2_team["email"], subject, body)
 
-    # Record in history store
-    if history_store:
-        await history_store.record(incident, summary)
-
     # Emit enriched SSE event
     if event_bus:
-        await event_bus.publish({
-            "type": "incident_escalated",
-            "incident_number": incident.number,
-            "reason": reason,
-            "l2_team_name": l2_team["name"],
-            "l2_team_email": l2_team["email"],
-            "email_sent": email_sent,
-        })
+        await event_bus.publish(
+            {
+                "type": "incident_escalated",
+                "incident_number": incident.number,
+                "reason": reason,
+                "outcome": summary.outcome_label,
+                "l2_team_name": l2_team["name"],
+                "l2_team_email": l2_team["email"],
+                "email_sent": email_sent,
+            }
+        )
 
 
 def _build_email_body(
@@ -111,6 +105,6 @@ def _build_email_body(
         "",
         "Please investigate and take appropriate action.",
         "",
-        "— L1 Virtual Engineer Agent (State Street Operations)",
+        "— L1 Engineer Agent",
     ]
     return "\n".join(lines)

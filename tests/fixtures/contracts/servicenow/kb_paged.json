@@ -1,0 +1,151 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/kb_knowledge",
+        "query": {
+          "sysparm_query": "workflow_state=published^ORDERBYsys_updated_on",
+          "sysparm_limit": "2",
+          "sysparm_offset": "0"
+        }
+      },
+      "response": {
+        "json": {
+          "result": [
+            {
+              "sys_id": {
+                "display_value": "00000000000000000000000000000001",
+                "value": "00000000000000000000000000000001"
+              },
+              "number": {
+                "display_value": "KB0000001",
+                "value": "KB0000001"
+              },
+              "short_description": {
+                "display_value": "Runbook 1",
+                "value": "Runbook 1"
+              },
+              "text": {
+                "display_value": "<p>Check the queue depth.</p><p>Escalate.</p>",
+                "value": "<p>Check the queue depth.</p><p>Escalate.</p>"
+              },
+              "sys_updated_on": {
+                "display_value": "2026-03-01 08:00:00",
+                "value": "2026-03-01 08:00:00"
+              },
+              "sys_mod_count": {
+                "display_value": "1",
+                "value": "1"
+              },
+              "meta": {
+                "display_value": "queue depth, mq",
+                "value": "queue depth, mq"
+              },
+              "category": {
+                "display_value": "Middleware",
+                "value": "Middleware"
+              },
+              "cmdb_ci": {
+                "display_value": "",
+                "value": ""
+              }
+            },
+            {
+              "sys_id": {
+                "display_value": "00000000000000000000000000000002",
+                "value": "00000000000000000000000000000002"
+              },
+              "number": {
+                "display_value": "KB0000002",
+                "value": "KB0000002"
+              },
+              "short_description": {
+                "display_value": "Runbook 2",
+                "value": "Runbook 2"
+              },
+              "text": {
+                "display_value": "{\"sop_id\": \"SOP-KB-STRUCT\", \"title\": \"Structured runbook\", \"keywords\": [\"structured\"], \"steps\": [{\"step_id\": \"s1\", \"step_type\": \"ESCALATE\", \"parameters\": {\"reason\": \"to L2\"}}]}",
+                "value": "{\"sop_id\": \"SOP-KB-STRUCT\", \"title\": \"Structured runbook\", \"keywords\": [\"structured\"], \"steps\": [{\"step_id\": \"s1\", \"step_type\": \"ESCALATE\", \"parameters\": {\"reason\": \"to L2\"}}]}"
+              },
+              "sys_updated_on": {
+                "display_value": "2026-03-02 08:00:00",
+                "value": "2026-03-02 08:00:00"
+              },
+              "sys_mod_count": {
+                "display_value": "2",
+                "value": "2"
+              },
+              "meta": {
+                "display_value": "queue depth, mq",
+                "value": "queue depth, mq"
+              },
+              "category": {
+                "display_value": "Middleware",
+                "value": "Middleware"
+              },
+              "cmdb_ci": {
+                "display_value": "",
+                "value": ""
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/kb_knowledge",
+        "query": {
+          "sysparm_offset": "2"
+        }
+      },
+      "response": {
+        "json": {
+          "result": [
+            {
+              "sys_id": {
+                "display_value": "00000000000000000000000000000003",
+                "value": "00000000000000000000000000000003"
+              },
+              "number": {
+                "display_value": "KB0000003",
+                "value": "KB0000003"
+              },
+              "short_description": {
+                "display_value": "Runbook 3",
+                "value": "Runbook 3"
+              },
+              "text": {
+                "display_value": "<h1>Disk</h1>Free space.",
+                "value": "<h1>Disk</h1>Free space."
+              },
+              "sys_updated_on": {
+                "display_value": "2026-03-03 08:00:00",
+                "value": "2026-03-03 08:00:00"
+              },
+              "sys_mod_count": {
+                "display_value": "3",
+                "value": "3"
+              },
+              "meta": {
+                "display_value": "queue depth, mq",
+                "value": "queue depth, mq"
+              },
+              "category": {
+                "display_value": "Middleware",
+                "value": "Middleware"
+              },
+              "cmdb_ci": {
+                "display_value": "",
+                "value": ""
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

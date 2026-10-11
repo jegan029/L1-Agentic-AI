@@ -1,0 +1,35 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "status": 503,
+        "text": "<html><body>Your instance is hibernating</body></html>"
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "status": 503,
+        "text": "<html><body>Your instance is hibernating</body></html>"
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "status": 503,
+        "text": "<html><body>Your instance is hibernating</body></html>"
+      }
+    }
+  ]
+}

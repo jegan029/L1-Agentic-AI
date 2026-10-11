@@ -15,6 +15,10 @@ logger = get_logger("autosys_adapter")
 
 # Read-only commands that are safe to execute
 SAFE_COMMANDS = frozenset({"autorep", "job_depends"})
+# Two-letter job states printed by autorep in the ST/Ex column.
+STATUS_CODES = frozenset(
+    {"AC", "FA", "IN", "NE", "OH", "OI", "PE", "QU", "RE", "RU", "RW", "ST", "SU", "TE"}
+)
 
 
 class AutosysAdapter(BaseAdapter):
@@ -84,9 +88,7 @@ class AutosysAdapter(BaseAdapter):
         cmd = ["job_depends", "-J", job_name]
         return await self._execute_safe(cmd, f"job_depends -J {job_name}")
 
-    async def _execute_safe(
-        self, cmd: List[str], description: str
-    ) -> AdapterResult:
+    async def _execute_safe(self, cmd: List[str], description: str) -> AdapterResult:
         """Run a command ensuring it's in the safe allow-list."""
         base_cmd = cmd[0].split("/")[-1]
         if base_cmd not in SAFE_COMMANDS and base_cmd not in self._settings.allowed_commands:
@@ -143,15 +145,15 @@ class AutosysAdapter(BaseAdapter):
             parts = line.split()
             if len(parts) >= 4 and not line.startswith("_") and not line.startswith("Job Name"):
                 job_info: Dict[str, str] = {"job_name": parts[0]}
-                # Try to extract status (usually last or near-last field)
-                job_info["status"] = parts[-1] if parts else "UNKNOWN"
+                # The ST/Ex column is followed by Run/Ntry and Pri/Xit, so the status
+                # is not the last field. Take the first field that is a status code.
+                codes = [p.split("/")[0] for p in parts[1:] if p.split("/")[0] in STATUS_CODES]
+                job_info["status"] = codes[0] if codes else parts[-1]
                 jobs.append(job_info)
         return {"jobs": jobs, "raw_line_count": len(lines)}
 
     @staticmethod
-    def _format_evidence(
-        description: str, parsed: Dict[str, Any], raw: str
-    ) -> str:
+    def _format_evidence(description: str, parsed: Dict[str, Any], raw: str) -> str:
         jobs = parsed.get("jobs", [])
         if not jobs:
             return f"Command: {description}\nNo jobs found in output."

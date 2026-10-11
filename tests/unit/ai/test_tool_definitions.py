@@ -1,69 +1,43 @@
-"""Unit tests for tool definitions."""
+"""Unit tests for the model-facing tool definitions.
+
+The model is offered exactly one function, about choosing an SOP. It is
+never offered an operational tool (docs/adr/0001-one-execution-engine.md).
+"""
 
 from __future__ import annotations
 
+from src.l1_agent.ai import tool_definitions
 from src.l1_agent.ai.tool_definitions import (
-    AUTOSYS_STATUS_TOOL,
-    ESCALATE_TOOL,
-    FILE_CHECK_TOOL,
-    MQ_CHECK_TOOL,
-    POST_WORK_NOTE_TOOL,
-    RESOLVE_INCIDENT_TOOL,
-    SPLUNK_SEARCH_TOOL,
-    get_investigation_tools,
+    NO_SOP,
     get_sop_selection_tools,
+    sop_selection_tool_choice,
 )
 
 
 class TestToolDefinitions:
     def test_all_tools_have_required_fields(self):
-        for tool in get_investigation_tools():
+        for tool in get_sop_selection_tools():
             assert tool["type"] == "function"
             fn = tool["function"]
             assert "name" in fn
             assert "description" in fn
             assert "parameters" in fn
 
-    def test_investigation_tools_count(self):
-        tools = get_investigation_tools()
-        assert len(tools) == 11  # splunk, mq, file, autosys, dynatrace_vm, dynatrace_metrics, web_ui, mainframe, note, escalate, resolve
-
     def test_sop_selection_tools_count(self):
         tools = get_sop_selection_tools()
-        assert len(tools) == 2  # select_sop, escalate_no_sop
-
-    def test_splunk_tool_has_query_param(self):
-        params = SPLUNK_SEARCH_TOOL["function"]["parameters"]
-        assert "query" in params["properties"]
-        assert "query" in params["required"]
-
-    def test_mq_tool_has_required_params(self):
-        params = MQ_CHECK_TOOL["function"]["parameters"]
-        assert "queue_manager" in params["properties"]
-        assert "queue" in params["properties"]
-        assert "action" in params["properties"]
-
-    def test_file_check_tool_has_unc_path(self):
-        params = FILE_CHECK_TOOL["function"]["parameters"]
-        assert "unc_path" in params["properties"]
-
-    def test_autosys_tool_has_job_name(self):
-        params = AUTOSYS_STATUS_TOOL["function"]["parameters"]
-        assert "job_name" in params["properties"]
-
-    def test_escalate_tool_has_reason(self):
-        params = ESCALATE_TOOL["function"]["parameters"]
-        assert "reason" in params["required"]
-
-    def test_resolve_tool_has_summary(self):
-        params = RESOLVE_INCIDENT_TOOL["function"]["parameters"]
-        assert "resolution_summary" in params["required"]
-
-    def test_post_work_note_tool_has_note(self):
-        params = POST_WORK_NOTE_TOOL["function"]["parameters"]
-        assert "note" in params["required"]
+        assert len(tools) == 1  # one function, so the request can name it
 
     def test_sop_selection_tools_have_correct_names(self):
-        tools = get_sop_selection_tools()
-        names = {t["function"]["name"] for t in tools}
-        assert names == {"select_sop", "escalate_no_sop"}
+        names = {t["function"]["name"] for t in get_sop_selection_tools()}
+        assert names == {"select_sop"}
+        assert sop_selection_tool_choice()["function"]["name"] == "select_sop"
+
+    def test_sop_id_is_constrained_to_the_candidates(self):
+        tool = get_sop_selection_tools(["SOP-A", "SOP-B"])[0]
+        sop_id = tool["function"]["parameters"]["properties"]["sop_id"]
+        assert sop_id["enum"] == ["SOP-A", "SOP-B", NO_SOP]
+
+    def test_no_operational_tools_are_defined_for_the_model(self):
+        public = {name for name in vars(tool_definitions) if not name.startswith("_")}
+        assert not {n for n in public if n.endswith("_TOOL")}
+        assert "get_investigation_tools" not in public

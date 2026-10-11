@@ -1,16 +1,50 @@
 {
   "sop_id": "SOP-AUTOSYS-001",
   "title": "Autosys Batch Job Failure - Investigation",
-  "applicable_services": ["BatchProcessing", "ETL-Pipeline"],
-  "applicable_categories": ["Batch", "Scheduling"],
-  "applicable_assignment_groups": ["L1-Batch-Support"],
-  "keywords": ["autosys", "job failure", "batch failed", "job status FA", "autorep"],
+  "status": "published",
+  "applicable_services": [
+    "BatchProcessing",
+    "ETL-Pipeline"
+  ],
+  "applicable_categories": [
+    "Batch",
+    "Scheduling"
+  ],
+  "applicable_assignment_groups": [
+    "L1-Batch-Support"
+  ],
+  "keywords": [
+    "autosys",
+    "job failure",
+    "batch failed",
+    "job status FA",
+    "autorep"
+  ],
+  "parameters": [
+    {
+      "name": "job_name",
+      "type": "string",
+      "description": "Autosys job named in the ticket",
+      "source": {
+        "kind": "extraction",
+        "fields": [
+          "short_description",
+          "description"
+        ],
+        "regex": "\\b[Jj]ob\\s+([A-Z][A-Z0-9_.\\-]{2,63})\\b"
+      },
+      "pattern": "[A-Z][A-Z0-9_.\\-]{2,63}",
+      "max_length": 64
+    }
+  ],
   "steps": [
     {
       "step_id": "step-1",
       "step_type": "NOTE",
       "description": "Begin Autosys job failure investigation",
-      "parameters": {"text": "Starting investigation of Autosys job failure."},
+      "parameters": {
+        "text": "Starting investigation of Autosys job failure."
+      },
       "on_success": "step-2"
     },
     {
@@ -41,7 +75,10 @@
       "description": "Search for job execution logs",
       "parameters": {
         "query": "index=batch_logs source=autosys \"${job_name}\" (FAILURE OR ERROR)",
-        "time_range": {"earliest": "-4h", "latest": "now"}
+        "time_range": {
+          "earliest": "-4h",
+          "latest": "now"
+        }
       },
       "on_success": "step-5",
       "on_failure": "step-escalate"
@@ -61,35 +98,67 @@
     {
       "step_id": "step-6",
       "step_type": "DECISION",
-      "description": "Evaluate investigation results",
-      "parameters": {"rule": "all_success"},
-      "on_success": "step-resolve",
+      "description": "Were all checks completed?",
+      "parameters": {
+        "rule": "all_success"
+      },
+      "on_success": "step-verify",
       "on_failure": "step-escalate"
     },
     {
-      "step_id": "step-resolve",
-      "step_type": "NOTE",
-      "description": "Investigation complete",
+      "step_id": "step-verify",
+      "step_type": "VERIFY",
+      "description": "Confirm the job is no longer failed",
       "parameters": {
-        "text": "Autosys job failure investigation complete. Evidence collected. Job may need manual restart by L2."
+        "check": "AUTOSYS_STATUS",
+        "parameters": {
+          "job_name": "${job_name}",
+          "query_type": "status"
+        },
+        "assert": "result.jobs[0].status in [\"SU\", \"RU\"]"
+      },
+      "on_success": "step-resolve",
+      "on_failure": "step-still-failed"
+    },
+    {
+      "step_id": "step-resolve",
+      "step_type": "RESOLVE",
+      "description": "Job recovered",
+      "parameters": {
+        "text": "Autosys job is running or completed successfully at verification. No restart was needed."
+      }
+    },
+    {
+      "step_id": "step-still-failed",
+      "step_type": "ESCALATE",
+      "description": "Job still failed",
+      "parameters": {
+        "reason": "Job is still in a failed state after investigation. Evidence collected; a restart needs L2 approval."
       }
     },
     {
       "step_id": "step-escalate",
-      "step_type": "NOTE",
+      "step_type": "ESCALATE",
       "description": "Escalation to L2",
       "parameters": {
-        "text": "Unable to fully diagnose job failure. Escalating to L2 with collected evidence."
+        "reason": "Unable to fully diagnose job failure. Escalating to L2 with collected evidence."
       }
     }
   ],
-  "pre_checks": ["Verify Autosys CLI access", "Verify Splunk access"],
-  "tools_required": ["Autosys", "Splunk", "WindowsShare"],
+  "pre_checks": [
+    "Verify Autosys CLI access",
+    "Verify Splunk access"
+  ],
+  "tools_required": [
+    "Autosys",
+    "Splunk",
+    "WindowsShare"
+  ],
   "escalation_criteria": {
     "max_retry_count": 2,
     "escalate_on_access_denied": true,
     "escalate_on_ambiguous_result": true,
     "escalate_on_write_action": true
   },
-  "version": "1.0"
+  "version": "2.0"
 }

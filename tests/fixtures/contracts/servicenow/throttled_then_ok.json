@@ -1,0 +1,84 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "status": 429,
+        "headers": {
+          "Retry-After": "0"
+        },
+        "json": {
+          "error": {
+            "message": "Rate limit exceeded",
+            "detail": ""
+          },
+          "status": "failure"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "json": {
+          "result": {
+            "sys_id": {
+              "display_value": "00000000000000000000000000000001",
+              "value": "00000000000000000000000000000001"
+            },
+            "number": {
+              "display_value": "INC0000001",
+              "value": "INC0000001"
+            },
+            "short_description": {
+              "display_value": "MQ queue depth high on ORDER.REQUEST (1)",
+              "value": "MQ queue depth high on ORDER.REQUEST (1)"
+            },
+            "description": {
+              "display_value": "Queue manager QMPROD01.",
+              "value": "Queue manager QMPROD01."
+            },
+            "category": {
+              "display_value": "Middleware",
+              "value": "middleware"
+            },
+            "subcategory": {
+              "display_value": "MQ",
+              "value": "mq"
+            },
+            "cmdb_ci": {
+              "display_value": "OrderService",
+              "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
+            "assignment_group": {
+              "display_value": "L1-Middleware-Support",
+              "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            },
+            "priority": {
+              "display_value": "3 - Moderate",
+              "value": "3"
+            },
+            "state": {
+              "display_value": "New",
+              "value": "1"
+            },
+            "caller_id": {
+              "display_value": "Monitoring",
+              "value": "cccccccccccccccccccccccccccccccc"
+            },
+            "sys_created_on": {
+              "display_value": "2026-03-01 09:01:00",
+              "value": "2026-03-01 09:01:00"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

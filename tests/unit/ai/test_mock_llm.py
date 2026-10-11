@@ -70,7 +70,8 @@ class TestMockLLMClient:
         assert r.tool_calls[0].function_name == "select_sop"
 
     @pytest.mark.asyncio
-    async def test_auto_mode_investigation_starts_tools(self):
+    async def test_auto_mode_never_calls_operational_tools(self):
+        """Offered operational tools, the mock makes no tool call at all."""
         client = MockLLMClient()
 
         r = await client.chat(
@@ -85,7 +86,7 @@ class TestMockLLMClient:
             ],
         )
 
-        assert len(r.tool_calls) >= 1
+        assert r.tool_calls == []
 
     @pytest.mark.asyncio
     async def test_ask_returns_analysis(self):

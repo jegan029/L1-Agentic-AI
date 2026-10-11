@@ -28,7 +28,9 @@ class MetricsCollector:
         self._lock = Lock()
         self._start_time = time.time()
 
-    def increment(self, name: str, value: float = 1.0, labels: Dict[str, str] | None = None) -> None:
+    def increment(
+        self, name: str, value: float = 1.0, labels: Dict[str, str] | None = None
+    ) -> None:
         key = self._key(name, labels)
         with self._lock:
             self._counters[key] += value
@@ -50,7 +52,9 @@ class MetricsCollector:
         with self._lock:
             return self._counters.get(key, 0.0)
 
-    def get_histogram_stats(self, name: str, labels: Dict[str, str] | None = None) -> Dict[str, float]:
+    def get_histogram_stats(
+        self, name: str, labels: Dict[str, str] | None = None
+    ) -> Dict[str, float]:
         key = self._key(name, labels)
         with self._lock:
             values = self._histograms.get(key, [])
@@ -105,7 +109,9 @@ class MetricsCollector:
             lines.append(f"# TYPE {safe_name} histogram")
             for quantile, pct in [(0.5, 0.5), (0.9, 0.9), (0.99, 0.99)]:
                 idx = max(0, int(pct * count) - 1)
-                lines.append(f'{safe_name}{{quantile="{quantile}"}} {sorted_vals[idx]:.6g} {now_ms}')
+                lines.append(
+                    f'{safe_name}{{quantile="{quantile}"}} {sorted_vals[idx]:.6g} {now_ms}'
+                )
             lines.append(f"{safe_name}_sum {total:.6g} {now_ms}")
             lines.append(f"{safe_name}_count {count} {now_ms}")
 

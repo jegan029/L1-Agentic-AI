@@ -49,7 +49,7 @@ class MockSplunkAdapter(BaseAdapter):
         ]
         evidence = f"Splunk search returned {len(results)} result(s):\n"
         for i, r in enumerate(results):
-            evidence += f"  [{i+1}] {r['_raw']}\n"
+            evidence += f"  [{i + 1}] {r['_raw']}\n"
         return AdapterResult(
             success=True,
             data={"result_count": len(results), "results": results},
@@ -68,13 +68,33 @@ class MockIR360Adapter(BaseAdapter):
     async def health_check(self) -> bool:
         return True
 
+    # Sentinel queue that reports a drained backlog (verified-resolution scenario)
+    _RECOVERED_QUEUE = "ORDER.REQUEST"
+
     async def execute(self, parameters: Dict[str, Any]) -> AdapterResult:
         qm = parameters.get("queue_manager", "QMPROD01")
         queue = parameters.get("queue", "PAYMENT.REQUEST")
         action = parameters.get("action", "depth")
 
         data: Dict[str, Any] = {}
-        if action == "depth":
+        if action == "depth" and queue == self._RECOVERED_QUEUE:
+            # Recovered scenario: the backlog has drained by the time the agent looks.
+            data = {
+                "queue_manager": qm,
+                "queue": queue,
+                "current_depth": 12,
+                "max_depth": 5000,
+                "oldest_message_age_seconds": 4,
+                "input_count": 45,
+                "output_count": 44,
+            }
+            evidence = (
+                f"MQ depth check | QM={qm} Queue={queue}\n"
+                f"  Current depth: 12 / 5000 (0.2%)\n"
+                f"  Oldest message age: 4s\n"
+                f"  Input: 45, Output: 44 (consumers active)"
+            )
+        elif action == "depth":
             data = {
                 "queue_manager": qm,
                 "queue": queue,
@@ -143,6 +163,7 @@ class MockWindowsShareAdapter(BaseAdapter):
         ]
         if pattern:
             import re as _re
+
             try:
                 regex = _re.compile(pattern, _re.IGNORECASE)
                 lines = [ln for ln in lines if regex.search(ln)]
@@ -176,8 +197,16 @@ class MockAutosysAdapter(BaseAdapter):
             data = {
                 "jobs": [
                     {"job_name": job_name, "status": "SU", "condition": "ROOT"},
-                    {"job_name": f"{job_name}_STEP1", "status": "SU", "condition": f"s({job_name})"},
-                    {"job_name": f"{job_name}_STEP2", "status": "FA", "condition": f"s({job_name}_STEP1)"},
+                    {
+                        "job_name": f"{job_name}_STEP1",
+                        "status": "SU",
+                        "condition": f"s({job_name})",
+                    },
+                    {
+                        "job_name": f"{job_name}_STEP2",
+                        "status": "FA",
+                        "condition": f"s({job_name}_STEP1)",
+                    },
                 ],
             }
             evidence = (
@@ -327,7 +356,11 @@ class MockDynatraceAdapter(BaseAdapter):
         )
         return AdapterResult(
             success=True,
-            data={"metric_count": 2, "metrics": metrics_data},
+            data={
+                "metric_count": 2,
+                "metrics": metrics_data,
+                "latest": {m["metric_id"]: m["latest_value"] for m in metrics_data},
+            },
             raw_output=json.dumps(metrics_data),
             evidence_snippet=evidence,
         )
@@ -344,8 +377,8 @@ class MockDynatraceAdapter(BaseAdapter):
                 "status": "OPEN",
             }
             evidence = (
-                f"Dynatrace Problems | Open: 1\n"
-                f"  [PERFORMANCE] Memory saturation (impact: APPLICATION)"
+                "Dynatrace Problems | Open: 1\n"
+                "  [PERFORMANCE] Memory saturation (impact: APPLICATION)"
             )
             return AdapterResult(
                 success=True,
@@ -380,9 +413,7 @@ class MockWebUIScraperAdapter(BaseAdapter):
             return await self._mock_click_path(url, parameters)
         return await self._mock_page_load(url, parameters)
 
-    async def _mock_page_load(
-        self, url: str, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    async def _mock_page_load(self, url: str, parameters: Dict[str, Any]) -> AdapterResult:
         expected_text = parameters.get("expected_text", "")
         text_found = True
 
@@ -411,19 +442,19 @@ class MockWebUIScraperAdapter(BaseAdapter):
             evidence_snippet=evidence,
         )
 
-    async def _mock_click_path(
-        self, url: str, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    async def _mock_click_path(self, url: str, parameters: Dict[str, Any]) -> AdapterResult:
         click_steps = parameters.get("click_steps", [])
         step_results: List[Dict[str, Any]] = [
             {"step": "navigate", "url": url, "status": "success", "title": "Application Dashboard"},
         ]
         for i, step in enumerate(click_steps):
-            step_results.append({
-                "step": step.get("name", f"step-{i+1}"),
-                "action": step.get("action", "click"),
-                "status": "success",
-            })
+            step_results.append(
+                {
+                    "step": step.get("name", f"step-{i + 1}"),
+                    "action": step.get("action", "click"),
+                    "status": "success",
+                }
+            )
 
         evidence = (
             f"Click Path Check | URL: {url}\n"
@@ -500,9 +531,7 @@ class MockMainframeAdapter(BaseAdapter):
             evidence_snippet=evidence,
         )
 
-    async def _mock_screen_check(
-        self, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    async def _mock_screen_check(self, parameters: Dict[str, Any]) -> AdapterResult:
         expected_text = parameters.get("expected_text", "")
         screen_text = (
             "CICS BEIM STATUS DISPLAY         DATE: 04/14/26  TIME: 09:55\n"

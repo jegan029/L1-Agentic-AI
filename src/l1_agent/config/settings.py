@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Mapping, Optional
+
+
+class ConfigError(ValueError):
+    """The configuration is unsafe or inconsistent; the service must not start."""
 
 
 def _csv(val: str) -> List[str]:
@@ -20,6 +24,37 @@ class ServiceNowSettings:
     assignment_group: str = ""
     sop_table: str = "kb_knowledge"
     incident_table: str = "incident"
+    timeout_seconds: int = 30
+    # Resolution code sent when an incident is resolved. Must be a value your
+    # instance accepts; a stock instance rejects Resolved without one.
+    close_code: str = ""
+    # Demo mode normally uses an in-memory ServiceNow. Set this to connect demo
+    # mode (mock tool adapters, sample SOPs) to a real instance for testing.
+    live_in_demo: bool = False
+    # "basic", or "oauth" (client credentials; the password grant when a password is set too).
+    auth: str = "basic"
+    oauth_client_id: str = ""
+    oauth_client_secret: str = ""
+    oauth_token_url: str = ""  # default: <base_url>/oauth_token.do
+    # The user the agent assigns a ticket to when it claims it. Defaults to `username`.
+    agent_user: str = ""
+    claim: bool = True
+    page_size: int = 100
+    max_pages: int = 10
+    verify_ssl: bool = True
+
+
+@dataclass(frozen=True)
+class KnowledgeSettings:
+    """Where SOP source articles are pulled from. Everything pulled becomes a draft."""
+
+    sync_interval_seconds: int = 0  # 0: only when asked (`l1-agent knowledge sync`)
+    servicenow_kb: bool = False
+    servicenow_kb_query: str = "workflow_state=published"
+    git_url: str = ""
+    git_ref: str = "main"
+    git_path: str = ""
+    git_cache_dir: str = ""
 
 
 @dataclass(frozen=True)
@@ -36,6 +71,7 @@ class IR360Settings:
     api_key: str = ""
     cli_path: str = ""
     use_cli: bool = False
+    verify_ssl: bool = True
 
 
 @dataclass(frozen=True)
@@ -76,7 +112,9 @@ class MainframeSettings:
     """Mainframe TN3270 configuration for BEIM ASYNC status checks."""
 
     host: str = ""
-    port: int = 23
+    # 992 is TN3270 over TLS. Plain-text sessions are refused outside demo mode.
+    port: int = 992
+    use_tls: bool = True
     allowed_transactions: List[str] = field(default_factory=list)
     default_navigation: List[dict] = field(default_factory=list)
     timeout_seconds: int = 30
@@ -139,24 +177,57 @@ class AgentSettings:
     circuit_breaker_reset_seconds: int = 60
     demo_mode: bool = False
     log_level: str = "INFO"
-    webhook_host: str = "0.0.0.0"
+    webhook_host: str = "127.0.0.1"
     webhook_port: int = 8080
+    # Interim access control (src/l1_agent/api/security.py)
+    webhook_secret: str = ""
+    webhook_max_skew_seconds: int = 300
+    cors_allowed_origins: tuple = ()
+    # Tenant-supplied L2 routing file; empty uses the packaged example.
+    l2_routing_path: str = ""
 
 
 @dataclass(frozen=True)
-class CrewAISettings:
-    """CrewAI multi-agent framework configuration.
+class DatabaseSettings:
+    # The application role. Row level security applies to it; it cannot migrate.
+    url: str = ""
+    # The role that owns the schema. Used only by `l1-agent migrate` and tenant creation.
+    migration_url: str = ""
+    app_role: str = "l1_app"
+    # The tenant this deployment takes incidents for (ADR 0003, shape A).
+    tenant_slug: str = "default"
 
-    Set CREWAI_ENABLED=true to route incidents through the four-agent pipeline
-    (TriageAgent → ReviewAgent → ResolutionAgent → ResolverAgent) instead of
-    the existing rule-based / AI-executor path.
-    """
 
-    enabled: bool = False
-    model: str = "claude-sonnet-4-6"
-    api_key: str = ""
-    verbose: bool = False
-    max_iter: int = 15
+@dataclass(frozen=True)
+class AuthSettings:
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = ""
+    oidc_scopes: str = "openid profile email"
+    oidc_groups_claim: str = "groups"
+    saml_idp_metadata_path: str = ""
+    saml_sp_entity_id: str = ""
+    saml_acs_url: str = ""
+    saml_groups_attribute: str = "groups"
+    session_hours: int = 8
+    session_idle_minutes: int = 30
+    # Cookies are Secure unless demo mode says otherwise.
+    cookie_secure: bool = True
+    # scrypt hash of the break-glass password. Empty disables the account.
+    break_glass_password_hash: str = ""
+    audit_checkpoint_key: str = ""
+    rate_limit_per_minute: int = 600
+    login_rate_limit_per_minute: int = 20
+
+
+@dataclass(frozen=True)
+class WorkerSettings:
+    poll_interval_seconds: float = 1.0
+    visibility_timeout_seconds: int = 300
+    max_attempts: int = 3
+    # Run the worker inside the API process. Separate processes are the production shape.
+    embedded: bool = True
 
 
 @dataclass(frozen=True)
@@ -173,121 +244,190 @@ class Settings:
     agent: AgentSettings = field(default_factory=AgentSettings)
     secrets: SecretsSettings = field(default_factory=SecretsSettings)
     smtp: SmtpSettings = field(default_factory=SmtpSettings)
-    crewai: CrewAISettings = field(default_factory=CrewAISettings)
+    database: DatabaseSettings = field(default_factory=DatabaseSettings)
+    auth: AuthSettings = field(default_factory=AuthSettings)
+    worker: WorkerSettings = field(default_factory=WorkerSettings)
+    knowledge: KnowledgeSettings = field(default_factory=KnowledgeSettings)
+    # Credential references given as <NAME>_REF, for example
+    # SPLUNK_TOKEN_REF=file:/run/secrets/splunk-token. They take the place of <NAME>.
+    secret_refs: Mapping[str, str] = field(default_factory=dict)
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls, secrets: Optional[Mapping[str, str]] = None) -> "Settings":
+        """Build settings from the environment.
+
+        ``secrets`` holds values fetched from a secrets backend. They are read
+        from this mapping and are never copied into ``os.environ``.
+        """
         from dotenv import load_dotenv
+
         load_dotenv()
+        fetched = dict(secrets or {})
+
+        def get(name: str, default: str = "") -> str:
+            return os.environ.get(name) or fetched.get(name) or default
+
+        demo_mode = get("AGENT_DEMO_MODE", "false").lower() == "true"
+
+        def demo_only_off(name: str) -> bool:
+            """A protection that may be switched off only in demo mode."""
+            if get(name, "true").lower() == "true":
+                return True
+            if not demo_mode:
+                raise ConfigError(f"{name}=false is only allowed when AGENT_DEMO_MODE=true")
+            return False
+
         return cls(
             servicenow=ServiceNowSettings(
-                base_url=os.getenv("SERVICENOW_BASE_URL", ""),
-                username=os.getenv("SERVICENOW_USERNAME", ""),
-                password=os.getenv("SERVICENOW_PASSWORD", ""),
-                poll_interval_seconds=int(os.getenv("SERVICENOW_POLL_INTERVAL", "30")),
-                assignment_group=os.getenv("SERVICENOW_ASSIGNMENT_GROUP", ""),
-                sop_table=os.getenv("SERVICENOW_SOP_TABLE", "kb_knowledge"),
-                incident_table=os.getenv("SERVICENOW_INCIDENT_TABLE", "incident"),
+                base_url=get("SERVICENOW_BASE_URL", ""),
+                username=get("SERVICENOW_USERNAME", ""),
+                password=get("SERVICENOW_PASSWORD", ""),
+                poll_interval_seconds=int(get("SERVICENOW_POLL_INTERVAL", "30")),
+                assignment_group=get("SERVICENOW_ASSIGNMENT_GROUP", ""),
+                sop_table=get("SERVICENOW_SOP_TABLE", "kb_knowledge"),
+                incident_table=get("SERVICENOW_INCIDENT_TABLE", "incident"),
+                timeout_seconds=int(get("SERVICENOW_TIMEOUT", "30")),
+                close_code=get("SERVICENOW_CLOSE_CODE", ""),
+                live_in_demo=get("SERVICENOW_LIVE_IN_DEMO", "false").lower() == "true",
+                auth=get("SERVICENOW_AUTH", "basic").lower(),
+                oauth_client_id=get("SERVICENOW_OAUTH_CLIENT_ID", ""),
+                oauth_client_secret=get("SERVICENOW_OAUTH_CLIENT_SECRET", ""),
+                oauth_token_url=get("SERVICENOW_OAUTH_TOKEN_URL", ""),
+                agent_user=get("SERVICENOW_AGENT_USER", ""),
+                claim=get("SERVICENOW_CLAIM", "true").lower() == "true",
+                page_size=int(get("SERVICENOW_PAGE_SIZE", "100")),
+                max_pages=int(get("SERVICENOW_MAX_PAGES", "10")),
+                verify_ssl=demo_only_off("SERVICENOW_VERIFY_SSL"),
             ),
+            knowledge=KnowledgeSettings(
+                sync_interval_seconds=int(get("KNOWLEDGE_SYNC_INTERVAL", "0")),
+                servicenow_kb=get("KNOWLEDGE_SERVICENOW_KB", "false").lower() == "true",
+                servicenow_kb_query=get(
+                    "KNOWLEDGE_SERVICENOW_KB_QUERY", "workflow_state=published"
+                ),
+                git_url=get("KNOWLEDGE_GIT_URL", ""),
+                git_ref=get("KNOWLEDGE_GIT_REF", "main"),
+                git_path=get("KNOWLEDGE_GIT_PATH", ""),
+                git_cache_dir=get("KNOWLEDGE_GIT_CACHE_DIR", ""),
+            ),
+            secret_refs={
+                name[: -len("_REF")]: value
+                for name, value in os.environ.items()
+                if name.endswith("_REF") and name.isupper() and ":" in value
+            },
             splunk=SplunkSettings(
-                base_url=os.getenv("SPLUNK_BASE_URL", ""),
-                token=os.getenv("SPLUNK_TOKEN", ""),
-                verify_ssl=os.getenv("SPLUNK_VERIFY_SSL", "true").lower() == "true",
-                search_timeout_seconds=int(os.getenv("SPLUNK_SEARCH_TIMEOUT", "120")),
+                base_url=get("SPLUNK_BASE_URL", ""),
+                token=get("SPLUNK_TOKEN", ""),
+                verify_ssl=demo_only_off("SPLUNK_VERIFY_SSL"),
+                search_timeout_seconds=int(get("SPLUNK_SEARCH_TIMEOUT", "120")),
             ),
             ir360=IR360Settings(
-                base_url=os.getenv("IR360_BASE_URL", ""),
-                api_key=os.getenv("IR360_API_KEY", ""),
-                cli_path=os.getenv("IR360_CLI_PATH", ""),
-                use_cli=os.getenv("IR360_USE_CLI", "false").lower() == "true",
+                base_url=get("IR360_BASE_URL", ""),
+                api_key=get("IR360_API_KEY", ""),
+                cli_path=get("IR360_CLI_PATH", ""),
+                use_cli=get("IR360_USE_CLI", "false").lower() == "true",
+                verify_ssl=demo_only_off("IR360_VERIFY_SSL"),
             ),
             autosys=AutosysSettings(
-                cli_path=os.getenv("AUTOSYS_CLI_PATH", "autorep"),
-                allowed_commands=tuple(
-                    _csv(os.getenv("AUTOSYS_ALLOWED_COMMANDS", "autorep"))
-                ),
+                cli_path=get("AUTOSYS_CLI_PATH", "autorep"),
+                allowed_commands=tuple(_csv(get("AUTOSYS_ALLOWED_COMMANDS", "autorep"))),
             ),
             windows_share=WindowsShareSettings(
-                allowed_unc_prefixes=_csv(
-                    os.getenv("WINDOWS_SHARE_ALLOWED_PREFIXES", "")
-                ),
-                smb_username=os.getenv("SMB_USERNAME", ""),
-                smb_password=os.getenv("SMB_PASSWORD", ""),
-                smb_domain=os.getenv("SMB_DOMAIN", ""),
+                allowed_unc_prefixes=_csv(get("WINDOWS_SHARE_ALLOWED_PREFIXES", "")),
+                smb_username=get("SMB_USERNAME", ""),
+                smb_password=get("SMB_PASSWORD", ""),
+                smb_domain=get("SMB_DOMAIN", ""),
             ),
             dynatrace=DynatraceSettings(
-                base_url=os.getenv("DYNATRACE_BASE_URL", ""),
-                api_token=os.getenv("DYNATRACE_API_TOKEN", ""),
-                verify_ssl=os.getenv("DYNATRACE_VERIFY_SSL", "true").lower() == "true",
-                timeout_seconds=int(os.getenv("DYNATRACE_TIMEOUT", "30")),
+                base_url=get("DYNATRACE_BASE_URL", ""),
+                api_token=get("DYNATRACE_API_TOKEN", ""),
+                verify_ssl=demo_only_off("DYNATRACE_VERIFY_SSL"),
+                timeout_seconds=int(get("DYNATRACE_TIMEOUT", "30")),
             ),
             webui=WebUISettings(
-                page_timeout_seconds=int(os.getenv("WEBUI_PAGE_TIMEOUT", "30")),
-                allowed_domains=_csv(os.getenv("WEBUI_ALLOWED_DOMAINS", "")),
-                chrome_binary_path=os.getenv("WEBUI_CHROME_BINARY", ""),
+                page_timeout_seconds=int(get("WEBUI_PAGE_TIMEOUT", "30")),
+                allowed_domains=_csv(get("WEBUI_ALLOWED_DOMAINS", "")),
+                chrome_binary_path=get("WEBUI_CHROME_BINARY", ""),
             ),
             mainframe=MainframeSettings(
-                host=os.getenv("MAINFRAME_HOST", ""),
-                port=int(os.getenv("MAINFRAME_PORT", "23")),
-                allowed_transactions=_csv(
-                    os.getenv("MAINFRAME_ALLOWED_TRANSACTIONS", "")
-                ),
-                timeout_seconds=int(os.getenv("MAINFRAME_TIMEOUT", "30")),
+                host=get("MAINFRAME_HOST", ""),
+                port=int(get("MAINFRAME_PORT", "992")),
+                use_tls=demo_only_off("MAINFRAME_USE_TLS"),
+                allowed_transactions=_csv(get("MAINFRAME_ALLOWED_TRANSACTIONS", "")),
+                timeout_seconds=int(get("MAINFRAME_TIMEOUT", "30")),
             ),
             llm=LLMSettings(
-                endpoint=os.getenv("LLM_ENDPOINT", ""),
-                api_key=os.getenv("LLM_API_KEY", ""),
-                model=os.getenv("LLM_MODEL", "gpt-4"),
-                temperature=float(os.getenv("LLM_TEMPERATURE", "0.2")),
-                max_tokens=int(os.getenv("LLM_MAX_TOKENS", "4096")),
-                timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "60")),
-                enabled=os.getenv("LLM_ENABLED", "true").lower() == "true",
+                endpoint=get("LLM_ENDPOINT", ""),
+                api_key=get("LLM_API_KEY", ""),
+                model=get("LLM_MODEL", "gpt-4"),
+                temperature=float(get("LLM_TEMPERATURE", "0.2")),
+                max_tokens=int(get("LLM_MAX_TOKENS", "4096")),
+                timeout_seconds=int(get("LLM_TIMEOUT_SECONDS", "60")),
+                enabled=get("LLM_ENABLED", "true").lower() == "true",
             ),
             agent=AgentSettings(
-                sop_confidence_threshold=float(
-                    os.getenv("AGENT_SOP_CONFIDENCE_THRESHOLD", "0.6")
-                ),
-                max_concurrent_incidents=int(
-                    os.getenv("AGENT_MAX_CONCURRENT_INCIDENTS", "5")
-                ),
-                retry_max_attempts=int(os.getenv("AGENT_RETRY_MAX_ATTEMPTS", "3")),
-                retry_base_delay_seconds=float(
-                    os.getenv("AGENT_RETRY_BASE_DELAY", "1.0")
-                ),
-                circuit_breaker_failure_threshold=int(
-                    os.getenv("AGENT_CB_FAILURE_THRESHOLD", "5")
-                ),
-                circuit_breaker_reset_seconds=int(
-                    os.getenv("AGENT_CB_RESET_SECONDS", "60")
-                ),
-                demo_mode=os.getenv("AGENT_DEMO_MODE", "false").lower() == "true",
-                log_level=os.getenv("AGENT_LOG_LEVEL", "INFO"),
-                webhook_host=os.getenv("AGENT_WEBHOOK_HOST", "0.0.0.0"),
-                webhook_port=int(os.getenv("AGENT_WEBHOOK_PORT", "8080")),
+                sop_confidence_threshold=float(get("AGENT_SOP_CONFIDENCE_THRESHOLD", "0.6")),
+                max_concurrent_incidents=int(get("AGENT_MAX_CONCURRENT_INCIDENTS", "5")),
+                retry_max_attempts=int(get("AGENT_RETRY_MAX_ATTEMPTS", "3")),
+                retry_base_delay_seconds=float(get("AGENT_RETRY_BASE_DELAY", "1.0")),
+                circuit_breaker_failure_threshold=int(get("AGENT_CB_FAILURE_THRESHOLD", "5")),
+                circuit_breaker_reset_seconds=int(get("AGENT_CB_RESET_SECONDS", "60")),
+                demo_mode=demo_mode,
+                log_level=get("AGENT_LOG_LEVEL", "INFO"),
+                webhook_host=get("AGENT_WEBHOOK_HOST", "127.0.0.1"),
+                webhook_port=int(get("AGENT_WEBHOOK_PORT", "8080")),
+                webhook_secret=get("AGENT_WEBHOOK_SECRET", ""),
+                webhook_max_skew_seconds=int(get("AGENT_WEBHOOK_MAX_SKEW_SECONDS", "300")),
+                cors_allowed_origins=tuple(_csv(get("AGENT_CORS_ORIGINS", ""))),
+                l2_routing_path=get("L2_ROUTING_PATH", ""),
             ),
             secrets=SecretsSettings(
-                backend=os.getenv("SECRETS_BACKEND", "env"),
-                vault_addr=os.getenv("VAULT_ADDR", "http://127.0.0.1:8200"),
-                vault_token=os.getenv("VAULT_TOKEN", ""),
-                vault_role_id=os.getenv("VAULT_ROLE_ID", ""),
-                vault_secret_id=os.getenv("VAULT_SECRET_ID", ""),
-                vault_mount=os.getenv("VAULT_MOUNT", "secret"),
-                vault_path_prefix=os.getenv("VAULT_PATH_PREFIX", "l1-agent"),
-                aws_region=os.getenv("AWS_REGION", "us-east-1"),
-                aws_ssm_prefix=os.getenv("AWS_SSM_PREFIX", "/l1-agent"),
+                backend=get("SECRETS_BACKEND", "env"),
+                vault_addr=get("VAULT_ADDR", "http://127.0.0.1:8200"),
+                vault_token=get("VAULT_TOKEN", ""),
+                vault_role_id=get("VAULT_ROLE_ID", ""),
+                vault_secret_id=get("VAULT_SECRET_ID", ""),
+                vault_mount=get("VAULT_MOUNT", "secret"),
+                vault_path_prefix=get("VAULT_PATH_PREFIX", "l1-agent"),
+                aws_region=get("AWS_REGION", "us-east-1"),
+                aws_ssm_prefix=get("AWS_SSM_PREFIX", "/l1-agent"),
             ),
             smtp=SmtpSettings(
-                host=os.getenv("SMTP_HOST", ""),
-                port=int(os.getenv("SMTP_PORT", "587")),
-                user=os.getenv("SMTP_USER", ""),
-                password=os.getenv("SMTP_PASSWORD", ""),
-                from_address=os.getenv("SMTP_FROM", os.getenv("SMTP_USER", "")),
+                host=get("SMTP_HOST", ""),
+                port=int(get("SMTP_PORT", "587")),
+                user=get("SMTP_USER", ""),
+                password=get("SMTP_PASSWORD", ""),
+                from_address=get("SMTP_FROM", get("SMTP_USER", "")),
             ),
-            crewai=CrewAISettings(
-                enabled=os.getenv("CREWAI_ENABLED", "false").lower() == "true",
-                model=os.getenv("CREWAI_MODEL", "claude-sonnet-4-6"),
-                api_key=os.getenv("CREWAI_API_KEY", os.getenv("ANTHROPIC_API_KEY", "")),
-                verbose=os.getenv("CREWAI_VERBOSE", "false").lower() == "true",
-                max_iter=int(os.getenv("CREWAI_MAX_ITER", "15")),
+            database=DatabaseSettings(
+                url=get("DATABASE_URL", ""),
+                migration_url=get("DATABASE_MIGRATION_URL", ""),
+                app_role=get("DATABASE_APP_ROLE", "l1_app"),
+                tenant_slug=get("TENANT_SLUG", "demo" if demo_mode else "default"),
+            ),
+            auth=AuthSettings(
+                oidc_issuer=get("OIDC_ISSUER", "").rstrip("/"),
+                oidc_client_id=get("OIDC_CLIENT_ID", ""),
+                oidc_client_secret=get("OIDC_CLIENT_SECRET", ""),
+                oidc_redirect_uri=get("OIDC_REDIRECT_URI", ""),
+                oidc_scopes=get("OIDC_SCOPES", "openid profile email"),
+                oidc_groups_claim=get("OIDC_GROUPS_CLAIM", "groups"),
+                saml_idp_metadata_path=get("SAML_IDP_METADATA_PATH", ""),
+                saml_sp_entity_id=get("SAML_SP_ENTITY_ID", ""),
+                saml_acs_url=get("SAML_ACS_URL", ""),
+                saml_groups_attribute=get("SAML_GROUPS_ATTRIBUTE", "groups"),
+                session_hours=int(get("SESSION_HOURS", "8")),
+                session_idle_minutes=int(get("SESSION_IDLE_MINUTES", "30")),
+                cookie_secure=demo_only_off("SESSION_COOKIE_SECURE"),
+                break_glass_password_hash=get("BREAK_GLASS_PASSWORD_HASH", ""),
+                audit_checkpoint_key=get("AUDIT_CHECKPOINT_KEY", ""),
+                rate_limit_per_minute=int(get("RATE_LIMIT_PER_MINUTE", "600")),
+                login_rate_limit_per_minute=int(get("LOGIN_RATE_LIMIT_PER_MINUTE", "20")),
+            ),
+            worker=WorkerSettings(
+                poll_interval_seconds=float(get("WORKER_POLL_INTERVAL", "1.0")),
+                visibility_timeout_seconds=int(get("WORKER_VISIBILITY_TIMEOUT", "300")),
+                max_attempts=int(get("WORKER_MAX_ATTEMPTS", "3")),
+                embedded=get("WORKER_EMBEDDED", "true").lower() == "true",
             ),
         )

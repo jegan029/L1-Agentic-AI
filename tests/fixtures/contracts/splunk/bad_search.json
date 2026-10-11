@@ -1,0 +1,22 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs"
+      },
+      "response": {
+        "status": 400,
+        "json": {
+          "messages": [
+            {
+              "type": "FATAL",
+              "text": "Unknown search command 'foo'."
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

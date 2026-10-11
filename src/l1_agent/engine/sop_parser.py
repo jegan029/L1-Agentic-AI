@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
-from src.l1_agent.models.sop import SOP
+from src.l1_agent.models.sop import SOP, SOP_STATUS_DRAFT
 from src.l1_agent.utils.logging import get_logger
 
 logger = get_logger("sop_parser")
@@ -57,7 +57,12 @@ class SOPParser:
             return None
 
     def _parse_field_mapped(self, record: Dict[str, Any]) -> SOP:
-        """Map ServiceNow KB article fields to SOP structure."""
+        """Map a prose ServiceNow KB article to a DRAFT SOP.
+
+        A prose article has no executable steps. The result is a draft: it is
+        never matched and never executed until a person structures and
+        publishes it.
+        """
         sop_id = record.get("sys_id", record.get("number", ""))
         title = record.get("short_description", record.get("title", ""))
         keywords_raw = record.get("meta", record.get("keywords", ""))
@@ -85,6 +90,7 @@ class SOPParser:
             applicable_services=services,
             applicable_categories=categories,
             keywords=keywords,
-            steps=[],  # Steps need to be parsed from body content
+            steps=[],  # a person must author the steps
+            status=SOP_STATUS_DRAFT,
             version=record.get("version", "1.0"),
         )

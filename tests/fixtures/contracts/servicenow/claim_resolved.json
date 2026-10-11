@@ -1,0 +1,39 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/sys_user",
+        "query": {
+          "sysparm_query": "user_name=agent",
+          "sysparm_limit": "1"
+        }
+      },
+      "response": {
+        "json": {
+          "result": [
+            {
+              "sys_id": "dddddddddddddddddddddddddddddddd"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/incident/00000000000000000000000000000001"
+      },
+      "response": {
+        "json": {
+          "result": {
+            "state": "6",
+            "assigned_to": "",
+            "active": "true"
+          }
+        }
+      }
+    }
+  ]
+}

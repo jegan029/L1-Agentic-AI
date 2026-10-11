@@ -1,16 +1,65 @@
 {
   "sop_id": "SOP-MQ-001",
   "title": "MQ Queue Depth High - Investigation and Remediation",
-  "applicable_services": ["PaymentService", "OrderService"],
-  "applicable_categories": ["Middleware", "MQ"],
-  "applicable_assignment_groups": ["L1-Middleware-Support"],
-  "keywords": ["queue depth", "mq", "messages not consumed", "queue high", "payment"],
+  "status": "published",
+  "applicable_services": [
+    "PaymentService",
+    "OrderService"
+  ],
+  "applicable_categories": [
+    "Middleware",
+    "MQ"
+  ],
+  "applicable_assignment_groups": [
+    "L1-Middleware-Support"
+  ],
+  "keywords": [
+    "queue depth",
+    "mq",
+    "messages not consumed",
+    "queue high",
+    "payment"
+  ],
+  "parameters": [
+    {
+      "name": "queue_manager",
+      "type": "string",
+      "description": "Queue manager named in the ticket",
+      "source": {
+        "kind": "extraction",
+        "fields": [
+          "short_description",
+          "description"
+        ],
+        "regex": "\\b(QM[A-Z0-9_]{1,45})\\b"
+      },
+      "pattern": "QM[A-Z0-9_]{1,45}",
+      "max_length": 48
+    },
+    {
+      "name": "queue",
+      "type": "string",
+      "description": "Queue named in the ticket",
+      "source": {
+        "kind": "extraction",
+        "fields": [
+          "short_description",
+          "description"
+        ],
+        "regex": "\\b([A-Z][A-Z0-9_]*(?:\\.[A-Z0-9_]+)+)\\b"
+      },
+      "pattern": "[A-Z][A-Z0-9_]*(\\.[A-Z0-9_]+)+",
+      "max_length": 48
+    }
+  ],
   "steps": [
     {
       "step_id": "step-1",
       "step_type": "NOTE",
       "description": "Begin MQ queue depth investigation",
-      "parameters": {"text": "Starting investigation of MQ queue depth issue."},
+      "parameters": {
+        "text": "Starting investigation of MQ queue depth issue."
+      },
       "on_success": "step-2"
     },
     {
@@ -18,8 +67,8 @@
       "step_type": "MQ_CHECK",
       "description": "Check queue depth on reported queue",
       "parameters": {
-        "queue_manager": "QMPROD01",
-        "queue": "PAYMENT.REQUEST",
+        "queue_manager": "${queue_manager}",
+        "queue": "${queue}",
         "action": "depth"
       },
       "expected_output": "Queue depth and consumer status",
@@ -31,8 +80,8 @@
       "step_type": "MQ_CHECK",
       "description": "Check queue status and consumers",
       "parameters": {
-        "queue_manager": "QMPROD01",
-        "queue": "PAYMENT.REQUEST",
+        "queue_manager": "${queue_manager}",
+        "queue": "${queue}",
         "action": "status"
       },
       "on_success": "step-4",
@@ -44,7 +93,10 @@
       "description": "Search application logs for errors",
       "parameters": {
         "query": "index=app_logs sourcetype=log4j host=app-server-* \"PaymentService\" (ERROR OR FATAL)",
-        "time_range": {"earliest": "-2h", "latest": "now"}
+        "time_range": {
+          "earliest": "-2h",
+          "latest": "now"
+        }
       },
       "on_success": "step-5",
       "on_failure": "step-escalate"
@@ -64,35 +116,67 @@
       "step_id": "step-6",
       "step_type": "DECISION",
       "description": "Evaluate all check results",
-      "parameters": {"rule": "any_failed"},
-      "on_success": "step-resolve",
+      "parameters": {
+        "rule": "any_failed"
+      },
+      "on_success": "step-verify",
       "on_failure": "step-escalate"
     },
     {
-      "step_id": "step-resolve",
-      "step_type": "NOTE",
-      "description": "All checks passed - summarise findings",
+      "step_id": "step-verify",
+      "step_type": "VERIFY",
+      "description": "Confirm the queue has drained",
       "parameters": {
-        "text": "Investigation complete. All checks executed successfully. Evidence collected and attached. Queue depth is elevated but consumers are being investigated. Recommend monitoring."
+        "check": "MQ_CHECK",
+        "parameters": {
+          "queue_manager": "${queue_manager}",
+          "queue": "${queue}",
+          "action": "depth"
+        },
+        "assert": "result.current_depth < 1000"
+      },
+      "on_success": "step-resolve",
+      "on_failure": "step-backlog"
+    },
+    {
+      "step_id": "step-resolve",
+      "step_type": "RESOLVE",
+      "description": "Queue depth back within threshold",
+      "parameters": {
+        "text": "Queue depth is below threshold at verification. Evidence collected and attached."
+      }
+    },
+    {
+      "step_id": "step-backlog",
+      "step_type": "ESCALATE",
+      "description": "Queue still backed up",
+      "parameters": {
+        "reason": "Queue depth is still above threshold after investigation. Escalating to L2 with collected evidence."
       }
     },
     {
       "step_id": "step-escalate",
-      "step_type": "NOTE",
+      "step_type": "ESCALATE",
       "description": "Escalation required",
       "parameters": {
-        "text": "One or more checks failed or produced concerning results. Escalating to L2 with collected evidence."
+        "reason": "One or more checks failed or produced concerning results. Escalating to L2 with collected evidence."
       }
     }
   ],
-  "pre_checks": ["Verify MQ connectivity", "Verify Splunk access"],
-  "tools_required": ["IR360", "Splunk", "Autosys"],
+  "pre_checks": [
+    "Verify MQ connectivity",
+    "Verify Splunk access"
+  ],
+  "tools_required": [
+    "IR360",
+    "Splunk",
+    "Autosys"
+  ],
   "escalation_criteria": {
     "max_retry_count": 2,
     "escalate_on_access_denied": true,
     "escalate_on_ambiguous_result": true,
-    "escalate_on_write_action": true,
-    "custom_rules": []
+    "escalate_on_write_action": true
   },
-  "version": "1.0"
+  "version": "2.0"
 }

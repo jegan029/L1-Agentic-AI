@@ -1,0 +1,37 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/entities"
+      },
+      "response": {
+        "json": {
+          "entities": [
+            {
+              "entityId": "HOST-0001",
+              "displayName": "app-server-01",
+              "type": "HOST"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/problems"
+      },
+      "response": {
+        "status": 500,
+        "json": {
+          "error": {
+            "code": 500,
+            "message": "Internal error"
+          }
+        }
+      }
+    }
+  ]
+}

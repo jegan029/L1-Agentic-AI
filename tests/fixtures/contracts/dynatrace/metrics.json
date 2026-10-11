@@ -1,0 +1,46 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/v2/metrics/query",
+        "query": {
+          "metricSelector": "builtin:host.mem.usage",
+          "entitySelector": "type(\"HOST\"),entityName(\"app-server-01\")"
+        }
+      },
+      "response": {
+        "json": {
+          "totalCount": 1,
+          "resolution": "1h",
+          "result": [
+            {
+              "metricId": "builtin:host.mem.usage",
+              "data": [
+                {
+                  "dimensions": [
+                    "HOST-0001"
+                  ],
+                  "dimensionMap": {
+                    "dt.entity.host": "HOST-0001"
+                  },
+                  "timestamps": [
+                    1,
+                    2,
+                    3
+                  ],
+                  "values": [
+                    71.5,
+                    92.5,
+                    null
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

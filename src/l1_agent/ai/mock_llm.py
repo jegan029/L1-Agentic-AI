@@ -26,12 +26,14 @@ class MockLLMClient(LLMClient):
 
     def __init__(self, responses: Optional[List[MockLLMResponse]] = None) -> None:
         # Initialize with dummy settings (no real endpoint needed)
-        super().__init__(LLMSettings(
-            endpoint="http://mock-llm",
-            api_key="mock-key",
-            model="mock-model",
-            enabled=False,
-        ))
+        super().__init__(
+            LLMSettings(
+                endpoint="http://mock-llm",
+                api_key="mock-key",
+                model="mock-model",
+                enabled=False,
+            )
+        )
         self._responses = list(responses) if responses else []
         self._call_index = 0
         self._auto_mode = not bool(responses)
@@ -41,7 +43,7 @@ class MockLLMClient(LLMClient):
         self,
         messages: List[Dict[str, Any]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        tool_choice: str = "auto",
+        tool_choice: Any = "auto",
     ) -> LLMResponse:
         """Return the next scripted response, or auto-generate one."""
         self._conversation_history = messages
@@ -96,9 +98,6 @@ class MockLLMClient(LLMClient):
         2. Subsequent calls: interprets results and calls more tools
         3. Final call: resolves or escalates
         """
-        # Count how many tool results we've received
-        tool_results = [m for m in messages if m.get("role") == "tool"]
-        tool_call_count = len(tool_results)
 
         # Detect available tool names
         tool_names = set()
@@ -111,20 +110,16 @@ class MockLLMClient(LLMClient):
         if "select_sop" in tool_names:
             return self._auto_sop_selection(messages)
 
-        # Investigation phase based on progress
-        if tool_call_count == 0:
-            # First call: start investigation
-            return self._first_investigation_call(messages, tool_names)
-        elif tool_call_count < 4:
-            # Middle calls: continue investigation
-            return self._continue_investigation(messages, tool_names, tool_call_count)
-        else:
-            # Final call: resolve
-            return self._resolve_investigation(messages, tool_results)
+        # The model has no operational tools, so there is nothing else to call.
+        return LLMResponse(
+            content="No tool call is available for this request.",
+            tool_calls=[],
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            finish_reason="stop",
+            raw={},
+        )
 
-    def _auto_sop_selection(
-        self, messages: List[Dict[str, Any]]
-    ) -> LLMResponse:
+    def _auto_sop_selection(self, messages: List[Dict[str, Any]]) -> LLMResponse:
         """Generate SOP selection response."""
         # Extract SOP IDs from the user message
         user_msg = ""
@@ -136,6 +131,7 @@ class MockLLMClient(LLMClient):
         sop_id = "SOP-MQ-001"  # Default
         if "SOP-" in user_msg:
             import re
+
             match = re.search(r"SOP-[A-Z]+-\d+", user_msg)
             if match:
                 sop_id = match.group(0)
@@ -146,169 +142,23 @@ class MockLLMClient(LLMClient):
                 ToolCall(
                     call_id="call_sop_select_1",
                     function_name="select_sop",
-                    arguments_str=json.dumps({
-                        "sop_id": sop_id,
-                        "confidence": 0.92,
-                        "rationale": (
-                            "The incident describes MQ queue depth issues with "
-                            "messages not being consumed. The SOP covers MQ queue "
-                            "depth investigation including queue checks, log analysis, "
-                            "and job status verification. The CI (PaymentService) and "
-                            "category (Middleware/MQ) match the SOP's applicable "
-                            "services and categories. High confidence match."
-                        ),
-                    }),
+                    arguments_str=json.dumps(
+                        {
+                            "sop_id": sop_id,
+                            "confidence": 0.92,
+                            "rationale": (
+                                "The incident describes MQ queue depth issues with "
+                                "messages not being consumed. The SOP covers MQ queue "
+                                "depth investigation including queue checks, log analysis, "
+                                "and job status verification. The CI (PaymentService) and "
+                                "category (Middleware/MQ) match the SOP's applicable "
+                                "services and categories. High confidence match."
+                            ),
+                        }
+                    ),
                 )
             ],
             usage={"prompt_tokens": 500, "completion_tokens": 100, "total_tokens": 600},
-            finish_reason="tool_calls",
-            raw={},
-        )
-
-    def _first_investigation_call(
-        self, messages: List[Dict[str, Any]], tool_names: set
-    ) -> LLMResponse:
-        """Generate the first investigation tool calls."""
-        calls: List[ToolCall] = []
-
-        # Post initial work note
-        if "post_work_note" in tool_names:
-            calls.append(ToolCall(
-                call_id="call_note_1",
-                function_name="post_work_note",
-                arguments_str=json.dumps({
-                    "note": (
-                        "Starting AI-driven investigation. Analyzing incident "
-                        "description and executing SOP checks. Will check MQ "
-                        "queue depth, application logs, and batch job status."
-                    ),
-                }),
-            ))
-
-        # Start with MQ check
-        if "mq_check" in tool_names:
-            calls.append(ToolCall(
-                call_id="call_mq_1",
-                function_name="mq_check",
-                arguments_str=json.dumps({
-                    "queue_manager": "QMPROD01",
-                    "queue": "PAYMENT.REQUEST",
-                    "action": "depth",
-                }),
-            ))
-
-        return LLMResponse(
-            content="",
-            tool_calls=calls,
-            usage={"prompt_tokens": 800, "completion_tokens": 150, "total_tokens": 950},
-            finish_reason="tool_calls",
-            raw={},
-        )
-
-    def _continue_investigation(
-        self,
-        messages: List[Dict[str, Any]],
-        tool_names: set,
-        call_count: int,
-    ) -> LLMResponse:
-        """Generate continuation tool calls based on progress."""
-        calls: List[ToolCall] = []
-
-        if call_count <= 2:
-            # Check MQ status + search Splunk logs
-            if "mq_check" in tool_names:
-                calls.append(ToolCall(
-                    call_id=f"call_mq_{call_count + 1}",
-                    function_name="mq_check",
-                    arguments_str=json.dumps({
-                        "queue_manager": "QMPROD01",
-                        "queue": "PAYMENT.REQUEST",
-                        "action": "status",
-                    }),
-                ))
-            if "splunk_search" in tool_names:
-                calls.append(ToolCall(
-                    call_id=f"call_splunk_{call_count + 1}",
-                    function_name="splunk_search",
-                    arguments_str=json.dumps({
-                        "query": (
-                            'index=app_logs sourcetype=log4j host=app-server-* '
-                            '"PaymentService" (ERROR OR FATAL)'
-                        ),
-                        "time_range": {"earliest": "-2h", "latest": "now"},
-                    }),
-                ))
-        else:
-            # Check Autosys job + post findings
-            if "autosys_status" in tool_names:
-                calls.append(ToolCall(
-                    call_id=f"call_autosys_{call_count + 1}",
-                    function_name="autosys_status",
-                    arguments_str=json.dumps({
-                        "job_name": "BATCH_PAYMENT_PROCESS",
-                        "query_type": "status",
-                    }),
-                ))
-            if "post_work_note" in tool_names:
-                calls.append(ToolCall(
-                    call_id=f"call_note_{call_count + 1}",
-                    function_name="post_work_note",
-                    arguments_str=json.dumps({
-                        "note": (
-                            "Investigation progress: MQ queue depth is elevated "
-                            "(1523/5000), consumers appear stalled. Application "
-                            "logs show connection timeout errors. Checking batch "
-                            "job status next."
-                        ),
-                    }),
-                ))
-
-        if not calls:
-            return self._resolve_investigation(messages, [])
-
-        return LLMResponse(
-            content="",
-            tool_calls=calls,
-            usage={"prompt_tokens": 1200, "completion_tokens": 200, "total_tokens": 1400},
-            finish_reason="tool_calls",
-            raw={},
-        )
-
-    def _resolve_investigation(
-        self,
-        messages: List[Dict[str, Any]],
-        tool_results: List[Dict[str, Any]],
-    ) -> LLMResponse:
-        """Generate the resolution tool call."""
-        return LLMResponse(
-            content="",
-            tool_calls=[
-                ToolCall(
-                    call_id="call_resolve_final",
-                    function_name="resolve_incident",
-                    arguments_str=json.dumps({
-                        "resolution_summary": (
-                            "Investigation complete. Findings:\n"
-                            "1. MQ queue PAYMENT.REQUEST on QMPROD01 has elevated "
-                            "depth (1523/5000) with no active consumers.\n"
-                            "2. Application logs show connection timeout errors to "
-                            "MQ broker starting at 09:55.\n"
-                            "3. Batch job BATCH_PAYMENT_PROCESS shows FAILURE status "
-                            "with exit code 1.\n\n"
-                            "Root cause: PaymentService lost connectivity to MQ broker, "
-                            "causing message backlog. The batch payment processing job "
-                            "has also failed, likely related to the same connectivity issue.\n\n"
-                            "All evidence has been collected and attached as work notes."
-                        ),
-                        "evidence_summary": (
-                            "MQ depth: 1523/5000 (consumers stalled), "
-                            "App logs: connection timeout errors, "
-                            "Autosys: BATCH_PAYMENT_PROCESS FAILURE (exit code 1)"
-                        ),
-                    }),
-                ),
-            ],
-            usage={"prompt_tokens": 2000, "completion_tokens": 300, "total_tokens": 2300},
             finish_reason="tool_calls",
             raw={},
         )

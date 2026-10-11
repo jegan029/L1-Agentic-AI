@@ -67,3 +67,4 @@ data/resolution_memory.jsonl
 # Frontend build output
 frontend/node_modules/
 frontend/dist/
+data/*.db*

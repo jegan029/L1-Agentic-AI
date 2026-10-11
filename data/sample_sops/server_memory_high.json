@@ -1,19 +1,36 @@
 {
   "sop_id": "SOP-INFRA-001",
   "title": "Server Memory High - Dynatrace Investigation",
-  "applicable_services": ["AppServerProd01", "WebServerProd01"],
-  "applicable_categories": ["Infrastructure", "Server"],
-  "applicable_assignment_groups": ["L1-Infra-Support"],
-  "keywords": [
-    "memory", "high memory", "memory usage", "memory alert",
-    "high mem", "ram", "oom", "out of memory",
-    "memory saturated", "dynatrace memory"
+  "status": "published",
+  "applicable_services": [
+    "AppServerProd01",
+    "WebServerProd01"
   ],
+  "applicable_categories": [
+    "Infrastructure",
+    "Server"
+  ],
+  "applicable_assignment_groups": [
+    "L1-Infra-Support"
+  ],
+  "keywords": [
+    "memory",
+    "high memory",
+    "memory usage",
+    "memory alert",
+    "high mem",
+    "ram",
+    "oom",
+    "out of memory",
+    "memory saturated",
+    "dynatrace memory"
+  ],
+  "parameters": [],
   "steps": [
     {
       "step_id": "step-1",
       "step_type": "NOTE",
-      "description": "Begin server memory investigation",
+      "description": "Begin memory investigation",
       "parameters": {
         "text": "Starting investigation of high memory usage alert. Will query Dynatrace for current server health, memory metrics, and active problems."
       },
@@ -22,7 +39,7 @@
     {
       "step_id": "step-2",
       "step_type": "DYNATRACE_VM_CHECK",
-      "description": "Check host health and status in Dynatrace",
+      "description": "Check host health",
       "parameters": {
         "action": "vm_health",
         "host_name": "app-server-prod01"
@@ -34,7 +51,7 @@
     {
       "step_id": "step-3",
       "step_type": "DYNATRACE_METRICS",
-      "description": "Query current memory utilisation metrics from Dynatrace",
+      "description": "Query memory metrics",
       "parameters": {
         "action": "metrics",
         "metric_selector": "builtin:host.mem.usage,builtin:host.mem.availableBytes",
@@ -48,7 +65,7 @@
     {
       "step_id": "step-4",
       "step_type": "DYNATRACE_VM_CHECK",
-      "description": "Check active Dynatrace problems on the host",
+      "description": "List open problems",
       "parameters": {
         "action": "problems",
         "entity_selector": "entityName(\"app-server-prod01\")",
@@ -60,10 +77,13 @@
     {
       "step_id": "step-5",
       "step_type": "SPLUNK_SEARCH",
-      "description": "Search application logs for OOM errors and memory pressure events",
+      "description": "Search for out-of-memory errors",
       "parameters": {
         "query": "index=app_logs host=app-server-prod01 (\"OutOfMemoryError\" OR \"java.lang.OutOfMemory\" OR \"Cannot allocate memory\" OR \"OOM Killer\")",
-        "time_range": {"earliest": "-2h", "latest": "now"}
+        "time_range": {
+          "earliest": "-2h",
+          "latest": "now"
+        }
       },
       "on_success": "step-6",
       "on_failure": "step-escalate"
@@ -71,25 +91,52 @@
     {
       "step_id": "step-6",
       "step_type": "DECISION",
-      "description": "Evaluate all Dynatrace and log findings",
-      "parameters": {"rule": "any_failed"},
-      "on_success": "step-resolve",
+      "description": "Were all checks completed?",
+      "parameters": {
+        "rule": "any_failed"
+      },
+      "on_success": "step-verify",
       "on_failure": "step-escalate"
     },
     {
-      "step_id": "step-resolve",
-      "step_type": "NOTE",
-      "description": "Evidence collected — summarise findings and recommend action",
+      "step_id": "step-verify",
+      "step_type": "VERIFY",
+      "description": "Confirm memory usage is back under 85 percent",
       "parameters": {
-        "text": "Memory investigation complete. Dynatrace VM health, memory metrics, active problems, and OOM log evidence collected. Memory utilisation is critically elevated. Recommend L2 review for process restart or heap size adjustment."
+        "check": "DYNATRACE_METRICS",
+        "parameters": {
+          "action": "metrics",
+          "metric_selector": "builtin:host.mem.usage",
+          "entity_selector": "type(\"HOST\"),entityName(\"app-server-prod01\")",
+          "time_range": "now-15m"
+        },
+        "assert": "result.latest[\"builtin:host.mem.usage\"] < 85"
+      },
+      "on_success": "step-resolve",
+      "on_failure": "step-still-high"
+    },
+    {
+      "step_id": "step-resolve",
+      "step_type": "RESOLVE",
+      "description": "Memory back within threshold",
+      "parameters": {
+        "text": "Memory usage is below 85 percent at verification. Evidence collected and attached."
+      }
+    },
+    {
+      "step_id": "step-still-high",
+      "step_type": "ESCALATE",
+      "description": "Memory still high",
+      "parameters": {
+        "reason": "Memory utilisation is still above threshold. Dynatrace health, metrics, problems and OOM log evidence collected. L2 review needed for process restart or heap size adjustment."
       }
     },
     {
       "step_id": "step-escalate",
-      "step_type": "NOTE",
-      "description": "Escalation required — one or more diagnostic checks failed",
+      "step_type": "ESCALATE",
+      "description": "Investigation incomplete",
       "parameters": {
-        "text": "Unable to complete memory investigation. One or more Dynatrace or Splunk checks failed. Escalating to L2 with partial evidence collected."
+        "reason": "Unable to complete memory investigation. One or more Dynatrace or Splunk checks failed. Escalating to L2 with partial evidence collected."
       }
     }
   ],
@@ -97,13 +144,15 @@
     "Verify Dynatrace API connectivity",
     "Verify Splunk access for app_logs index"
   ],
-  "tools_required": ["Dynatrace", "Splunk"],
+  "tools_required": [
+    "Dynatrace",
+    "Splunk"
+  ],
   "escalation_criteria": {
     "max_retry_count": 2,
     "escalate_on_access_denied": true,
     "escalate_on_ambiguous_result": true,
-    "escalate_on_write_action": true,
-    "custom_rules": []
+    "escalate_on_write_action": true
   },
-  "version": "1.0"
+  "version": "2.0"
 }

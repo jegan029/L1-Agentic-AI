@@ -1,603 +1,212 @@
-# State Street L1 Engineer Agent — Operational Runbook
+# L1 Engineer Agent: runbook
 
-## 1. Deployment
+How to run and operate the service as it stands after Phase 2. Installation and the demo quick start are in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
 
-### 1.1 Prerequisites
+This is pre-release software. Sign-in has been tested only against identity providers faked in the test suite, and the tool adapters only against mocks. Expect to find differences on first contact with real systems.
 
-- Python 3.11+
-- Node.js 18+ (frontend dashboard)
-- Network access to: ServiceNow, Splunk REST API, IR360 API, Autosys CLI host, Windows file shares, Dynatrace API, mainframe TN3270 hosts
-- Service account credentials for each integration
+## 1. Run it
 
-### 1.2 Container Deployment
+| Mode | Command | Needs |
+|---|---|---|
+| One-shot demo | `python -m src.l1_agent.demo` | Nothing. Five sample incidents, all mocks, a throwaway SQLite file. |
+| Demo service | `AGENT_DEMO_MODE=true LLM_ENABLED=false python -m src.l1_agent.main` | Nothing. Loopback only; every caller is the demo user. |
+| Demo service with real ServiceNow | add `SERVICENOW_LIVE_IN_DEMO=true` and the `SERVICENOW_*` settings | ServiceNow for real; tool adapters stay mocked. |
+| Full service | `l1-agent serve` (or `python -m src.l1_agent.cli serve`) | PostgreSQL, a webhook secret, ServiceNow, an identity provider. |
+| Extra workers | `l1-agent worker` | The same database. Set `WORKER_EMBEDDED=false` on the API process if workers run only here. |
 
-```bash
-# Build the image
-docker build -t l1-agent:latest .
-
-# Run with environment file
-docker run -d \
-  --name l1-agent \
-  --env-file .env \
-  -p 8080:8080 \
-  l1-agent:latest
-
-# Demo image (no credentials needed)
-docker build --target demo -t l1-agent-demo:latest .
-docker run --rm -p 8080:8080 l1-agent-demo:latest
-```
-
-### 1.3 Direct Deployment
+Containers:
 
 ```bash
-# Install backend dependencies
-cd L1_Agentic_AI_Solution
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env with real credentials
-
-# Start the backend service
-python -m src.l1_agent.main
+docker build -t l1-agent .                         # production image
+docker build --target demo -t l1-agent-demo .      # one-shot demo image
+docker run --rm l1-agent-demo
+docker run --rm --env-file .env l1-agent migrate   # with DATABASE_MIGRATION_URL
+docker run --rm --env-file .env -p 127.0.0.1:8080:8080 l1-agent
 ```
 
-### 1.4 Frontend Dashboard Deployment
+The image runs as a non-root user and writes nothing to its filesystem. It listens on all interfaces inside the container, so publish the port deliberately and put TLS termination in front of it. The session cookie is marked Secure: the dashboard must be reached over HTTPS.
+
+## 2. First-time set-up
+
+### 2.1 Database
+
+PostgreSQL 15 or later. Two roles, on purpose:
+
+| Role | Used by | Can do |
+|---|---|---|
+| Migration role | `l1-agent migrate`, `l1-agent tenant create` | Owns the schema. Needs `CREATEROLE` once, to create the group role `l1_app`, or create that role beforehand. |
+| Application role | `serve`, `worker`, every other command | A login that is a member of `l1_app`. Row level security applies to it. |
+
+```sql
+-- as a database administrator
+CREATE ROLE l1_owner LOGIN PASSWORD '...' CREATEROLE;
+CREATE DATABASE l1agent OWNER l1_owner;
+CREATE ROLE l1_app_login LOGIN PASSWORD '...';
+```
 
 ```bash
-# Install frontend dependencies
-cd frontend
-npm install
-
-# Development (with hot reload, proxies /api/* to localhost:8080)
-npm run dev
-# Opens at http://localhost:5173
-
-# Production build
-npm run build
-# Outputs to frontend/dist/
-
-# Serve production build via the backend (optional)
-# Add to main.py: app.router.add_static('/dashboard', 'frontend/dist/', show_index=True)
-# Then access at http://localhost:8080/dashboard
+export DATABASE_MIGRATION_URL=postgresql+asyncpg://l1_owner:...@db:5432/l1agent
+export DATABASE_URL=postgresql+asyncpg://l1_app_login:...@db:5432/l1agent
+l1-agent migrate
+psql -c "GRANT l1_app TO l1_app_login"          # as the migration role or an administrator
+l1-agent tenant create --slug default --name "Your organisation"
 ```
 
-### 1.5 Running Both Services (Demo Mode)
+The service refuses to start if `DATABASE_URL` is a superuser, owns the tables, can bypass row level security, can create tenants or can change audit rows. That is deliberate: give it the application role.
 
-Open three terminals:
+Run `l1-agent migrate` before starting a new version. Migrations are forward only.
+
+### 2.2 Access
+
+| Need | Setting or command |
+|---|---|
+| Webhook signing secret, 32 or more characters | `AGENT_WEBHOOK_SECRET` |
+| Sign-in with OpenID Connect | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` (`https://<service>/auth/callback`) |
+| Sign-in with SAML | `SAML_IDP_METADATA_PATH`, `SAML_SP_ENTITY_ID`, `SAML_ACS_URL` (`https://<service>/auth/saml/acs`); give the identity provider `/auth/saml/metadata` |
+| The first administrator | `l1-agent roles grant --group <idp group> --role tenant_admin` |
+| Other roles | Same command, or the administrator uses `PUT /api/role-mappings` |
+| A token for a script or the dashboard dev proxy | `l1-agent token create --name ci --permission incidents.read` |
+| Emergency access when the identity provider is down | `l1-agent breakglass hash`, then set `BREAK_GLASS_PASSWORD_HASH` |
+
+A user whose groups map to no role cannot sign in. Roles are read at sign-in; a change takes effect at the user's next sign-in. Tokens are shown once, expire (365 days at most) and can carry only read permissions.
+
+The identity provider must send the user's groups: in the `groups` claim of the ID token (`OIDC_GROUPS_CLAIM`) or the `groups` SAML attribute (`SAML_GROUPS_ATTRIBUTE`).
+
+### 2.3 ServiceNow
+
+1. Create a service account with the `itil` role. It reads and updates incidents, reads `sys_user` to find its own id, and reads the knowledge table if you use it as an SOP source.
+2. Create the intake assignment group and set `SERVICENOW_ASSIGNMENT_GROUP` to its exact name. The poller takes only incidents that are New and assigned to that group.
+3. Create every L2 group named in your routing file. An escalation to a group that does not exist on the instance will not land with a team.
+4. Set `SERVICENOW_CLOSE_CODE` to a value in your instance's incident *Resolution code* list. If the update is refused, the run is recorded as `needs_human` with ServiceNow's reason.
+5. Check the connection: `pytest tests/live -m live_servicenow -v -s`. This creates incidents tagged `[L1-AGENT-TEST]` and leaves them there; do not run it against production.
+
+Webhook senders must sign each request as described in the README.
+
+**Authentication.** Basic by default. For OAuth 2.0 set `SERVICENOW_AUTH=oauth`, `SERVICENOW_OAUTH_CLIENT_ID` and the client secret (`SERVICENOW_OAUTH_CLIENT_SECRET`, or better `SERVICENOW_OAUTH_CLIENT_SECRET_REF`). With a user name and password also set, the password grant is used; without them, client credentials. The token endpoint defaults to `<instance>/oauth_token.do`. OAuth is covered by contract tests only; it has not run against a real instance.
+
+**Claiming.** Before it does anything to a ticket the agent assigns it to itself (`SERVICENOW_AGENT_USER`, default the integration user) and moves it to In Progress. A ticket that is already assigned to someone else, or no longer open, is left untouched and the run is recorded as `aborted`. The Table API has no conditional update, so a person who takes a ticket in the instant between the agent's check and its update can be overwritten; the agent re-reads the ticket afterwards and stops if it is not the owner. When the agent escalates, it clears the assignment in the same update that changes the group: a stock instance refuses a group change on a ticket that is still assigned. `SERVICENOW_CLAIM=false` switches claiming off.
+
+**Paging.** Lists are read `SERVICENOW_PAGE_SIZE` rows at a time (default 100), up to `SERVICENOW_MAX_PAGES` pages per poll (default 10). The rest is picked up on the next poll. A page counts against the ceiling even when access controls leave it empty, so for a table where the integration user can read only a small share of the rows, raise the page size.
+
+### 2.4 Connections and credentials
+
+A connection is a connector's settings plus *references* to its credentials. A credential value is never stored in the database and is refused if you try.
+
+| Reference | Where the value is read from |
+|---|---|
+| `vault:<path>/<field>` | HashiCorp Vault KV v2, under `VAULT_MOUNT` and `VAULT_PATH_PREFIX` |
+| `aws:<name>` | AWS SSM Parameter Store, under `AWS_SSM_PREFIX` |
+| `file:/absolute/path` | A mounted secret file. `SECRETS_FILE_ROOTS` limits which directories are allowed |
+| `env:NAME` | The process environment. Development only: changing it needs a restart |
 
 ```bash
-# Terminal 1 — Backend (rule-based, no credentials needed)
-cd L1_Agentic_AI_Solution
-export AGENT_DEMO_MODE=true
-export LLM_ENABLED=false
-python -m src.l1_agent.main
-
-# Terminal 2 — Frontend
-cd frontend
-npm run dev
-
-# Terminal 3 — Fire test incidents (optional)
-cd L1_Agentic_AI_Solution
-python -m src.l1_agent.demo
+l1-agent connectors                      # what each connector can do, and the credentials it needs
+l1-agent connection set --connector splunk --config splunk.json --secret token=vault:splunk/token
+l1-agent connection test --connector splunk
+l1-agent connection list
 ```
 
-Open **http://localhost:5173** in a browser to view the dashboard.
+A tenant with no stored connection for a connector uses the deployment's environment settings (`SPLUNK_BASE_URL` and so on), so an install configured through environment variables keeps working. There, `<NAME>_REF` gives a reference in place of the value, for example `SPLUNK_TOKEN_REF=file:/run/secrets/splunk-token`; with `SECRETS_BACKEND=vault` or `aws` the references are derived for you.
 
-### 1.6 Running with CrewAI Pipeline
+**Rotating a credential.** Change it in the secrets backend. Nothing is restarted. Values are cached for 30 seconds; and when a call fails and the backend holds a different value from the one that was used, the connector reads the new value and repeats the call once. For ServiceNow the same happens on a `401`. A credential given as a plain value in the environment (no reference) is read once at start-up and does not follow a rotation.
 
-Requires an Anthropic API key. All other services (frontend, history store, SSE) work identically.
+Changed connection settings are picked up within about 15 seconds. Every change is in the audit log as `connection.updated`, with the references but never a value.
+
+### 2.5 SOPs and knowledge sources
+
+Outside demo mode the service starts with no SOPs. Nothing runs until a version is published.
+
+1. Map identity provider groups to `sop_author` and `sop_approver`. They must be different people for any one version.
+2. Add drafts: in the dashboard under **SOP library**, with `l1-agent sop import --file sop.json`, or from a knowledge source.
+3. An author submits a draft; an approver reviews, approves and publishes it.
+
+Knowledge sources:
+
+| Source | Settings |
+|---|---|
+| ServiceNow knowledge base | `KNOWLEDGE_SERVICENOW_KB=true`, `KNOWLEDGE_SERVICENOW_KB_QUERY` (an encoded query, default `workflow_state=published`). Uses the ServiceNow connection |
+| Git repository | `KNOWLEDGE_GIT_URL` (https or ssh), `KNOWLEDGE_GIT_REF`, `KNOWLEDGE_GIT_PATH`, `KNOWLEDGE_GIT_TOKEN_REF`. Reads `*.json`, `*.md` and `*.txt`. Needs the `git` command |
+
+`l1-agent knowledge sync` pulls what changed since the last sync; `KNOWLEDGE_SYNC_INTERVAL` (seconds) does it on a timer. Each article revision becomes one draft, once. A file deleted from Git or an article unpublished in ServiceNow does not retire its SOP; retire it in the library.
+
+## 3. Health and monitoring
+
+| Route | Use | Needs |
+|---|---|---|
+| `GET /health` | Liveness. Status only. | Nothing |
+| `GET /api/status` | Mode and a metrics snapshot | `system.read` |
+| `GET /metrics` | Prometheus text format, for this process | `metrics.read` |
+| `GET /api/audit/verify` | Recompute the audit chain | `audit.read` |
+
+Logs are JSON on standard output. Counters worth alerting on: `http.denied{reason=...}`, `auth.login_failed`, `runs.resumed`, `jobs.infrastructure_errors`.
+
+Queue state is in the `jobs` table: `queued`, `running` (with `locked_until`), `done`, `dead`. A `dead` job's run was recorded as `needs_human`.
+
+## 4. Audit log
 
 ```bash
-# Terminal 1 — Backend in CrewAI mode
-cd L1_Agentic_AI_Solution
-export AGENT_DEMO_MODE=true
-export LLM_ENABLED=false
-export CREWAI_ENABLED=true
-export CREWAI_MODEL=claude-sonnet-4-6       # or another Anthropic model ID
-export ANTHROPIC_API_KEY=sk-ant-...
-export CREWAI_VERBOSE=true                  # optional: prints agent deliberation
-python -m src.l1_agent.main
-
-# Terminal 2 — Frontend (unchanged)
-cd frontend
-npm run dev
+l1-agent audit verify                               # exit status 2 if the chain is broken
+l1-agent audit checkpoint >> /secure/checkpoints.jsonl
+l1-agent audit verify --checkpoints /secure/checkpoints.jsonl
+l1-agent audit timeline --run <run id>              # one run, from audit events alone
 ```
 
-The four agents (`TriageAgent → ReviewAgent → ResolutionAgent → ResolverAgent`) run sequentially inside a thread-pool executor so the async event loop is never blocked. Watch their deliberation in the Activity Feed at `http://localhost:5173`.
-
-### 1.6 Health Check
-
-```
-GET http://localhost:8080/health
-```
-
-Response:
-```json
-{
-  "status": "healthy",
-  "metrics": {
-    "counters": { "incidents.received": 8, "incidents.resolved": 5 },
-    "histograms": { "sop.execution_duration_ms": { "mean": 3820.4 } },
-    "gauges": { "l1_agent_uptime_seconds": 3600 }
-  },
-  "memory": {}
-}
-```
-
----
-
-## 2. Configuration
-
-### 2.1 Required Variables
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `SERVICENOW_BASE_URL` | ServiceNow instance URL | `https://company.service-now.com` |
-| `SERVICENOW_USERNAME` | API username | `l1_agent_svc` |
-| `SERVICENOW_PASSWORD` | API password | (from vault) |
-| `SERVICENOW_ASSIGNMENT_GROUP` | Incident queue to monitor | `L1-Support` |
-
-### 2.2 LLM / AI Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LLM_ENABLED` | `false` | Enable AI/LLM path (AIAnalyzer + AIExecutor) |
-| `LLM_ENDPOINT` | `https://api.openai.com/v1` | OpenAI-compatible API base URL |
-| `LLM_API_KEY` | — | LLM API key — **store in secrets vault, never in code or logs** |
-| `LLM_MODEL` | `gpt-4` | Model name (e.g. `gpt-4o`, `gpt-4`, `gpt-3.5-turbo`) |
-| `LLM_TEMPERATURE` | `0.2` | Sampling temperature (lower = more deterministic) |
-| `LLM_MAX_TOKENS` | `4096` | Maximum tokens per LLM response |
-| `LLM_TIMEOUT_SECONDS` | `60` | HTTP timeout for LLM API calls |
-
-### 2.3 CrewAI Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CREWAI_ENABLED` | `false` | Enable CrewAI 4-agent pipeline; takes precedence over `LLM_ENABLED` |
-| `CREWAI_MODEL` | `claude-sonnet-4-6` | Anthropic model ID used by all four agents |
-| `ANTHROPIC_API_KEY` | — | Anthropic API key — also checked as `CREWAI_API_KEY` |
-| `CREWAI_VERBOSE` | `false` | Print agent deliberation to stdout (useful for debugging) |
-| `CREWAI_MAX_ITER` | `15` | Maximum tool-call iterations per agent before forced stop |
-
-### 2.4 Agent Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AGENT_DEMO_MODE` | `false` | Use mock adapters + pre-load sample SOPs from `data/sample_sops/` |
-| `AGENT_LOG_LEVEL` | `INFO` | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`) |
-| `AGENT_WEBHOOK_PORT` | `8080` | Backend HTTP listening port |
-| `AGENT_WEBHOOK_HOST` | `0.0.0.0` | Backend bind address |
-| `AGENT_SOP_CONFIDENCE_THRESHOLD` | `0.6` | Minimum match confidence to execute a SOP (0–1) |
-| `AGENT_MAX_CONCURRENT_INCIDENTS` | `5` | Semaphore limit for concurrent incident processing |
-| `SERVICENOW_POLL_INTERVAL` | `30` | Seconds between ServiceNow polling cycles |
-
-### 2.5 Tool Adapter Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SPLUNK_BASE_URL` | — | Splunk REST API base URL |
-| `SPLUNK_TOKEN` | — | Splunk bearer token |
-| `IR360_BASE_URL` | — | IR360 API base URL |
-| `IR360_API_KEY` | — | IR360 API key |
-| `AUTOSYS_CLI_PATH` | `autorep` | Path to autorep binary |
-| `WINDOWS_SHARE_ALLOWED_PREFIXES` | — | Comma-separated UNC path prefixes |
-| `DYNATRACE_BASE_URL` | — | Dynatrace environment URL |
-| `DYNATRACE_API_TOKEN` | — | Dynatrace API token (scopes: `entities.read`, `metrics.read`, `problems.read`) |
-| `MAINFRAME_HOST` | — | Mainframe TN3270 hostname |
-| `MAINFRAME_PORT` | `23` | Mainframe TN3270 port |
-| `WEBUI_ALLOWED_DOMAINS` | — | Comma-separated allowed domains for Selenium |
-
----
-
-## 3. Dashboard API Reference
-
-All endpoints are served on the same port as the backend (`8080` by default). The frontend Vite dev server proxies `/api/*` to the backend automatically.
-
-### 3.1 Existing Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/webhook/incident` | Receive a ServiceNow incident webhook |
-| `GET` | `/health` | Service health + full metrics snapshot |
-| `GET` | `/metrics` | Prometheus-compatible text format for Grafana |
-
-### 3.2 Dashboard Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/api/dashboard/summary` | KPIs, outcome breakdown, escalation reasons, 7-day trend |
-| `GET` | `/api/incidents` | Paginated incident history |
-| `GET` | `/api/incidents/{incident_number}` | Full execution trace for one incident |
-| `GET` | `/api/sops/stats` | Per-SOP aggregated resolution stats |
-| `GET` | `/api/stream` | SSE stream of real-time agent events |
-
-#### `/api/incidents` Query Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `page` | int | Page number (default: 1) |
-| `per_page` | int | Results per page (default: 20, max: 100) |
-| `search` | string | Full-text search on incident number, description, SOP title |
-| `outcome` | string | Filter: `resolved`, `escalated`, `failed`, `partial` |
-| `priority` | int | Filter: `1`–`5` |
-
-#### `/api/stream` SSE Event Types
-
-| Event | When | Key Payload Fields |
-|-------|------|--------------------|
-| `incident_received` | Incident intake | `incident_number`, `short_description`, `priority` |
-| `sop_matched` | After SOP selection | `incident_number`, `sop_id`, `sop_title`, `confidence` |
-| `step_executing` | Before each step | `incident_number`, `step_id`, `step_type`, `description` |
-| `step_done` | After each step | `incident_number`, `step_id`, `status`, `output_summary`, `duration_ms` |
-| `incident_resolved` | Successful resolution | `incident_number`, `sop_id`, `duration_ms` |
-| `incident_escalated` | L2 escalation | `incident_number`, `reason` |
-| `heartbeat` | Every 25s | `ts` (keeps browser connection alive) |
-
-### 3.3 Firing Test Incidents
-
-**Incident that resolves via SOP (matches SOP-MQ-001):**
-```bash
-curl -X POST http://localhost:8080/webhook/incident \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sys_id": "test-resolve-001",
-    "number": "INC0009001",
-    "short_description": "MQ queue depth high on PAYMENT.REQUEST - messages not being consumed",
-    "description": "PAYMENT.REQUEST queue on QMPROD01 building up since 09:00. Consumer PaymentService not processing.",
-    "category": "Middleware",
-    "subcategory": "MQ",
-    "cmdb_ci": "PaymentService",
-    "assignment_group": "L1-Middleware-Support",
-    "priority": "2",
-    "state": "1"
-  }'
-```
-
-**Incident that escalates to L2 (no matching SOP):**
-```bash
-curl -X POST http://localhost:8080/webhook/incident \
-  -H "Content-Type: application/json" \
-  -d '{
-    "sys_id": "test-escalate-001",
-    "number": "INC0009002",
-    "short_description": "SSL certificate expiring in 3 days on payments-api.internal",
-    "description": "SSL certificate for payments-api.internal expires in 72 hours. Automated renewal failed.",
-    "category": "Security",
-    "subcategory": "Certificates",
-    "cmdb_ci": "payments-api.internal",
-    "assignment_group": "L1-Security-Support",
-    "priority": "1",
-    "state": "1"
-  }'
-```
-
----
-
-## 4. Managing SOPs
-
-### 4.1 SOP Storage
-
-SOPs can be stored in:
-1. **ServiceNow Knowledge Base** (production) — retrieved via KB API on each processing cycle
-2. **Local JSON files** (demo/dev) — placed in `data/sample_sops/`, auto-loaded when `AGENT_DEMO_MODE=true`
-
-### 4.2 Adding a New SOP
-
-1. Create a JSON file following the schema below
-2. Place it in `data/sample_sops/` (demo) or upload to ServiceNow KB (production)
-3. Required fields: `sop_id`, `title`, `keywords`, `steps`
-4. Each step requires: `step_id`, `step_type`, `parameters`, `on_success`, `on_failure`
-5. Test in demo mode before deploying to production (see §4.4)
-
-### 4.3 Step Parameters Reference
-
-**SPLUNK_SEARCH**
-```json
-{ "query": "index=app_logs sourcetype=payment ERROR", "time_range": "-1h" }
-```
-
-**MQ_CHECK**
-```json
-{ "queue_manager": "PROD.QM1", "queue": "PAYMENT.IN", "action": "depth" }
-```
-Actions: `depth` · `status` · `browse`
-
-**FILE_CHECK**
-```json
-{ "unc_path": "//fileserver/logs/app/payment.log", "pattern": "ERROR|FATAL", "last_n_lines": 100 }
-```
-
-**AUTOSYS_STATUS**
-```json
-{ "job_name": "BATCH_PAYMENT_001", "action": "status" }
-```
-Actions: `status` · `dependencies`
-
-**DECISION**
-```json
-{ "rule": "any_failed" }
-```
-Rules: `any_failed` · `all_success`
-
-**DYNATRACE_VM_CHECK**
-```json
-{ "host_name": "app-server-01", "host_group": "production" }
-```
-
-**DYNATRACE_METRICS**
-```json
-{ "metric_selector": "builtin:host.cpu.usage", "entity_selector": "type(HOST),entityName(app-server-01)", "time_range": "now-1h" }
-```
-
-**WEB_UI_CHECK**
-```json
-{
-  "url": "https://app.example.com/dashboard",
-  "check_type": "click_path",
-  "click_steps": [
-    { "action": "click", "selector": "#login-btn", "name": "click-login" },
-    { "action": "assert_text", "value": "Welcome", "name": "verify-welcome" }
-  ]
-}
-```
-
-**MAINFRAME_CHECK**
-```json
-{ "job_name": "BEIM_ASYNC_JOB01", "expected_status": "inact ok", "action": "async_status" }
-```
-
-**NOTE**
-```json
-{ "text": "Beginning investigation for {cmdb_ci}" }
-```
-
-### 4.4 Testing a New SOP
-
-```bash
-# 1. Start backend in demo mode
-export AGENT_DEMO_MODE=true && export LLM_ENABLED=false
-python -m src.l1_agent.main
-
-# 2. Fire an incident matching the new SOP keywords
-curl -X POST http://localhost:8080/webhook/incident \
-  -H "Content-Type: application/json" \
-  -d '{ "sys_id": "test-001", "number": "INC9999", ... }'
-
-# 3. Check the result
-curl http://localhost:8080/api/incidents/INC9999
-
-# 4. Watch live in the dashboard at http://localhost:5173 → Activity Feed
-```
-
----
-
-## 5. Incident History & Persistence
-
-### 5.1 How History is Stored
-
-Every completed incident execution (resolved or escalated) is written to:
-- **In-memory deque** — capped at 1 000 records, available instantly to API queries
-- **`data/incident_history.jsonl`** — JSONL file, one record per line, loaded on startup so history survives restarts
-
-### 5.2 Viewing History
-
-```bash
-# Via the dashboard
-# Navigate to http://localhost:5173 → Incident Feed
-
-# Via API
-curl "http://localhost:8080/api/incidents?per_page=20&outcome=escalated"
-
-# Raw file (most recent at bottom)
-tail -20 data/incident_history.jsonl | python -m json.tool
-```
-
-### 5.3 Clearing History
-
-```bash
-# Stop the service first, then clear the file
-> data/incident_history.jsonl
-# Restart the service
-```
-
----
-
-## 6. Troubleshooting
-
-### 6.1 Common Issues
-
-| Symptom | Likely Cause | Resolution |
-|---------|-------------|------------|
-| No incidents picked up | Wrong assignment group | Check `SERVICENOW_ASSIGNMENT_GROUP` matches the queue |
-| All incidents escalate — `no_sop` reason | SOP cache empty (ServiceNow unreachable) | Set `AGENT_DEMO_MODE=true` to pre-load sample SOPs, or check ServiceNow connectivity |
-| All incidents escalate — `no_sop_ai` reason | MockLLM returns low confidence | Switch to rule-based mode: `LLM_ENABLED=false` |
-| Low confidence escalations | Keywords don't match | Add `applicable_services`, `applicable_categories`, `applicable_assignment_groups` to SOP |
-| Dashboard shows no data | History store empty | Fire incidents via webhook; history is only written after processing completes |
-| SSE Activity Feed not connecting | Backend not running or CORS issue | Verify backend is on `:8080`; check browser console for CORS errors |
-| `work_note_callback failed` in logs | ServiceNow unreachable | Expected in demo mode — processing continues, work notes are skipped |
-| Frontend shows "Reconnecting…" | Backend stopped or `/api/stream` unreachable | Restart backend; frontend auto-reconnects within 3s |
-| Adapter timeout | Network/firewall issue | Check connectivity; review circuit breaker state |
-| Duplicate work notes | Idempotency check bypassed | Verify `sys_id` is unique per incident; check `processed_ids` set |
-| CrewAI: `AuthenticationError` | Missing Anthropic API key | Set `ANTHROPIC_API_KEY` or `CREWAI_API_KEY` env var |
-| CrewAI: agents return wrong model | `CREWAI_MODEL` not a valid Anthropic ID | Use a valid model ID e.g. `claude-sonnet-4-6`, `claude-3-5-sonnet-20241022` |
-| CrewAI: incident `FAILED` outcome | Agent hit `CREWAI_MAX_ITER` limit | Increase `CREWAI_MAX_ITER` (default 15) or check `CREWAI_VERBOSE=true` logs |
-| CrewAI: `list_sops` returns "No SOPs loaded" | `register_sops()` called before SOPs loaded | Ensure `AGENT_DEMO_MODE=true` so sample SOPs are pre-loaded at startup |
-| CrewAI: blocking event loop warning | `run_in_executor` not wrapping kickoff | This is handled automatically by `CrewIncidentProcessor` — do not call `kickoff()` directly from async code |
-
-### 6.2 Log Analysis
-
-Logs are structured JSON. Filter by correlation ID (incident number):
-
-```bash
-# All logs for a specific incident
-grep "INC0012345" agent.log | python -m json.tool
-
-# All errors
-python -c "
-import sys, json
-for line in open('agent.log'):
-    try:
-        e = json.loads(line)
-        if e.get('level') == 'ERROR': print(json.dumps(e, indent=2))
-    except: pass
-"
-
-# SOP matching decisions
-grep "sop_matcher" agent.log | python -m json.tool
-```
-
-### 6.3 Dashboard Debugging
-
-```bash
-# Check all API endpoints respond
-curl http://localhost:8080/api/dashboard/summary | python -m json.tool
-curl "http://localhost:8080/api/incidents?per_page=5" | python -m json.tool
-curl http://localhost:8080/api/sops/stats | python -m json.tool
-
-# Test SSE stream (should print heartbeat lines every 25s)
-curl -N http://localhost:8080/api/stream
-```
-
-### 6.4 Circuit Breaker Recovery
-
-If an adapter's circuit breaker is open:
-1. Check the tool endpoint is reachable
-2. Wait for the reset timeout (default: 60s)
-3. The next request acts as a probe — if it succeeds the breaker closes
-4. If persistent, check credentials and network configuration
-
-### 6.5 Metrics
-
-```bash
-# JSON snapshot (counters, histograms, gauges)
-curl http://localhost:8080/health | python -m json.tool
-
-# Prometheus text format (for Grafana scraping)
-curl http://localhost:8080/metrics
-```
-
-Key metrics to monitor:
-
-| Metric | Type | Description |
-|--------|------|-------------|
-| `incidents.received` | Counter | Total incidents received |
-| `incidents.resolved` | Counter | Total auto-resolved |
-| `incidents.escalated{reason=*}` | Counter | Escalations by reason |
-| `incidents.failed` | Counter | Failed executions |
-| `sop.executions{outcome=*}` | Counter | SOP runs by outcome |
-| `sop.execution_duration_ms` | Histogram | End-to-end resolution time |
-
----
-
-## 7. Execution Mode Operations
-
-### 7.1 Mode Comparison
-
-| | Rule-Based | AI/LLM | CrewAI |
-|-|-----------|--------|--------|
-| **Env var** | `LLM_ENABLED=false` | `LLM_ENABLED=true` | `CREWAI_ENABLED=true` |
-| **API key required** | No | Yes (OpenAI-compat.) | Yes (Anthropic) |
-| **SOP selection** | Keyword/CI/category scoring | `AIAnalyzer.select_sop()` | ReviewAgent via `list_sops` |
-| **Step execution** | Deterministic sequential | LLM tool-calling loop (≤15 iter) | ResolutionAgent tool-calling |
-| **Processor class** | `IncidentProcessor` | `IncidentProcessor` | `CrewIncidentProcessor` |
-| **Best for** | Demo, CI, no LLM budget | Flexible unstructured incidents | Showcasing agentic reasoning |
-
-### 7.2 Switching Modes
-
-```bash
-# Rule-based (no API key, recommended for demo/testing)
-export LLM_ENABLED=false
-python -m src.l1_agent.main
-
-# AI/LLM mode
-export LLM_ENABLED=true
-export LLM_ENDPOINT=https://api.openai.com/v1
-export LLM_API_KEY=sk-...
-python -m src.l1_agent.main
-
-# CrewAI mode (overrides LLM_ENABLED)
-export CREWAI_ENABLED=true
-export CREWAI_MODEL=claude-sonnet-4-6
-export ANTHROPIC_API_KEY=sk-ant-...
-python -m src.l1_agent.main
-```
-
-If the LLM endpoint is unreachable at runtime in AI/LLM mode, the agent automatically falls back to rule-based mode for that incident.
-
-### 7.3 How AI/LLM Mode Decides
-
-1. **Incident analysis** — LLM reads the ticket and produces a preliminary root-cause analysis
-2. **SOP selection** — LLM calls `select_sop` tool, returning the best SOP with confidence score and rationale
-3. **Execution loop** — LLM drives tool calls (`splunk_search`, `mq_check`, `dynatrace_vm_check`, etc.) up to 15 iterations
-4. **Conclusion** — LLM calls `resolve_incident` or `escalate_to_l2`
-
-### 7.4 How CrewAI Mode Decides
-
-```
-Incident JSON
-  → TriageAgent     (no tools)   — structured triage report
-  → ReviewAgent     (list_sops, get_sop_details) — selected SOP + confidence
-  → ResolutionAgent (7 tool adapters) — per-SOP investigation + OUTCOME verdict
-  → ResolverAgent   (no tools)   — work note + "OUTCOME: RESOLVED/ESCALATED"
-```
-
-The resolver agent's final output is parsed for `OUTCOME: RESOLVED` or `OUTCOME: ESCALATED` to determine the `ExecutionOutcome`. Each agent task's raw output is stored as a `StepResult` in the `ExecutionSummary`, so the Incident Detail view in the dashboard shows full agent deliberation.
-
-### 7.5 Demo Mode with Mock LLM
-
-```bash
-# Standalone demo — rule-based path, no running server needed
-python -m src.l1_agent.demo
-```
-
-Uses mock adapters and pre-loaded SOPs. Does not require any API key. Fires a batch of test incidents and prints execution summaries.
-
----
-
-## 8. Maintenance
-
-### 8.1 Updating SOPs
-
-1. Modify the SOP JSON in ServiceNow KB or `data/sample_sops/`
-2. **No agent restart required** in production (SOPs fetched from ServiceNow on each incident)
-3. In demo mode, restart the backend to pick up changes to `data/sample_sops/`
-4. Always test changes in demo mode first (see §4.4)
-
-### 8.2 Updating Credentials
-
-1. Update the environment variable or vault entry
-2. Restart the backend: `docker restart l1-agent`
-3. Verify with health check: `curl http://localhost:8080/health`
-
-### 8.3 Deploying Frontend Updates
-
-```bash
-cd frontend
-npm run build          # rebuilds frontend/dist/
-# If serving via backend static routes, restart backend
-# If using a separate nginx/CDN, deploy dist/ contents
-```
-
-### 8.4 Scaling
-
-- Increase `AGENT_MAX_CONCURRENT_INCIDENTS` for higher throughput
-- Deploy multiple backend instances behind a load balancer
-- For very high volume, migrate to event-driven intake (Kafka/RabbitMQ consumer)
-- `IncidentHistoryStore` is in-process — for multi-instance deployments, replace with a shared SQLite or PostgreSQL store
-
----
-
-## 9. Security Checklist
-
-- [ ] Service account uses least-privilege permissions for all integrations
-- [ ] All secrets stored in vault — not in environment variables in production
-- [ ] `LLM_API_KEY` injected via secrets vault, never in code or logs
-- [ ] `WINDOWS_SHARE_ALLOWED_PREFIXES` configured to restrict file access scope
-- [ ] `AUTOSYS_ALLOWED_COMMANDS` limited to read-only (`autorep`) only
-- [ ] `WEBUI_ALLOWED_DOMAINS` restricted to approved internal applications
-- [ ] CORS `FRONTEND_ORIGINS` restricted to the dashboard hostname in production (not `*`)
-- [ ] Network policies restrict backend egress to required tool endpoints only
-- [ ] Structured logs reviewed for accidental secret exposure before shipping to SIEM
-- [ ] Audit logs (incident history JSONL) retained per compliance requirements
-- [ ] `data/incident_history.jsonl` excluded from version control (add to `.gitignore`)
+Schedule `audit checkpoint` and write its output somewhere the database administrator cannot change, such as your SIEM or write-once storage. Without checkpoints, verification cannot tell that the newest events were removed. `AUDIT_CHECKPOINT_KEY` signs them.
+
+After restoring a database backup, run `audit verify --checkpoints` against the checkpoints taken before the backup.
+
+## 5. What to do when
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| Exits at start with "the database role is a superuser" or "owns the tables" | `DATABASE_URL` is the migration role | Use the application login (section 2.1). |
+| Exits with "Tenant ... does not exist" | No tenant, or the wrong `TENANT_SLUG` | `l1-agent tenant create`. |
+| Exits with `SecurityConfigError` or `ConfigError` | A required setting is missing or unsafe | The message names it. |
+| Sign-in ends with "sign-in failed" | The reason is not shown to the browser | Look for `auth.login_failed` in the audit log; its payload has the reason. Most often: no group mapped to a role. |
+| Signed in, but an action returns `403` | The role lacks the permission, or a missing CSRF token | `GET /api/me` lists roles and permissions. Refusals are audited as `access.denied`. |
+| API token returns `401` | Expired, revoked, or for another tenant | `l1-agent token list`. |
+| Webhook returns `401` | Bad signature, clock skew over five minutes, or a replayed request | Check the secret and the sender's clock. |
+| Requests return `429` | Rate limit | `RATE_LIMIT_PER_MINUTE`, `LOGIN_RATE_LIMIT_PER_MINUTE`. |
+| Incidents are never picked up | Not New, or not in the intake group | Check the ticket and `SERVICENOW_ASSIGNMENT_GROUP`. |
+| Run ends `aborted` with "Not claimed" | Someone already holds the ticket, or it is no longer open | Nothing to do. The agent wrote nothing to the ticket. |
+| Every run ends `escalated` with "No applicable SOP found" | No SOP is published for this tenant | `l1-agent sop list`. Drafts and versions in review are never matched. |
+| Run ends `needs_human` with "Adapter '...' not configured" | The SOP calls a connector this tenant has no connection for | `l1-agent connection set`, or `GET /api/connectors` to see the state and any error. |
+| A check fails with "credential unavailable" | The reference cannot be read | Check the reference, the backend's reachability and its access policy. |
+| A check is refused with "allow list '...' is empty" | The connection lists no permitted targets | Add the hosts, paths or transactions to the connection's settings. |
+| Approve returns `403` "The author of a version cannot approve it" | Working as intended | Someone else with `sop_approver` approves. |
+| Approve returns `409` "changed since it was reviewed" | The page was open while the version was sent back and resubmitted | Reload and review the current content. |
+| Knowledge sync reports "could not read the source" | Source unreachable or credentials refused | The error class is in `knowledge.synced` in the audit log; the cursor has not moved. |
+| Runs are accepted but never finish | No worker is running | `WORKER_EMBEDDED=true`, or start `l1-agent worker`. |
+| Run ends `escalated` with "Low confidence SOP match" | No SOP reached the threshold | The work note shows the score and which signals were compared. |
+| Run ends `needs_human` with "did not finish in N attempts" | A worker died on this run repeatedly | Check worker logs around the run id; the journal shows the last completed step. |
+| Run ends `needs_human` with "rejected the Resolved update" | Invalid resolution code, or a business rule | Fix `SERVICENOW_CLOSE_CODE`. |
+| Run ends `needs_human` after an adapter error | Target system down, or its circuit breaker is open | Check the target; the breaker resets after `AGENT_CB_RESET_SECONDS`. |
+
+## 6. Data the service keeps
+
+Everything is in PostgreSQL.
+
+| Table | Content | Notes |
+|---|---|---|
+| `incidents`, `runs`, `run_steps` | Ticket text, the SOP chosen, each step's result and evidence | Contains whatever is in your tickets. No retention control yet. |
+| `events` | Progress events for the dashboard stream | Grows; safe to prune by age. No automatic pruning yet. |
+| `jobs` | The queue | |
+| `audit_events` | The audit chain | Cannot be changed or pruned. Free text is redacted; evidence is a digest. |
+| `users`, `sessions`, `api_tokens`, `role_mappings` | Identity provider subject, email and display name; hashes of credentials | No password is stored. |
+| `sops`, `sop_versions` | Every SOP version, its author, approver, content hash and source article text | A submitted version cannot be changed and only a draft can be deleted, for any database role. |
+| `connections` | Connector settings and credential references | No credential values. |
+| `knowledge_sources` | How far each source has been read | |
+
+Back up the database as a whole. There are no files to back up.
+
+## 7. Known operational limits
+
+- One deployment serves one tenant's ServiceNow and identity provider. Operations connectors and knowledge sources are per tenant.
+- One connection per connector per tenant: a tenant cannot have two Splunk instances yet.
+- The Git source keeps a bare copy of the repository in a cache directory (`KNOWLEDGE_GIT_CACHE_DIR`, default under the temporary directory). It is rebuilt if lost.
+- The ticket claim has a short window in which a person's assignment can be overwritten (section 2.3).
+- A worker that dies while writing the final ServiceNow update can cause the closing work notes to be posted twice when the run is resumed. The outcome is recorded once.
+- If a worker stalls for longer than `WORKER_VISIBILITY_TIMEOUT` without dying, a second worker can pick up its run. Both then replay the same journal and the first conclusion stands, but work notes may repeat.
+- The rate limit and the metrics are per process.
+- The webhook secret is shared and is rotated by changing the setting and restarting.
+- The service does not serve TLS.

@@ -19,8 +19,8 @@ from src.l1_agent.engine.sop_matcher import SOPMatcher
 from src.l1_agent.engine.sop_parser import SOPParser
 from src.l1_agent.models.incident import Incident
 
-
 # ── Fixtures ──────────────────────────────────────────────────────────────────
+
 
 @pytest.fixture
 def adapter():
@@ -31,7 +31,9 @@ def adapter():
 def memory_sop():
     sop_path = (
         Path(__file__).resolve().parent.parent.parent
-        / "data" / "sample_sops" / "server_memory_high.json"
+        / "data"
+        / "sample_sops"
+        / "server_memory_high.json"
     )
     return json.loads(sop_path.read_text(encoding="utf-8"))
 
@@ -63,15 +65,18 @@ def memory_incident():
 
 # ── Mock adapter: memory-alert host ───────────────────────────────────────────
 
+
 class TestDynatraceMemoryAlertHost:
     """MockDynatraceAdapter returns elevated data for the prod memory-alert host."""
 
     @pytest.mark.asyncio
     async def test_vm_health_shows_problem_for_prod_host(self, adapter):
-        result = await adapter.execute({
-            "action": "vm_health",
-            "host_name": "app-server-prod01",
-        })
+        result = await adapter.execute(
+            {
+                "action": "vm_health",
+                "host_name": "app-server-prod01",
+            }
+        )
         assert result.success is True
         assert result.data["hosts_found"] == 1
         assert result.data["healthy"] is False
@@ -82,35 +87,40 @@ class TestDynatraceMemoryAlertHost:
 
     @pytest.mark.asyncio
     async def test_vm_health_evidence_shows_active_problem(self, adapter):
-        result = await adapter.execute({
-            "action": "vm_health",
-            "host_name": "app-server-prod01",
-        })
+        result = await adapter.execute(
+            {
+                "action": "vm_health",
+                "host_name": "app-server-prod01",
+            }
+        )
         assert "Active problems: 1" in result.evidence_snippet
         assert "Memory saturation" in result.evidence_snippet
 
     @pytest.mark.asyncio
     async def test_problems_shows_memory_saturation_for_prod_entity(self, adapter):
-        result = await adapter.execute({
-            "action": "problems",
-            "entity_selector": 'entityName("app-server-prod01")',
-        })
+        result = await adapter.execute(
+            {
+                "action": "problems",
+                "entity_selector": 'entityName("app-server-prod01")',
+            }
+        )
         assert result.success is True
         assert result.data["problem_count"] == 1
         assert result.data["problems"][0]["title"] == "Memory saturation"
 
     @pytest.mark.asyncio
     async def test_metrics_shows_critical_memory(self, adapter):
-        result = await adapter.execute({
-            "action": "metrics",
-            "metric_selector": "builtin:host.mem.usage,builtin:host.mem.availableBytes",
-            "entity_selector": 'type("HOST"),entityName("app-server-prod01")',
-            "time_range": "now-1h",
-        })
+        result = await adapter.execute(
+            {
+                "action": "metrics",
+                "metric_selector": "builtin:host.mem.usage,builtin:host.mem.availableBytes",
+                "entity_selector": 'type("HOST"),entityName("app-server-prod01")',
+                "time_range": "now-1h",
+            }
+        )
         assert result.success is True
         mem_metric = next(
-            m for m in result.data["metrics"]
-            if m["metric_id"] == "builtin:host.mem.usage"
+            m for m in result.data["metrics"] if m["metric_id"] == "builtin:host.mem.usage"
         )
         assert mem_metric["latest_value"] == 92.5
         assert "92.5" in result.evidence_snippet
@@ -119,33 +129,40 @@ class TestDynatraceMemoryAlertHost:
 
 # ── Mock adapter: regression guard — other hosts stay healthy ─────────────────
 
+
 class TestDynatraceHealthyHostRegression:
     """Existing test hosts must still be reported as healthy."""
 
     @pytest.mark.asyncio
     async def test_web_server_remains_healthy(self, adapter):
-        result = await adapter.execute({
-            "action": "vm_health",
-            "host_name": "web-server-01",
-        })
+        result = await adapter.execute(
+            {
+                "action": "vm_health",
+                "host_name": "web-server-01",
+            }
+        )
         assert result.data["healthy"] is True
         assert result.data["problems_count"] == 0
 
     @pytest.mark.asyncio
     async def test_app_server_01_remains_healthy(self, adapter):
-        result = await adapter.execute({
-            "action": "vm_health",
-            "host_name": "app-server-01",
-        })
+        result = await adapter.execute(
+            {
+                "action": "vm_health",
+                "host_name": "app-server-01",
+            }
+        )
         assert result.data["healthy"] is True
         assert result.data["problems_count"] == 0
 
     @pytest.mark.asyncio
     async def test_problems_zero_for_unrelated_entity_selector(self, adapter):
-        result = await adapter.execute({
-            "action": "problems",
-            "entity_selector": 'entityName("web-server-01")',
-        })
+        result = await adapter.execute(
+            {
+                "action": "problems",
+                "entity_selector": 'entityName("web-server-01")',
+            }
+        )
         assert result.data["problem_count"] == 0
 
     @pytest.mark.asyncio
@@ -155,6 +172,7 @@ class TestDynatraceHealthyHostRegression:
 
 
 # ── SOP structure ─────────────────────────────────────────────────────────────
+
 
 class TestMemorySopStructure:
     """SOP-INFRA-001 JSON has the expected shape and step types."""
@@ -179,33 +197,30 @@ class TestMemorySopStructure:
 
     def test_vm_health_step_targets_prod_host(self, memory_sop):
         vm_step = next(
-            s for s in memory_sop["steps"]
+            s
+            for s in memory_sop["steps"]
             if s["step_type"] == "DYNATRACE_VM_CHECK"
             and s["parameters"].get("action") == "vm_health"
         )
         assert vm_step["parameters"]["host_name"] == "app-server-prod01"
 
     def test_metrics_step_queries_memory_selector(self, memory_sop):
-        metrics_step = next(
-            s for s in memory_sop["steps"]
-            if s["step_type"] == "DYNATRACE_METRICS"
-        )
+        metrics_step = next(s for s in memory_sop["steps"] if s["step_type"] == "DYNATRACE_METRICS")
         selector = metrics_step["parameters"]["metric_selector"]
         assert "mem.usage" in selector
 
     def test_parsed_sop_has_correct_step_count(self, parsed_memory_sop):
-        # 6 logic steps + 2 terminal notes = 8
-        assert len(parsed_memory_sop.steps) == 8
+        # 6 investigation steps + VERIFY + RESOLVE + 2 ESCALATE terminals = 10
+        assert len(parsed_memory_sop.steps) == 10
 
 
 # ── SOP matching ──────────────────────────────────────────────────────────────
 
+
 class TestMemorySopMatching:
     """SOPMatcher selects SOP-INFRA-001 for a memory incident with high confidence."""
 
-    def test_memory_incident_matches_above_threshold(
-        self, parsed_memory_sop, memory_incident
-    ):
+    def test_memory_incident_matches_above_threshold(self, parsed_memory_sop, memory_incident):
         matcher = SOPMatcher(confidence_threshold=0.6)
         result = matcher.match(memory_incident, [parsed_memory_sop])
         assert result.sop is not None
@@ -216,27 +231,29 @@ class TestMemorySopMatching:
         """Verify the memory incident does NOT match the MQ SOP."""
         mq_sop_path = (
             Path(__file__).resolve().parent.parent.parent
-            / "data" / "sample_sops" / "mq_queue_depth_high.json"
+            / "data"
+            / "sample_sops"
+            / "mq_queue_depth_high.json"
         )
-        mq_sop = SOPParser().parse_from_json(
-            json.loads(mq_sop_path.read_text(encoding="utf-8"))
-        )
+        mq_sop = SOPParser().parse_from_json(json.loads(mq_sop_path.read_text(encoding="utf-8")))
         matcher = SOPMatcher(confidence_threshold=0.6)
         result = matcher.match(memory_incident, [mq_sop])
         # Either no match or very low confidence
         assert result.confidence < 0.6
 
-    def test_memory_sop_wins_over_all_sops(
-        self, parsed_memory_sop, memory_incident
-    ):
+    def test_memory_sop_wins_over_all_sops(self, parsed_memory_sop, memory_incident):
         """When all three SOPs are present, SOP-INFRA-001 wins for the memory incident."""
         mq_path = (
             Path(__file__).resolve().parent.parent.parent
-            / "data" / "sample_sops" / "mq_queue_depth_high.json"
+            / "data"
+            / "sample_sops"
+            / "mq_queue_depth_high.json"
         )
         autosys_path = (
             Path(__file__).resolve().parent.parent.parent
-            / "data" / "sample_sops" / "autosys_job_failure.json"
+            / "data"
+            / "sample_sops"
+            / "autosys_job_failure.json"
         )
         parser = SOPParser()
         all_sops = [

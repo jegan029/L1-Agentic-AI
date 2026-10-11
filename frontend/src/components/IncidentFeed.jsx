@@ -1,145 +1,228 @@
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback, memo } from 'react'
 import { useIncidentHistory } from '../hooks/useIncidentHistory'
-import { useAgent } from '../context/AgentContext'
-import StatusBadge from './StatusBadge'
+import { useIncidentFilters } from '../context/AgentContext'
+import { useDebouncedValue } from '../hooks/useDebouncedValue'
+import { useHashRoute, navigate, incidentHref } from '../hooks/useHashRoute'
+import StatusBadge, { PriorityBadge } from './StatusBadge'
 import IncidentDetail from './IncidentDetail'
-import { formatDuration, formatRelativeTime, priorityColor, formatPriority } from '../utils/formatters'
+import RelativeTime from './RelativeTime'
+import Icon from './Icon'
+import { formatDuration, csvField } from '../utils/formatters'
+
+const CSV_COLUMNS = ['incident_number', 'short_description', 'sop_title', 'outcome', 'priority', 'duration_ms', 'started_at']
 
 function exportCsv(items) {
-  const cols = ['incident_number','short_description','sop_title','outcome','priority','duration_ms','started_at']
-  const header = cols.join(',')
-  const rows = items.map(r => cols.map(c => JSON.stringify(r[c] ?? '')).join(','))
-  const blob = new Blob([header + '\n' + rows.join('\n')], { type: 'text/csv' })
-  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'incidents.csv'; a.click()
+  const rows = [CSV_COLUMNS.map(csvField).join(',')]
+  items.forEach(r => rows.push(CSV_COLUMNS.map(c => csvField(r[c])).join(',')))
+  const blob = new Blob([`${rows.join('\r\n')}\r\n`], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'incidents.csv'
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-const inputStyle = {
-  background: '#fff', border: '1px solid var(--border-subtle)',
-  borderRadius: 2, padding: '7px 12px', fontSize: 13,
-  color: 'var(--text-primary)', outline: 'none',
+const IncidentRow = memo(function IncidentRow({ r }) {
+  const href = incidentHref(r.incident_number)
+  return (
+    <tr role="row" className="is-clickable" onClick={() => navigate(href)}>
+      <td role="cell" className="c-prio"><PriorityBadge value={r.priority} /></td>
+      <td role="cell" className="c-num">
+        <a className="row-link" href={href} onClick={e => e.stopPropagation()}>{r.incident_number}</a>
+      </td>
+      <td role="cell" className="c-desc clip" title={r.short_description}>{r.short_description}</td>
+      <td role="cell" className="c-sop clip muted" title={r.sop_title || undefined}>{r.sop_title || 'No SOP'}</td>
+      <td role="cell" className="c-out"><StatusBadge outcome={r.outcome} /></td>
+      <td role="cell" className="c-dur muted">{formatDuration(r.duration_ms)}</td>
+      <td role="cell" className="c-time muted"><RelativeTime ts={r.started_at} /></td>
+    </tr>
+  )
+})
+
+function Skeleton() {
+  return (
+    <div style={{ padding: 16, display: 'grid', gap: 14 }} aria-hidden="true">
+      {[0, 1, 2, 3, 4].map(i => <span key={i} className="skel skel--block" />)}
+    </div>
+  )
 }
 
 export default function IncidentFeed() {
-  const { incidentFilters, setIncidentFilters } = useAgent()
-  const { total, items, loading, refresh } = useIncidentHistory(incidentFilters)
-  const [selected, setSelected] = useState(null)
+  const { filters, setFilters, resetFilters } = useIncidentFilters()
+  const { total, items, loading, refreshing, error, refresh } = useIncidentHistory(filters)
+  const { incident } = useHashRoute()
 
-  const setFilter = useCallback((key, val) => {
-    setIncidentFilters(f => ({ ...f, [key]: val, page: key === 'page' ? val : 1 }))
-  }, [setIncidentFilters])
+  // Typing updates the box immediately; the query follows 300 ms after the last keystroke.
+  const [query, setQuery] = useState(filters.search)
+  const debounced = useDebouncedValue(query, 300)
+  useEffect(() => {
+    if (debounced !== filters.search) setFilters(f => ({ ...f, search: debounced, page: 1 }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debounced])
+  useEffect(() => { setQuery(filters.search) }, [filters.search])
 
-  const totalPages = Math.max(1, Math.ceil(total / incidentFilters.perPage))
+  const setFilter = useCallback(
+    (key, val) => setFilters(f => ({ ...f, [key]: val, page: key === 'page' ? val : 1 })),
+    [setFilters],
+  )
+
+  const perPage = filters.perPage
+  const totalPages = Math.max(1, Math.ceil(total / perPage))
+  const from = total === 0 ? 0 : (filters.page - 1) * perPage + 1
+  const to = Math.min(total, filters.page * perPage)
+  const filtered = Boolean(filters.search || filters.outcome || filters.priority)
+
+  let body
+  if (loading) {
+    body = <Skeleton />
+  } else if (error && items.length === 0) {
+    body = (
+      <div className="state" role="alert">
+        <Icon name="wifi-off" />
+        <p className="state__title">Couldn&rsquo;t load incidents</p>
+        <p className="state__body">{error}. This is a loading problem, not an empty history.</p>
+        <button type="button" className="btn" onClick={refresh}>Try again</button>
+      </div>
+    )
+  } else if (items.length === 0) {
+    body = filtered ? (
+      <div className="state">
+        <Icon name="search" />
+        <p className="state__title">No incidents match these filters</p>
+        <p className="state__body">Try a different search term, or show every outcome and priority.</p>
+        <button type="button" className="btn" onClick={resetFilters}>Clear filters</button>
+      </div>
+    ) : (
+      <div className="state">
+        <Icon name="inbox" />
+        <p className="state__title">No incidents processed yet</p>
+        <p className="state__body">Incidents appear here as the agent receives them from ServiceNow, each with its full execution trace.</p>
+      </div>
+    )
+  }
 
   return (
-    <div style={{ padding: '28px 40px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+    <div className="page">
+      <header className="page-header">
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 700, color: 'var(--ss-navy)' }}>Incident Feed</h1>
-          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginTop: 2 }}>
-            {total} incident{total !== 1 ? 's' : ''} processed — click any row to view step-by-step execution trace
+          <h1 id="page-title" tabIndex={-1} className="page-title">Incident feed</h1>
+          <p className="page-sub">
+            {loading ? 'Loading incidents…' : `${total} ${total === 1 ? 'incident' : 'incidents'}${filtered ? ' match' : ' processed'}, newest first.`}
+            {' '}Select an incident number to see its execution trace.
           </p>
         </div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-          {/* Search */}
-          <div style={{ position: 'relative' }}>
-            <span className="material-symbols-rounded" style={{ position: 'absolute', left: 9, top: '50%', transform: 'translateY(-50%)', fontSize: 15, color: 'var(--text-muted)' }}>search</span>
-            <input value={incidentFilters.search} onChange={e => setFilter('search', e.target.value)}
-              placeholder="Search incidents…"
-              style={{ ...inputStyle, paddingLeft: 30, width: 200 }} />
+
+        <form className="toolbar" role="search" aria-label="Filter incidents" onSubmit={e => e.preventDefault()}>
+          <div className="field-group">
+            <label className="field-label" htmlFor="incident-search">Search</label>
+            <input
+              id="incident-search" className="field field--search" type="search"
+              value={query} onChange={e => setQuery(e.target.value)}
+              placeholder="Number, description, SOP"
+              autoComplete="off"
+            />
           </div>
-          <select value={incidentFilters.outcome} onChange={e => setFilter('outcome', e.target.value)} style={inputStyle}>
-            <option value="">All Outcomes</option>
-            <option value="resolved">Resolved</option>
-            <option value="escalated">Escalated</option>
-            <option value="failed">Failed</option>
-            <option value="partial">Partial</option>
-          </select>
-          <select value={incidentFilters.priority} onChange={e => setFilter('priority', e.target.value)} style={inputStyle}>
-            <option value="">All Priorities</option>
-            {[1,2,3,4,5].map(p => <option key={p} value={p}>{formatPriority(p)}</option>)}
-          </select>
-          <button onClick={() => exportCsv(items)} style={{
-            ...inputStyle, display: 'flex', alignItems: 'center', gap: 5,
-            cursor: 'pointer', color: 'var(--text-secondary)',
-          }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 15 }}>download</span>
-            Export CSV
+          <div className="field-group">
+            <label className="field-label" htmlFor="incident-outcome">Outcome</label>
+            <select
+              id="incident-outcome" className="field"
+              value={filters.outcome} onChange={e => setFilter('outcome', e.target.value)}
+            >
+              <option value="">All outcomes</option>
+              <option value="resolved">Resolved</option>
+              <option value="escalated">Escalated</option>
+              <option value="needs_human">Needs human</option>
+              <option value="partial">Partial</option>
+            </select>
+          </div>
+          <div className="field-group">
+            <label className="field-label" htmlFor="incident-priority">Priority</label>
+            <select
+              id="incident-priority" className="field"
+              value={filters.priority} onChange={e => setFilter('priority', e.target.value)}
+            >
+              <option value="">All priorities</option>
+              <option value="1">P1 Critical</option>
+              <option value="2">P2 High</option>
+              <option value="3">P3 Moderate</option>
+              <option value="4">P4 Low</option>
+              <option value="5">P5 Planning</option>
+            </select>
+          </div>
+          <button
+            type="button" className="btn" onClick={() => exportCsv(items)}
+            disabled={items.length === 0} title="Exports the rows on this page"
+          >
+            <Icon name="download" />Export page (CSV)
           </button>
-          <button onClick={refresh} style={{ ...inputStyle, cursor: 'pointer', color: 'var(--text-secondary)' }}>
-            <span className="material-symbols-rounded" style={{ fontSize: 15 }}>refresh</span>
+          <button
+            type="button" className={`btn btn--icon${refreshing ? ' is-spinning' : ''}`}
+            onClick={refresh} aria-label="Refresh incidents"
+          >
+            <Icon name="refresh" />
           </button>
+        </form>
+      </header>
+
+      {error && items.length > 0 && (
+        <div className="notice notice--warn" role="status">
+          <Icon name="wifi-off" />
+          <div className="notice__text"><strong>Couldn&rsquo;t refresh</strong>{error}. Showing the last loaded page.</div>
+          <button type="button" className="btn" onClick={refresh}>Retry</button>
         </div>
+      )}
+
+      <div className="table-wrap">
+        {body ? body : (
+          <div className="table-scroll" tabIndex={0} role="region" aria-label="Incidents table">
+            <table className="dtable dtable--incidents" role="table" aria-busy={refreshing}>
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Priority</th>
+                  <th role="columnheader" scope="col">Incident</th>
+                  <th role="columnheader" scope="col">Description</th>
+                  <th role="columnheader" scope="col">SOP</th>
+                  <th role="columnheader" scope="col">Outcome</th>
+                  <th role="columnheader" scope="col">Duration</th>
+                  <th role="columnheader" scope="col">Started</th>
+                </tr>
+              </thead>
+              <tbody role="rowgroup">
+                {items.map(r => <IncidentRow key={r.incident_number} r={r} />)}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      {/* Table */}
-      <div style={{
-        background: '#fff', border: '1px solid var(--border-subtle)',
-        borderRadius: 'var(--radius-md)', boxShadow: 'var(--shadow-card)', overflow: 'hidden',
-      }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: 'var(--bg-1)', borderBottom: '2px solid var(--border-subtle)' }}>
-              {['Priority','Incident #','Description','SOP','Outcome','Duration','Time'].map(h => (
-                <th key={h} style={{
-                  padding: '10px 14px', textAlign: 'left',
-                  fontSize: 11, fontWeight: 600,
-                  color: 'var(--text-muted)', textTransform: 'uppercase',
-                  letterSpacing: '0.05em', whiteSpace: 'nowrap',
-                }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={7} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>Loading…</td></tr>
-            ) : items.length === 0 ? (
-              <tr><td colSpan={7} style={{ padding: 40, textAlign: 'center', color: 'var(--text-muted)' }}>
-                No incidents yet. Fire some webhooks to see data here.
-              </td></tr>
-            ) : items.map((r, i) => (
-              <tr key={r.incident_number}
-                onClick={() => setSelected(r.incident_number)}
-                style={{ borderBottom: '1px solid var(--border-subtle)', cursor: 'pointer', transition: 'background 0.1s' }}
-                onMouseEnter={e => e.currentTarget.style.background = 'rgba(0,26,255,0.03)'}
-                onMouseLeave={e => e.currentTarget.style.background = ''}
-              >
-                <td style={{ padding: '11px 14px' }}>
-                  <span style={{ fontSize: 11, fontWeight: 700, color: priorityColor(r.priority), background: `${priorityColor(r.priority)}18`, padding: '2px 7px', borderRadius: 2 }}>
-                    {formatPriority(r.priority).split(' ')[0]}
-                  </span>
-                </td>
-                <td style={{ padding: '11px 14px', fontWeight: 600, color: 'var(--ss-blue)', whiteSpace: 'nowrap' }}>{r.incident_number}</td>
-                <td style={{ padding: '11px 14px', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>{r.short_description}</td>
-                <td style={{ padding: '11px 14px', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-muted)', fontSize: 12 }}>{r.sop_title || '—'}</td>
-                <td style={{ padding: '11px 14px' }}><StatusBadge outcome={r.outcome} /></td>
-                <td style={{ padding: '11px 14px', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>{formatDuration(r.duration_ms)}</td>
-                <td style={{ padding: '11px 14px', color: 'var(--text-muted)', whiteSpace: 'nowrap', fontSize: 12 }}>{formatRelativeTime(r.started_at)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      {!loading && total > 0 && (
+        <nav className="pager" aria-label="Pagination">
+          <button
+            type="button" className="btn"
+            onClick={() => setFilter('page', filters.page - 1)} disabled={filters.page <= 1}
+          >
+            Previous
+          </button>
+          <span aria-live="polite">
+            {from}&ndash;{to} of {total} &middot; page {filters.page} of {totalPages}
+          </span>
+          <button
+            type="button" className="btn"
+            onClick={() => setFilter('page', filters.page + 1)} disabled={filters.page >= totalPages}
+          >
+            Next
+          </button>
+        </nav>
+      )}
 
-      {/* Pagination */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center' }}>
-        <button onClick={() => setFilter('page', incidentFilters.page - 1)}
-          disabled={incidentFilters.page <= 1}
-          style={{ padding: '6px 14px', borderRadius: 2, border: '1px solid var(--border-subtle)', background: '#fff', fontSize: 13, color: incidentFilters.page <= 1 ? 'var(--text-muted)' : 'var(--ss-navy)', cursor: incidentFilters.page <= 1 ? 'default' : 'pointer' }}>
-          Previous
-        </button>
-        <span style={{ fontSize: 13, color: 'var(--text-secondary)', padding: '0 8px' }}>
-          Page {incidentFilters.page} of {totalPages}
-        </span>
-        <button onClick={() => setFilter('page', incidentFilters.page + 1)}
-          disabled={incidentFilters.page >= totalPages}
-          style={{ padding: '6px 14px', borderRadius: 2, border: '1px solid var(--border-subtle)', background: '#fff', fontSize: 13, color: incidentFilters.page >= totalPages ? 'var(--text-muted)' : 'var(--ss-navy)', cursor: incidentFilters.page >= totalPages ? 'default' : 'pointer' }}>
-          Next
-        </button>
-      </div>
-
-      {selected && <IncidentDetail incidentNumber={selected} onClose={() => setSelected(null)} />}
+      {incident && (
+        <IncidentDetail
+          key={incident}
+          incidentNumber={incident}
+          onClose={() => navigate('#/incidents')}
+        />
+      )}
     </div>
   )
 }

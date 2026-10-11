@@ -64,6 +64,7 @@ class MainframeAdapter(BaseAdapter):
         """Synchronous health check (runs in a thread)."""
         try:
             import socket
+
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5)
             result = sock.connect_ex((self._host, self._port))
@@ -80,9 +81,6 @@ class MainframeAdapter(BaseAdapter):
             action (str): "async_status", "job_status", or "screen_check".
             job_name (str): Name of the job to check.
             transaction (str): CICS transaction ID to navigate to.
-            screen_navigation (list): List of navigation commands to reach
-                the desired screen. Each entry: {"key": "Enter|Tab|PF3|...",
-                "input": "text to type", "wait": seconds}.
             expected_status (str): Expected status string (default "inact ok").
         """
         action = parameters.get("action", "async_status")
@@ -90,9 +88,7 @@ class MainframeAdapter(BaseAdapter):
         # Validate transaction against allow-list
         transaction = parameters.get("transaction", "")
         if transaction and self._settings.allowed_transactions:
-            if transaction.upper() not in [
-                t.upper() for t in self._settings.allowed_transactions
-            ]:
+            if transaction.upper() not in [t.upper() for t in self._settings.allowed_transactions]:
                 return AdapterResult(
                     success=False,
                     error=f"Transaction '{transaction}' not in allowed list",
@@ -115,9 +111,7 @@ class MainframeAdapter(BaseAdapter):
             logger.error("Mainframe %s failed: %s", action, exc)
             return AdapterResult(success=False, error=str(exc))
 
-    async def _check_async_status(
-        self, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    async def _check_async_status(self, parameters: Dict[str, Any]) -> AdapterResult:
         """Check MF BEIM ASYNC job status on mainframe screen.
 
         Connects via TN3270, navigates to the BEIM status screen,
@@ -125,16 +119,12 @@ class MainframeAdapter(BaseAdapter):
         """
         job_name = parameters.get("job_name", "")
         expected_status = parameters.get("expected_status", "inact ok")
-        screen_navigation = parameters.get(
-            "screen_navigation",
-            self._settings.default_navigation,
-        )
+        # Keystrokes come from connection configuration, never from the caller.
+        screen_navigation = self._settings.default_navigation
 
         # Run all blocking TN3270 operations in a thread to avoid
         # blocking the asyncio event loop.
-        screen_text = await asyncio.to_thread(
-            self._connect_navigate_disconnect, screen_navigation
-        )
+        screen_text = await asyncio.to_thread(self._connect_navigate_disconnect, screen_navigation)
         if screen_text is None:
             return AdapterResult(
                 success=False,
@@ -182,9 +172,7 @@ class MainframeAdapter(BaseAdapter):
             job_data.append(job_entry)
 
             icon = "OK" if matches_expected else "WARN"
-            evidence_lines.append(
-                f"  [{icon}] {job['job_name']}: {status} ({status_desc})"
-            )
+            evidence_lines.append(f"  [{icon}] {job['job_name']}: {status} ({status_desc})")
             if not matches_expected:
                 all_ok = False
 
@@ -205,9 +193,7 @@ class MainframeAdapter(BaseAdapter):
             evidence_snippet="\n".join(evidence_lines),
         )
 
-    async def _check_job_status(
-        self, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    async def _check_job_status(self, parameters: Dict[str, Any]) -> AdapterResult:
         """Check a specific mainframe job status."""
         job_name = parameters.get("job_name", "")
         if not job_name:
@@ -216,17 +202,13 @@ class MainframeAdapter(BaseAdapter):
         # Delegate to async_status with specific job filter
         return await self._check_async_status(parameters)
 
-    async def _screen_check(
-        self, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    async def _screen_check(self, parameters: Dict[str, Any]) -> AdapterResult:
         """Navigate to a screen and capture its content."""
-        screen_navigation = parameters.get("screen_navigation", [])
+        screen_navigation = self._settings.default_navigation
         expected_text = parameters.get("expected_text", "")
 
         # Run all blocking TN3270 operations in a thread.
-        screen_text = await asyncio.to_thread(
-            self._connect_navigate_disconnect, screen_navigation
-        )
+        screen_text = await asyncio.to_thread(self._connect_navigate_disconnect, screen_navigation)
         if screen_text is None:
             return AdapterResult(
                 success=False,
@@ -259,9 +241,7 @@ class MainframeAdapter(BaseAdapter):
 
     # ── TN3270 connection helpers (all synchronous, called via to_thread) ──
 
-    def _connect_navigate_disconnect(
-        self, navigation: List[Dict[str, str]]
-    ) -> Optional[str]:
+    def _connect_navigate_disconnect(self, navigation: List[Dict[str, str]]) -> Optional[str]:
         """Connect, navigate, capture screen, and disconnect.
 
         This is the single blocking entry-point that runs entirely inside
@@ -285,7 +265,9 @@ class MainframeAdapter(BaseAdapter):
             from py3270 import Emulator
 
             emulator = Emulator(visible=False)
-            emulator.connect(f"{self._host}:{self._port}")
+            # The L: prefix makes x3270 negotiate TLS.
+            prefix = "L:" if self._settings.use_tls else ""
+            emulator.connect(f"{prefix}{self._host}:{self._port}")
             emulator.wait_for_field()
             logger.info("Connected to mainframe %s:%d", self._host, self._port)
             return emulator
@@ -299,9 +281,7 @@ class MainframeAdapter(BaseAdapter):
             logger.error("Failed to connect to mainframe: %s", exc)
             return None
 
-    def _navigate_screens(
-        self, emulator: Any, navigation: List[Dict[str, str]]
-    ) -> str:
+    def _navigate_screens(self, emulator: Any, navigation: List[Dict[str, str]]) -> str:
         """Navigate through mainframe screens using key sequences.
 
         Args:

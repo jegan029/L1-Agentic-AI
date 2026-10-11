@@ -41,6 +41,27 @@ class WebUIScraperAdapter(BaseAdapter):
     def adapter_name(self) -> str:
         return "WebUIScraper"
 
+    def _url_denied(self, url: str) -> str:
+        """Return a reason when the URL may not be visited, else an empty string.
+
+        HTTPS only, exact host match, and an empty allow list denies everything.
+        """
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(url)
+            host = (parsed.hostname or "").lower()
+        except ValueError:
+            return "URL could not be parsed"
+        if parsed.scheme != "https":
+            return "Only https URLs are allowed"
+        if not host or parsed.username or parsed.password:
+            return "URL must name a host and must not carry credentials"
+        allowed = {d.strip().lower() for d in self._allowed_domains if d.strip()}
+        if host not in allowed:
+            return f"Host {host} is not in the allowed hosts list"
+        return ""
+
     async def health_check(self) -> bool:
         """Check that Selenium/ChromeDriver is available."""
         try:
@@ -49,7 +70,6 @@ class WebUIScraperAdapter(BaseAdapter):
 
             options = Options()
             options.add_argument("--headless")
-            options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             driver = webdriver.Chrome(options=options)
             driver.quit()
@@ -75,17 +95,9 @@ class WebUIScraperAdapter(BaseAdapter):
         if not url:
             return AdapterResult(success=False, error="No URL provided")
 
-        # Domain allow-list check
-        if self._allowed_domains:
-            from urllib.parse import urlparse
-            parsed = urlparse(url)
-            if parsed.hostname and not any(
-                parsed.hostname.endswith(d) for d in self._allowed_domains
-            ):
-                return AdapterResult(
-                    success=False,
-                    error=f"Domain {parsed.hostname} not in allowed domains list",
-                )
+        denied = self._url_denied(url)
+        if denied:
+            return AdapterResult(success=False, error=denied)
 
         check_type = parameters.get("check_type", "page_load")
 
@@ -106,17 +118,11 @@ class WebUIScraperAdapter(BaseAdapter):
             logger.error("WebUI check failed for %s: %s", url, exc)
             return AdapterResult(success=False, error=str(exc))
 
-    async def _check_page_load(
-        self, url: str, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    async def _check_page_load(self, url: str, parameters: Dict[str, Any]) -> AdapterResult:
         """Verify a page loads successfully within timeout."""
-        return await asyncio.to_thread(
-            self._sync_check_page_load, url, parameters
-        )
+        return await asyncio.to_thread(self._sync_check_page_load, url, parameters)
 
-    def _sync_check_page_load(
-        self, url: str, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    def _sync_check_page_load(self, url: str, parameters: Dict[str, Any]) -> AdapterResult:
         """Synchronous page-load check, run in a thread."""
         expected_text = parameters.get("expected_text", "")
 
@@ -167,19 +173,19 @@ class WebUIScraperAdapter(BaseAdapter):
                     "error_indicators": error_indicators,
                     "status": "healthy" if success else "unhealthy",
                 },
-                raw_output=json.dumps({
-                    "title": title,
-                    "load_time": load_time,
-                    "errors": error_indicators,
-                }),
+                raw_output=json.dumps(
+                    {
+                        "title": title,
+                        "load_time": load_time,
+                        "errors": error_indicators,
+                    }
+                ),
                 evidence_snippet="\n".join(evidence_lines),
             )
         finally:
             driver.quit()
 
-    async def _execute_click_path(
-        self, url: str, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    async def _execute_click_path(self, url: str, parameters: Dict[str, Any]) -> AdapterResult:
         """Execute a series of click-path steps on a web page."""
         click_steps: List[Dict[str, str]] = parameters.get("click_steps", [])
         if not click_steps:
@@ -187,9 +193,7 @@ class WebUIScraperAdapter(BaseAdapter):
                 success=False,
                 error="No click_steps provided for click_path check",
             )
-        return await asyncio.to_thread(
-            self._sync_execute_click_path, url, click_steps
-        )
+        return await asyncio.to_thread(self._sync_execute_click_path, url, click_steps)
 
     def _sync_execute_click_path(
         self, url: str, click_steps: List[Dict[str, str]]
@@ -207,18 +211,20 @@ class WebUIScraperAdapter(BaseAdapter):
             driver.set_page_load_timeout(self._timeout)
             driver.get(url)
 
-            step_results.append({
-                "step": "navigate",
-                "url": url,
-                "status": "success",
-                "title": driver.title,
-            })
+            step_results.append(
+                {
+                    "step": "navigate",
+                    "url": url,
+                    "status": "success",
+                    "title": driver.title,
+                }
+            )
 
             for i, step in enumerate(click_steps):
                 step_action = step.get("action", "")
                 selector = step.get("selector", "")
                 value = step.get("value", "")
-                step_name = step.get("name", f"step-{i+1}")
+                step_name = step.get("name", f"step-{i + 1}")
 
                 try:
                     if step_action == "click":
@@ -227,69 +233,81 @@ class WebUIScraperAdapter(BaseAdapter):
                             EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                         )
                         element.click()
-                        step_results.append({
-                            "step": step_name,
-                            "action": "click",
-                            "selector": selector,
-                            "status": "success",
-                        })
+                        step_results.append(
+                            {
+                                "step": step_name,
+                                "action": "click",
+                                "selector": selector,
+                                "status": "success",
+                            }
+                        )
 
                     elif step_action == "wait":
                         wait_seconds = float(value) if value else 2.0
                         time.sleep(wait_seconds)
-                        step_results.append({
-                            "step": step_name,
-                            "action": "wait",
-                            "duration": wait_seconds,
-                            "status": "success",
-                        })
+                        step_results.append(
+                            {
+                                "step": step_name,
+                                "action": "wait",
+                                "duration": wait_seconds,
+                                "status": "success",
+                            }
+                        )
 
                     elif step_action == "assert_text":
                         text_present = value.lower() in driver.page_source.lower()
-                        step_results.append({
-                            "step": step_name,
-                            "action": "assert_text",
-                            "expected": value,
-                            "found": text_present,
-                            "status": "success" if text_present else "fail",
-                        })
+                        step_results.append(
+                            {
+                                "step": step_name,
+                                "action": "assert_text",
+                                "expected": value,
+                                "found": text_present,
+                                "status": "success" if text_present else "fail",
+                            }
+                        )
 
                     elif step_action == "assert_element":
                         wait = WebDriverWait(driver, self._timeout)
                         try:
-                            wait.until(
-                                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+                            step_results.append(
+                                {
+                                    "step": step_name,
+                                    "action": "assert_element",
+                                    "selector": selector,
+                                    "status": "success",
+                                }
                             )
-                            step_results.append({
-                                "step": step_name,
-                                "action": "assert_element",
-                                "selector": selector,
-                                "status": "success",
-                            })
                         except Exception:
-                            step_results.append({
-                                "step": step_name,
-                                "action": "assert_element",
-                                "selector": selector,
-                                "status": "fail",
-                                "error": f"Element not found: {selector}",
-                            })
+                            step_results.append(
+                                {
+                                    "step": step_name,
+                                    "action": "assert_element",
+                                    "selector": selector,
+                                    "status": "fail",
+                                    "error": f"Element not found: {selector}",
+                                }
+                            )
 
                     else:
-                        step_results.append({
-                            "step": step_name,
-                            "action": step_action,
-                            "status": "skip",
-                            "error": f"Unknown action: {step_action}",
-                        })
+                        step_results.append(
+                            {
+                                "step": step_name,
+                                "action": step_action,
+                                "status": "skip",
+                                "error": f"Unknown action: {step_action}",
+                            }
+                        )
 
                 except Exception as exc:
-                    step_results.append({
-                        "step": step_name,
-                        "action": step_action,
-                        "status": "fail",
-                        "error": str(exc),
-                    })
+                    step_results.append(
+                        {
+                            "step": step_name,
+                            "action": step_action,
+                            "status": "fail",
+                            "error": str(exc),
+                        }
+                    )
 
             total_time = time.monotonic() - start
             all_passed = all(s.get("status") == "success" for s in step_results)
@@ -322,17 +340,11 @@ class WebUIScraperAdapter(BaseAdapter):
         finally:
             driver.quit()
 
-    async def _check_element(
-        self, url: str, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    async def _check_element(self, url: str, parameters: Dict[str, Any]) -> AdapterResult:
         """Check for specific element presence on a page."""
-        return await asyncio.to_thread(
-            self._sync_check_element, url, parameters
-        )
+        return await asyncio.to_thread(self._sync_check_element, url, parameters)
 
-    def _sync_check_element(
-        self, url: str, parameters: Dict[str, Any]
-    ) -> AdapterResult:
+    def _sync_check_element(self, url: str, parameters: Dict[str, Any]) -> AdapterResult:
         """Synchronous element check, run in a thread."""
         from selenium.webdriver.common.by import By
         from selenium.webdriver.support import expected_conditions as EC
@@ -398,7 +410,6 @@ class WebUIScraperAdapter(BaseAdapter):
 
         options = Options()
         options.add_argument("--headless")
-        options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")

@@ -9,9 +9,9 @@ Usage (called once at service startup before Settings.from_env()):
 
     from src.l1_agent.utils.secrets import SecretsProvider
     provider = SecretsProvider.from_env()
-    provider.inject()   # writes fetched secrets into os.environ
+    settings = Settings.from_env(secrets=provider.fetch())
 
-Settings.from_env() then reads them normally from os.environ, so the
+Secrets are handed to Settings directly and never written to os.environ, so the
 rest of the codebase is unchanged regardless of which backend is used.
 """
 
@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from src.l1_agent.utils.logging import get_logger
 
@@ -29,32 +29,28 @@ logger = get_logger("secrets")
 # Add entries here when new secrets are introduced.
 _SECRET_MAPPINGS: List[Dict[str, str]] = [
     # env_key           vault_path (relative to mount/prefix)
-    {"env_key": "SERVICENOW_PASSWORD",  "vault_key": "servicenow/password"},
-    {"env_key": "SPLUNK_TOKEN",         "vault_key": "splunk/token"},
-    {"env_key": "IR360_API_KEY",        "vault_key": "ir360/api_key"},
-    {"env_key": "DYNATRACE_API_TOKEN",  "vault_key": "dynatrace/api_token"},
-    {"env_key": "LLM_API_KEY",          "vault_key": "llm/api_key"},
-    {"env_key": "SMB_PASSWORD",         "vault_key": "smb/password"},
+    {"env_key": "SERVICENOW_PASSWORD", "vault_key": "servicenow/password"},
+    {"env_key": "SERVICENOW_OAUTH_CLIENT_SECRET", "vault_key": "servicenow/oauth_client_secret"},
+    {"env_key": "SPLUNK_TOKEN", "vault_key": "splunk/token"},
+    {"env_key": "IR360_API_KEY", "vault_key": "ir360/api_key"},
+    {"env_key": "DYNATRACE_API_TOKEN", "vault_key": "dynatrace/api_token"},
+    {"env_key": "LLM_API_KEY", "vault_key": "llm/api_key"},
+    {"env_key": "SMB_PASSWORD", "vault_key": "smb/password"},
+    {"env_key": "DATABASE_URL", "vault_key": "database/url"},
+    {"env_key": "OIDC_CLIENT_SECRET", "vault_key": "auth/oidc_client_secret"},
+    {"env_key": "BREAK_GLASS_PASSWORD_HASH", "vault_key": "auth/break_glass_password_hash"},
+    {"env_key": "AUDIT_CHECKPOINT_KEY", "vault_key": "auth/audit_checkpoint_key"},
+    {"env_key": "AGENT_WEBHOOK_SECRET", "vault_key": "agent/webhook_secret"},
 ]
 
 
 class SecretsProvider(ABC):
-    """Abstract base — fetch secrets and inject them into os.environ."""
+    """Abstract base: fetch secrets for Settings.from_env(secrets=...)."""
 
     @abstractmethod
     def fetch(self) -> Dict[str, str]:
         """Return a mapping of env_key → secret_value."""
         ...
-
-    def inject(self) -> None:
-        """Write fetched secrets into os.environ (only if not already set)."""
-        secrets = self.fetch()
-        injected = 0
-        for key, value in secrets.items():
-            if not os.environ.get(key):
-                os.environ[key] = value
-                injected += 1
-        logger.info("Injected %d secret(s) into environment", injected)
 
     @classmethod
     def from_env(cls) -> "SecretsProvider":
@@ -126,9 +122,7 @@ class VaultSecretsProvider(SecretsProvider):
                 secret_id=self._secret_id,
             )
         else:
-            raise RuntimeError(
-                "Vault: set VAULT_TOKEN or both VAULT_ROLE_ID and VAULT_SECRET_ID"
-            )
+            raise RuntimeError("Vault: set VAULT_TOKEN or both VAULT_ROLE_ID and VAULT_SECRET_ID")
         if not client.is_authenticated():
             raise RuntimeError("Vault authentication failed")
         return client
@@ -181,15 +175,12 @@ class AWSSecretsProvider(SecretsProvider):
             raise RuntimeError("Install 'boto3' to use AWS backend: pip install boto3") from exc
 
         ssm = boto3.client("ssm", region_name=self._region)
-        param_names = [
-            f"{self._path_prefix}/{m['vault_key']}"
-            for m in _SECRET_MAPPINGS
-        ]
+        param_names = [f"{self._path_prefix}/{m['vault_key']}" for m in _SECRET_MAPPINGS]
 
         result: Dict[str, str] = {}
         # GetParameters accepts up to 10 names per call
         for chunk_start in range(0, len(param_names), 10):
-            chunk = param_names[chunk_start:chunk_start + 10]
+            chunk = param_names[chunk_start : chunk_start + 10]
             try:
                 resp = ssm.get_parameters(Names=chunk, WithDecryption=True)
                 params_by_name = {p["Name"]: p["Value"] for p in resp.get("Parameters", [])}
@@ -197,7 +188,7 @@ class AWSSecretsProvider(SecretsProvider):
                 if invalid:
                     logger.warning("SSM: parameters not found: %s", invalid)
                 for mapping, param_name in zip(
-                    _SECRET_MAPPINGS[chunk_start:chunk_start + 10], chunk
+                    _SECRET_MAPPINGS[chunk_start : chunk_start + 10], chunk
                 ):
                     value = params_by_name.get(param_name, "")
                     if value:

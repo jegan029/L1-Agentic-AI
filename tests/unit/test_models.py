@@ -111,6 +111,7 @@ class TestExecutionSummary:
             sop_id="SOP-001",
             sop_title="Test SOP",
             outcome=ExecutionOutcome.RESOLVED,
+            verified_by="s-verify",
             step_results=[
                 StepResult(
                     step_id="s1",

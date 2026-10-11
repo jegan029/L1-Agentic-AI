@@ -114,6 +114,7 @@ def make_mock_snow() -> ServiceNowClient:
     snow = MagicMock(spec=ServiceNowClient)
     snow.add_work_note = AsyncMock(return_value=True)
     snow.update_incident = AsyncMock(return_value=True)
+    snow.resolve_incident = AsyncMock(return_value=True)
     snow.get_sops = AsyncMock(return_value=[])
     return snow
 

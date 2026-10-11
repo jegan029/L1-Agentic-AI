@@ -105,16 +105,24 @@ async def group_exists(client: ServiceNowClient, name: str) -> bool:
     return bool(result.get("result"))
 
 
-def make_processor(client: ServiceNowClient) -> IncidentProcessor:
+# The SOP matcher scores category and CI as well as keywords. A stock instance has
+# neither the sample SOPs' categories nor their CIs, so realistic test tickets
+# score about 0.4 to 0.5 against the 0.6 default. The end-to-end write tests lower
+# the threshold so that they exercise the ServiceNow writes; a separate test
+# reports what the default threshold does on this instance.
+WRITE_TEST_THRESHOLD = 0.4
+
+
+def make_processor(client: ServiceNowClient, threshold: float = 0.6) -> IncidentProcessor:
     return IncidentProcessor(
         snow_client=client,
-        sop_matcher=SOPMatcher(confidence_threshold=0.6),
+        sop_matcher=SOPMatcher(confidence_threshold=threshold),
         sop_parser=SOPParser(),
         executor=SOPExecutor(
             adapters=build_mock_adapters(), retry_max_attempts=1, retry_base_delay=0
         ),
         sop_cache=load_sample_sops(),
-        confidence_threshold=0.6,
+        confidence_threshold=threshold,
         l2_router=L2Router(),
     )
 
@@ -194,7 +202,14 @@ class TestRealPayloadShape:
         assert mine.assignment_group == INTAKE_GROUP
         assert mine.state == 1
         assert mine.short_description.startswith(TAG)
-        await client.update_incident(sys_id, {"work_notes": "L1 agent test: shape check complete."})
+        # Take it out of the intake queue so a running agent does not pick it up.
+        await client.update_incident(
+            sys_id,
+            {
+                "work_notes": "L1 agent test: shape check complete.",
+                "assignment_group": L2Router().resolve_l2_team("")["name"],
+            },
+        )
 
     @pytest.mark.asyncio
     async def test_poll_only_returns_the_intake_group(self, client):
@@ -214,7 +229,7 @@ class TestEndToEnd:
         )
         incident = await client.get_incident(sys_id)
 
-        result = await make_processor(client).process_incident(incident)
+        result = await make_processor(client, WRITE_TEST_THRESHOLD).process_incident(incident)
         after = await raw(client, sys_id)
         print(
             f"\n  {incident.number}: outcome={result.summary.outcome_label} "
@@ -240,7 +255,7 @@ class TestEndToEnd:
         )
         incident = await client.get_incident(sys_id)
 
-        result = await make_processor(client).process_incident(incident)
+        result = await make_processor(client, WRITE_TEST_THRESHOLD).process_incident(incident)
         after = await raw(client, sys_id)
         expected_group = L2Router().resolve_l2_team(incident.cmdb_ci)["name"]
         print(
@@ -253,6 +268,31 @@ class TestEndToEnd:
         assert after["assignment_group"]["display_value"] == expected_group
         notes = after["work_notes"]["display_value"]
         assert "Escalation packet" in notes and "step-verify" in notes
+
+    @pytest.mark.asyncio
+    async def test_default_threshold_on_this_instance(self, client):
+        """Reports the match score a realistic ticket gets with production settings."""
+        sys_id = await create_incident(
+            client,
+            "MQ queue depth high on PAYMENT.REQUEST",
+            "Queue depth alert for PAYMENT.REQUEST on queue manager QMPROD01.",
+        )
+        incident = await client.get_incident(sys_id)
+        match = SOPMatcher(confidence_threshold=0.6).match(incident, load_sample_sops())
+        print(
+            f"\n  category on instance={incident.category!r} ci={incident.cmdb_ci!r} "
+            f"group={incident.assignment_group!r} -> {match.sop.sop_id if match.sop else None} "
+            f"confidence={match.confidence:.2f} (threshold 0.60)"
+        )
+        result = await make_processor(client).process_incident(incident)
+        after = await raw(client, sys_id)
+        # Whatever the score, the run must end safely and visibly.
+        assert result.summary.outcome in (ExecutionOutcome.ESCALATED, ExecutionOutcome.RESOLVED)
+        if match.confidence < 0.6:
+            assert result.summary.outcome == ExecutionOutcome.ESCALATED
+            assert result.summary.step_results == []
+            assert after["state"]["value"] != "6"
+            assert "Low confidence SOP match" in after["work_notes"]["display_value"]
 
     @pytest.mark.asyncio
     async def test_incident_with_no_matching_sop_is_routed_not_resolved(self, client):

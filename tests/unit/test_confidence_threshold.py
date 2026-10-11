@@ -48,6 +48,7 @@ def processor(mock_escalate):
     snow = MagicMock()
     snow.add_work_note = AsyncMock()
     snow.update_incident = AsyncMock()
+    snow.resolve_incident = AsyncMock()
     snow.get_sops = AsyncMock(return_value=[])
 
     matcher = MagicMock()

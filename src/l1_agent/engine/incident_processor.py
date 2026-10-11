@@ -7,7 +7,7 @@ runs, and every step in it, is executed deterministically by SOPExecutor.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, List, Optional, Set
 
@@ -211,8 +211,7 @@ class IncidentProcessor:
             sop,
             work_note_callback=self._snow.add_work_note,
         )
-        await self._post_conclusion(incident, summary, confidence=match.confidence)
-        return summary
+        return await self._post_conclusion(incident, summary, confidence=match.confidence)
 
     # ── Matching ──────────────────────────────────────────────────────
 
@@ -314,15 +313,32 @@ class IncidentProcessor:
 
     async def _post_conclusion(
         self, incident: Incident, summary: ExecutionSummary, confidence: float = 0.0
-    ) -> None:
-        """Post the final work note, update incident state, and record outcome."""
+    ) -> ExecutionSummary:
+        """Update the ITSM, post the final work note and record the outcome.
+
+        Returns the summary that was recorded. It differs from the one passed in
+        when the ITSM refuses the Resolved update: a resolution the ticket does not
+        show is not a resolution, so the run is recorded as NEEDS_HUMAN instead.
+        """
+        if summary.outcome == ExecutionOutcome.RESOLVED:
+            error = await self._resolve_in_itsm(incident, summary)
+            if error:
+                summary = replace(
+                    summary,
+                    outcome=ExecutionOutcome.NEEDS_HUMAN,
+                    verified_by="",
+                    escalation_reason=(
+                        f"Verification passed (step {summary.verified_by}) but the ITSM "
+                        f"rejected the Resolved update: {error}"
+                    ),
+                )
+
         await self._post_note(incident, summary.to_work_note())
 
         if self._history_store:
             await self._history_store.record(incident, summary)
 
         if summary.outcome == ExecutionOutcome.RESOLVED:
-            await self._resolve_in_itsm(incident, summary)
             metrics.increment("incidents.resolved")
             if self._memory and summary.sop_id:
                 self._memory.record(incident, summary, confidence_used=confidence)
@@ -357,6 +373,7 @@ class IncidentProcessor:
             )
         else:
             await self._hand_to_human(incident, summary, record=False)
+        return summary
 
     async def _hand_to_human(
         self, incident: Incident, summary: ExecutionSummary, *, record: bool
@@ -381,8 +398,13 @@ class IncidentProcessor:
         except Exception as exc:
             logger.error("Failed to post work note for %s: %s", incident.number, exc)
 
-    async def _resolve_in_itsm(self, incident: Incident, summary: ExecutionSummary) -> None:
-        """Mark the incident resolved, with the verification as the resolution note."""
+    async def _resolve_in_itsm(
+        self, incident: Incident, summary: ExecutionSummary
+    ) -> Optional[str]:
+        """Mark the incident resolved, with the verification as the resolution note.
+
+        Returns None on success, or the reason the ITSM gave for refusing.
+        """
         verify = next((r for r in summary.step_results if r.step_id == summary.verified_by), None)
         notes = (
             f"Resolved by L1 Agent using {summary.sop_title} ({summary.sop_id}). "
@@ -392,9 +414,10 @@ class IncidentProcessor:
         try:
             await self._snow.resolve_incident(incident.sys_id, notes)
         except Exception as exc:
-            # The ticket stays open in the ITSM, which is the safe direction.
             metrics.increment("incidents.resolve_update_failed")
             logger.error("Failed to resolve %s in the ITSM: %s", incident.number, exc)
+            return " ".join(str(exc).split())[:300] or type(exc).__name__
+        return None
 
     async def _update_state(self, incident: Incident, state: int) -> None:
         """Update incident state field."""

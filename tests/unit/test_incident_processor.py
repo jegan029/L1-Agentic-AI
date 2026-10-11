@@ -218,3 +218,45 @@ class TestFailClosed:
         result = await processor.process_incident(incident(0))
         assert result.summary.outcome == ExecutionOutcome.NEEDS_HUMAN
         assert not any(u["fields"].get("state") == "6" for u in snow.updates)
+
+
+class TestResolveRejectedByTheItsm:
+    """Seen on a real instance: a data policy refused Resolved without a valid code."""
+
+    @pytest.mark.asyncio
+    async def test_rejected_resolve_is_not_recorded_as_resolved(self):
+        snow = MockServiceNowClient()
+        snow.resolve_incident = AsyncMock(  # type: ignore[method-assign]
+            side_effect=RuntimeError(
+                "ServiceNow PATCH /x returned 403: Operation Failed "
+                "(Data Policy Exception: The following fields are mandatory: Resolution code)"
+            )
+        )
+        processor = make_processor(load_sample_sops(), snow=snow)
+
+        result = await processor.process_incident(incident(1))  # ORDER.REQUEST: verification passes
+        summary = result.summary
+
+        assert summary.outcome == ExecutionOutcome.NEEDS_HUMAN
+        assert summary.verified_by == ""
+        assert "Resolution code" in summary.escalation_reason
+        assert "step-verify" in summary.escalation_reason
+        # The check itself did pass, and that evidence is kept.
+        verify = next(r for r in summary.step_results if r.step_id == "step-verify")
+        assert verify.status.value == "success"
+        # A person is told why, and the ticket is routed to a team.
+        final_note = next(
+            n["note"] for n in snow.work_notes if "SOP Execution Summary" in n["note"]
+        )
+        assert "NEEDS_HUMAN" in final_note and "Resolution code" in final_note
+        assert any("assignment_group" in u["fields"] for u in snow.updates)
+        assert not any(u["fields"].get("state") == "6" for u in snow.updates)
+
+    @pytest.mark.asyncio
+    async def test_accepted_resolve_sends_the_verification_as_resolution_notes(self):
+        snow = MockServiceNowClient()
+        result = await make_processor(load_sample_sops(), snow=snow).process_incident(incident(1))
+        resolved = next(u["fields"] for u in snow.updates if u["fields"].get("state") == "6")
+        assert result.summary.outcome == ExecutionOutcome.RESOLVED
+        assert "step-verify" in resolved["close_notes"]
+        assert "result.current_depth < 1000" in resolved["close_notes"]

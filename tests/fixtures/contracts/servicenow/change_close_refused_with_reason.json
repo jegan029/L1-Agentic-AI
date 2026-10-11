@@ -1,0 +1,79 @@
+{
+  "note": "Hand-written. The refusal and the nextstates answer follow what a ServiceNow developer instance returned on 2026-10-11 for a standard change with no assignment group; identifiers are placeholders.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/change_request/cccccccccccccccccccccccccccccccc",
+        "json": {
+          "state": "-2"
+        }
+      },
+      "response": {
+        "status": 403,
+        "json": {
+          "error": {
+            "message": "Operation Failed",
+            "detail": "Operation against file 'change_request' was aborted by Business Rule 'Change Model: Check State Transition^cccccccccccccccccccccccccccccccc'. Business Rule Stack:Change Model: Check State Transition"
+          },
+          "status": "failure"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/sn_chg_rest/change/cccccccccccccccccccccccccccccccc/nextstates"
+      },
+      "response": {
+        "json": {
+          "result": {
+            "available_states": [
+              "-2",
+              "4",
+              "-5"
+            ],
+            "state_transitions": [
+              [
+                {
+                  "sys_id": "11111111111111111111111111111111",
+                  "display_value": "New to Scheduled",
+                  "from_state": "-5",
+                  "to_state": "-2",
+                  "transition_available": false,
+                  "automatic_transition": false,
+                  "conditions": [
+                    {
+                      "passed": false,
+                      "condition": {
+                        "name": "Assignment group is not empty",
+                        "description": "",
+                        "sys_id": "22222222222222222222222222222222"
+                      }
+                    }
+                  ]
+                }
+              ],
+              [
+                {
+                  "sys_id": "33333333333333333333333333333333",
+                  "display_value": "New to Canceled",
+                  "from_state": "-5",
+                  "to_state": "4",
+                  "transition_available": true,
+                  "automatic_transition": false,
+                  "conditions": []
+                }
+              ]
+            ],
+            "state_label": {
+              "-2": "Scheduled",
+              "4": "Canceled",
+              "-5": "New"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -2,7 +2,7 @@
 
 How to run and operate the service as it stands after Phase 4. Installation and the demo quick start are in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
 
-This is pre-release software. Sign-in has been tested only against identity providers faked in the test suite, and the tool adapters only against mocks. The Autosys force start has only run against a mock scheduler, and the ServiceNow change and approval calls have never run against an instance. Expect to find differences on first contact with real systems, and start every tenant in shadow mode.
+This is pre-release software. Sign-in has been tested only against identity providers faked in the test suite, and the tool adapters only against mocks. The Autosys force start has only run against a mock scheduler, and the ServiceNow change and approval calls have run against one developer instance only (reading a person's approval there has not run at all). Expect to find differences on first contact with real systems, and start every tenant in shadow mode.
 
 ## 1. Run it
 
@@ -135,7 +135,7 @@ A new tenant is in **shadow**: at an `ACTION` step the agent records what it wou
 
 **Before the first change**
 
-1. **ServiceNow.** Create a standard change template for each SOP that has an `ACTION` step, with exactly the name in the SOP's `change_template`. The integration user must be able to create a standard change from it and to update that change. With no change record, the agent does not act.
+1. **ServiceNow.** Create a standard change template for each SOP that has an `ACTION` step, with exactly the name in the SOP's `change_template`. The integration user must be able to create a standard change from it and to update that change. With no change record, the agent does not act. A stock instance will not move a change out of New unless it has an assignment group: either put one in the template's values, or set `SERVICENOW_CHANGE_ASSIGNMENT_GROUP` and the agent puts that group on each change it opens. Without one the agent still acts, and the change is left open with a note (`change.close_failed` in the audit log names the missing condition). A standard change shows *Approved* in ServiceNow from the moment it is created; that is the template's pre-approval, not a person's decision on this action, and the agent does not read it.
 2. **Autosys.** Set the connection's `force_start_jobs` (or `AUTOSYS_FORCE_START_JOBS`) to the jobs that may be restarted: exact names or patterns such as `NIGHTLY_*`. An empty list means none. `sendevent` must be on the agent host (`AUTOSYS_SENDEVENT_PATH`), run as an account that may send `FORCE_STARTJOB` to those jobs and nothing more.
 3. **Roles.** Map a group to `approver`. Keep it separate from `tenant_admin`: the person who sets how far the agent may go does not also approve what it does.
 
@@ -241,7 +241,7 @@ After restoring a database backup, run `audit verify --checkpoints` against the 
 | Approve returns `409` | Already decided, expired, or not the action that was shown | Reload the page. |
 | Run ends `escalated` with "ran but was not verified" | The job was started and did not reach `SU` in the wait the SOP allows, or failed again | The change record is closed as unsuccessful. L2 has both status reads. |
 | Run ends `needs_human` with "Whether it happened is not known" | A worker died between sending the write and recording its result | Check the scheduler. The agent did not send it again. |
-| `change.close_failed` in the audit log | The instance refused a state change when closing the change | Close it by hand. The run's outcome is unaffected. Tell us which state was refused. |
+| `change.close_failed` in the audit log | The instance refused a state change when closing the change. The entry names the condition the instance says is unmet, most often "Assignment group is not empty" | Set `SERVICENOW_CHANGE_ASSIGNMENT_GROUP` or add a group to the template. Close this change by hand. The run's outcome is unaffected. |
 | Every run ends `escalated` with "No applicable SOP found" | No SOP is published for this tenant | `l1-agent sop list`. Drafts and versions in review are never matched. |
 | Run ends `needs_human` with "Adapter '...' not configured" | The SOP calls a connector this tenant has no connection for | `l1-agent connection set`, or `GET /api/connectors` to see the state and any error. |
 | A check fails with "credential unavailable" | The reference cannot be read | Check the reference, the backend's reachability and its access policy. |

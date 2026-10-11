@@ -1,9 +1,10 @@
-"""Live checks of change records and approvals (ADR 0008). NOT YET RUN AGAINST ANY INSTANCE.
+"""Live checks of change records and approvals (ADR 0008). First run 2026-10-11, one developer instance.
 
 Opt-in, like the other live tests, and it needs one more setting:
 
     LIVE_SERVICENOW_CHANGE_TEMPLATE="<name of an active standard change template>"
     LIVE_SERVICENOW_APPROVAL_GROUP="<a group with at least one active member>"   (optional)
+    SERVICENOW_CHANGE_ASSIGNMENT_GROUP="<a group>"   (needed to close, unless the template sets one)
     pytest tests/live/test_servicenow_changes_live.py -m live_servicenow -v -s
 
 THESE TESTS WRITE TO THE INSTANCE. Each creates one incident and one standard
@@ -11,15 +12,17 @@ change, both tagged "[L1-AGENT-TEST]", and with a group set, approval requests
 on that change for the group's members, who will see them. Nothing is approved
 by the test. Use a developer or sub-production instance.
 
-What a first run is expected to settle: whether the Change Management API
-accepts the create call as written, which roles the integration user needs,
-and whether a standard change can be taken to Closed through the Table API.
+What the first run settled: the create call is accepted as written, and a
+standard change can be taken to Closed through the Table API once it has an
+assignment group. Not covered here: a decision made by a person, and the least
+roles the integration user needs.
 """
 
 from __future__ import annotations
 
 import os
 import uuid
+from dataclasses import replace
 
 import pytest
 
@@ -36,6 +39,7 @@ from tests.live.test_servicenow_live import (
 
 TEMPLATE = os.environ.get("LIVE_SERVICENOW_CHANGE_TEMPLATE", "")
 GROUP = os.environ.get("LIVE_SERVICENOW_APPROVAL_GROUP", "")
+CHANGE_GROUP = os.environ.get("SERVICENOW_CHANGE_ASSIGNMENT_GROUP", "")
 pytestmark = [
     *_live,
     pytest.mark.skipif(not TEMPLATE, reason="LIVE_SERVICENOW_CHANGE_TEMPLATE is not set"),
@@ -44,7 +48,7 @@ pytestmark = [
 
 @pytest.fixture
 async def client():
-    c = ServiceNowClient(settings())
+    c = ServiceNowClient(replace(settings(), change_assignment_group=CHANGE_GROUP))
     yield c
     await c.close()
 

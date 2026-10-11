@@ -157,7 +157,7 @@ ACTION step
 - **Interruption.** The `actions` row is the step's journal. Found in `executing`, the write may or may not have happened, so it is never sent again: the engine reads first, and the run goes on only if the target shows the result; otherwise it ends `needs_human`. Found in `executed`, only the verification is repeated. A unique index allows one execution of the same call per incident.
 - **Autosys force start.** `sendevent -E FORCE_STARTJOB -J <job>` as an argument list, from `connectors/ops/autosys.py`. The read-only adapter is unchanged and still cannot run it. The job must match the connection's `force_start_jobs` list, be in `FA` or `TE` at the pre-check, and read `SU` at verification; a second `FA` or `TE` fails it at once. No rollback is declared, because a started job cannot be un-started.
 
-The force start has only run against a mock scheduler: the real `sendevent` command, its exit codes and its timing are unverified. ServiceNow change records and approvals are written from vendor documentation and have not run against an instance.
+The force start has only run against a mock scheduler: the real `sendevent` command, its exit codes and its timing are unverified. Opening a standard change from a template, adding a note, asking a group for approval and closing the change have run against one developer instance. Reading an approval or a rejection that a person gave there has not, and nor has the whole action pipeline against a real instance.
 
 ## 12. Other safeguards
 
@@ -176,7 +176,7 @@ The force start has only run against a mock scheduler: the real `sendevent` comm
 | No screen for connections | Command line and API only. | 6 |
 | The browser connector uses a local Chrome | Marked preview and not in the default image. | 6 |
 | One write capability, verified only against a mock | The Autosys force start has not run against a scheduler. The Autosys REST API is not implemented. | needs a test environment |
-| ServiceNow change and approval calls are unverified | Written from documentation. An existing normal change on the ticket is not accepted; approvals are polled, with no signed webhook. | needs an instance |
+| ServiceNow change and approval calls are partly verified | Open, note, ask and close have run against one developer instance; reading a person's decision has not. An existing normal change on the ticket is not accepted; approvals are polled, with no signed webhook. | needs an instance |
 | A grant is checked in the process that minted it | Splitting the runner out needs an asymmetric key pair. | 6 |
 | Policy rules have no editing screen; no per-run stop | Rules are JSON through the API or CLI. A waiting run is stopped by the kill switch or by its request expiring. | 6 |
 | Runner not split out | Adapters run in the worker process, not behind the outbound-only runner protocol of ADR 0003. | 6 |

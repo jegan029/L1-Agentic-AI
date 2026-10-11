@@ -98,6 +98,7 @@ class ServiceNowConnector:
                 "assignment_group": {"type": "string"},
                 "incident_table": {"type": "string"},
                 "close_code": {"type": "string"},
+                "change_assignment_group": {"type": "string"},
                 "claim": {"type": "boolean"},
             },
             required=["base_url"],
@@ -324,7 +325,8 @@ class ServiceNowConnector:
     # ── Change records and approvals (ADR 0008) ───────────────────────
     #
     # Written from the Change Management API and Table API documentation.
-    # None of this has run against an instance.
+    # Open, note, ask and close have run against one developer instance; reading a
+    # person's decision has not.
 
     async def open_change(
         self,
@@ -364,14 +366,16 @@ class ServiceNowConnector:
         template_id = _raw_value(rows[0].get("sys_id", "")) if rows else ""
         if not template_id:
             raise ChangeUnavailable(f"there is no active standard change template '{template}'")
+        fields = {
+            "short_description": short_description,
+            "description": description,
+            "correlation_id": correlation,
+        }
+        group = self._settings.change_assignment_group
+        if group:
+            fields["assignment_group"] = await self._change_group(group)
         created = await self._request(
-            "POST",
-            f"/api/sn_chg_rest/change/standard/{template_id}",
-            data={
-                "short_description": short_description,
-                "description": description,
-                "correlation_id": correlation,
-            },
+            "POST", f"/api/sn_chg_rest/change/standard/{template_id}", data=fields
         )
         result = created.get("result", {})
         change = ChangeRef(
@@ -389,6 +393,46 @@ class ServiceNowConnector:
         except ServiceNowError as exc:
             logger.warning("Could not link %s to its incident: %s", change.number, exc.status)
         return change
+
+    async def _change_group(self, name: str) -> str:
+        """The sys_id of the group changes are assigned to. No group, no change."""
+        if "^" in name or "\n" in name or "\r" in name:
+            raise ChangeUnavailable("the change assignment group is not a plain group name")
+        found = await self._get(
+            "/api/now/table/sys_user_group",
+            {
+                "sysparm_query": f"name={name}^active=true",
+                "sysparm_fields": "sys_id",
+                "sysparm_limit": "1",
+            },
+        )
+        rows = found.get("result") or []
+        group_id = _raw_value(rows[0].get("sys_id", "")) if rows else ""
+        if not group_id:
+            raise ChangeUnavailable(f"there is no active group '{name}' to assign the change to")
+        return str(group_id)
+
+    async def _why_not(self, change: ChangeRef, state: str) -> str:
+        """What the instance says a move to `state` still needs. Empty when it does not say."""
+        try:
+            got = await self._get(f"/api/sn_chg_rest/change/{change.sys_id}/nextstates")
+        except ServiceNowError:
+            return ""
+        result = got.get("result")
+        groups = result.get("state_transitions", []) if isinstance(result, dict) else []
+        for transition in (t for group in groups if isinstance(group, list) for t in group):
+            if not isinstance(transition, dict) or str(transition.get("to_state")) != state:
+                continue
+            unmet = [
+                str((c.get("condition") or {}).get("name", ""))
+                for c in transition.get("conditions") or []
+                if isinstance(c, dict) and not c.get("passed")
+            ]
+            unmet = [name for name in unmet if name]
+            if unmet:
+                name = str(transition.get("display_value", "")) or f"the move to state {state}"
+                return f"'{name}' needs: {'; '.join(unmet)}"[:200]
+        return ""
 
     async def request_change_approval(self, change: ChangeRef, group: str) -> int:
         """Ask each active member of a group to approve the change. Returns how many."""
@@ -459,7 +503,14 @@ class ServiceNowConnector:
         """Take the change through its states to Closed, with the result."""
         path = f"/api/now/table/change_request/{change.sys_id}"
         for state in CHANGE_STATES_TO_CLOSE:
-            await self._patch(path, {"state": state})
+            try:
+                await self._patch(path, {"state": state})
+            except ServiceNowError as exc:
+                # The refusal itself names a business rule; the instance can say what is missing.
+                why = await self._why_not(change, state)
+                if not why:
+                    raise
+                raise ServiceNowError("PATCH", path, exc.status, exc.message, why) from None
         await self._patch(
             path,
             {

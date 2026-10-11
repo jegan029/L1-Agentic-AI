@@ -457,7 +457,13 @@ Verified: the full suite on Windows on SQLite and PostgreSQL 16, and in a Linux 
 
 Not verified: the force start against Autosys (`sendevent` exit codes, output and timing; whether `FA` and `TE` are the right states to require; how long a real job takes to show `RU`); every ServiceNow change and approval call, the roles the integration user needs for them, and whether a standard change can be taken through its states and closed by the Table API on a given instance; the Actions page in a browser; behaviour with several worker processes sweeping the same approval requests (each move is a guarded update, tested with one worker); everything listed as unverified in the Phase 3 record.
 
-A live test for the change and approval calls exists and has not been run: `tests/live/test_servicenow_changes_live.py`. It needs the name of a standard change template on the instance (`LIVE_SERVICENOW_CHANGE_TEMPLATE`) and creates tagged change records there.
+**After the phase: first run against an instance (2026-10-11).** `tests/live/test_servicenow_changes_live.py` was run against the developer instance with a stock standard change template.
+
+- Ran as written: opening a standard change from a named template, returning the same change for the same action hash, refusing an unknown template, adding a work note, asking the six members of a group for approval once each, and reading the request back as waiting.
+- Failed: closing. The instance's Standard change model refuses New to Scheduled while the change has no assignment group, and the stock template sets none. Fix: `SERVICENOW_CHANGE_ASSIGNMENT_GROUP`, which the agent puts on each change it opens; with it the change went through Scheduled, Implement and Review to Closed with close code `successful`. A refused close now names the unmet condition, read from the instance's next-states API.
+- Learned: a standard change shows `approval = approved` from creation. The agent does not read that field.
+- Still not run: reading an approval or rejection given by a person in ServiceNow, the email comparison for T2, an unsuccessful close, and the action pipeline end to end against a real instance. The test user's roles were not reduced to the least the integration needs.
+- Left on the instance: changes CHG0030001 to CHG0030005 and their tagged incidents; CHG0030003 has six pending approval requests.
 
 Decision recorded for Phase 5: **D6** a customer-supplied OpenAI-compatible endpoint and Anthropic are the supported model providers at launch, and running with no model is a supported configuration.
 

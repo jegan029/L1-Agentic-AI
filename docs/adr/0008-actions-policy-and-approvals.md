@@ -110,7 +110,8 @@ One execution of a capability with the same parameters is allowed per incident (
 - **Hours are in UTC.** A time zone database is not guaranteed in the container image.
 - **Rules are edited as JSON** through the API or `l1-agent policy set`. The UI sets the autonomy level and the kill switch and shows the rules read only.
 - **Autosys force start uses the argument list** (`sendevent -E FORCE_STARTJOB -J <job>` through `create_subprocess_exec`). The Autosys REST API is not implemented.
-- **A change is closed on a best-effort basis.** If the instance refuses the close, a note is left on the change and the refusal is audited; the run's outcome is not affected.
+- **A change is closed on a best-effort basis.** If the instance refuses the close, a note is left on the change and the refusal is audited with the condition the instance says is unmet; the run's outcome is not affected.
+- **The agent can put an assignment group on the change** (`SERVICENOW_CHANGE_ASSIGNMENT_GROUP`). The first run against an instance showed that a stock change model refuses to move a change out of New without one, and a template does not always carry it. A configured group that does not exist means no change, and so no write.
 
 ## Not done
 
@@ -124,4 +125,5 @@ One execution of a capability with the same parameters is allowed per incident (
 
 - The transition table gains four states (`POLICY_CHECK`, `AWAITING_APPROVAL`, `ACTING`, `ROLLING_BACK`). None of them has an edge to `VERIFIED` or `RESOLVED`, and the table search in `test_no_unverified_resolve.py` covers them.
 - A run can now be open for as long as an approval request lives. Open runs hold the one-open-run-per-incident slot.
-- Everything on the ServiceNow change and approval side is written from vendor documentation and is unverified until it has run against an instance.
+- The ServiceNow change and approval side was written from vendor documentation. Opening, noting, asking for approval and closing have since run against one developer instance; reading a person's decision has not.
+- A standard change is pre-approved by its template, so ServiceNow shows it as *Approved* from creation. The agent reads only the approval requests it adds, never that field, so the pre-approval does not count as a decision. A person looking at the change will still see *Approved* before anyone has decided.

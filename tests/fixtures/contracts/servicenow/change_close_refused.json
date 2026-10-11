@@ -19,6 +19,20 @@
           "status": "failure"
         }
       }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/sn_chg_rest/change/cccccccccccccccccccccccccccccccc/nextstates"
+      },
+      "response": {
+        "status": 404,
+        "json": {
+          "error": {
+            "message": "Requested URI does not represent any resource"
+          }
+        }
+      }
     }
   ]
 }

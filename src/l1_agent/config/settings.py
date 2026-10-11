@@ -43,6 +43,9 @@ class ServiceNowSettings:
     # Resolution code sent when an incident is resolved. Must be a value your
     # instance accepts; a stock instance rejects Resolved without one.
     close_code: str = ""
+    # The group a change the agent opens is assigned to. A stock instance will not
+    # move a change out of New without one; leave empty when the template sets it.
+    change_assignment_group: str = ""
     # Demo mode normally uses an in-memory ServiceNow. Set this to connect demo
     # mode (mock tool adapters, sample SOPs) to a real instance for testing.
     live_in_demo: bool = False
@@ -318,6 +321,7 @@ class Settings:
                 incident_table=get("SERVICENOW_INCIDENT_TABLE", "incident"),
                 timeout_seconds=int(get("SERVICENOW_TIMEOUT", "30")),
                 close_code=get("SERVICENOW_CLOSE_CODE", ""),
+                change_assignment_group=get("SERVICENOW_CHANGE_ASSIGNMENT_GROUP", "").strip(),
                 live_in_demo=get("SERVICENOW_LIVE_IN_DEMO", "false").lower() == "true",
                 auth=get("SERVICENOW_AUTH", "basic").lower(),
                 oauth_client_id=get("SERVICENOW_OAUTH_CLIENT_ID", ""),

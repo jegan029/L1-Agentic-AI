@@ -7,7 +7,7 @@ An async Python service that takes a ServiceNow incident, matches it to a publis
 ## What it does today
 
 - Receives incidents by signed webhook or by polling ServiceNow.
-- Matches each incident to an SOP by keyword, CI, category and assignment group. A model, if configured, can help choose between candidates that already clear the confidence threshold. It has no tools and cannot decide what runs.
+- Matches each incident to an SOP by keyword, CI, category and assignment group. A field the ticket does not carry is left out of the score; it is not counted as a mismatch. A model, if configured, can help choose between candidates that already clear the confidence threshold. It has no tools and cannot decide what runs.
 - Binds typed parameters from the ticket (for example an Autosys job name), validates them, and stops if any cannot be bound.
 - Executes the SOP step by step with read-only adapters: Splunk, IR360/IBM MQ, Autosys, Windows file shares, Dynatrace, a browser check and mainframe TN3270.
 - Ends every run in one of four outcomes.
@@ -200,7 +200,7 @@ data/sample_sops/      sample SOPs
 docs/                  target architecture, threat model, controls matrix, ADRs, delivery plan
 ```
 
-[ARCHITECTURE.md](ARCHITECTURE.md) and [RUNBOOK.md](RUNBOOK.md) predate this phase and still describe removed execution modes in places. Each carries a notice at the top. Treat [docs/](docs/) as current.
+[ARCHITECTURE.md](ARCHITECTURE.md) describes the code as built and [RUNBOOK.md](RUNBOOK.md) covers running it. [docs/](docs/) holds the target design and the plan to reach it.
 
 ## Known limits
 

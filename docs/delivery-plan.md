@@ -241,10 +241,24 @@ Deviations from the plan above
 | Item | What happened |
 |---|---|
 | `thilak-feature-branch` (`db38e1f`) | Not merged. Its backend changes were NVIDIA endpoint logging and a keyword-matcher override inside the AI path, neither of which survives ADR 0001. Its frontend changes (AI reasoning tab, terminal-style activity feed, a different navigation bar) overlap the redesign in five files and were left for a human to reconcile. |
-| Legacy `ARCHITECTURE.md` and `RUNBOOK.md` | Customer name removed and a currency notice added. They were not rewritten and still describe removed modes in places. `README.md` was rewritten. |
+| Legacy `ARCHITECTURE.md` and `RUNBOOK.md` | Replaced with short documents that describe only what exists after Phase 1. `README.md` was rewritten. |
+| SOP matcher scoring | Not in the Phase 1 plan. Changed after a ServiceNow developer instance showed realistic tickets scoring 0.41 to 0.51 against the 0.6 threshold. See the table below. |
+| Licence | The MIT declaration was removed from `pyproject.toml`. No licence is declared; D7 stays open for the product name and terms. |
+| Container image | Found by building it: the connector requirements named a `py3270` version that was never published, a plain `docker build` produced the demo image because the demo stage was last, and a local build copied run history into the image. All three fixed; a `.dockerignore` was added. |
 | Requirements | Split into `requirements.txt` (runtime), `requirements-dev.txt` and `requirements-connectors.txt` instead of one file. |
 | Demo mode ServiceNow | Demo mode now uses an in-memory ServiceNow stand-in; before, it called the real client with an empty URL and logged an error per note. |
 | Polling in demo mode | Disabled, for the same reason. |
+
+SOP matcher scoring change (threshold unchanged at 0.6)
+
+| What | Before | Now |
+|---|---|---|
+| Keyword score | Keywords found divided by the number of keywords the SOP lists, so a long list of alternative phrasings lowered every score | Three distinct hits is full score |
+| Keyword and title matching | Substring (`ram` matched `program`; `-` and `and` in a title counted) | Whole words; title stopwords and punctuation ignored |
+| Signal missing on the ticket or not declared by the SOP | Scored as a mismatch | Left out and the other weights rescaled |
+| Signal present and different | Counts against | Counts against (unchanged) |
+
+Effect on a fixed set of tickets: the four matching demo incidents rise from 0.75 to 0.86 to between 0.94 and 1.00; the certificate incident with no SOP falls from 0.11 to 0.00; the two developer-instance tickets rise from 0.51 and 0.41 to 0.81 and 0.74; a ticket with one generic keyword and a matching group scores 0.49; matching fields with no keyword evidence stay at 0.50. A ticket with no CI, category or group is now scored on text alone and can clear the threshold with two or more keyword hits, where before it could not.
 
 Test expectations changed, as announced
 

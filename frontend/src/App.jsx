@@ -8,6 +8,7 @@ import NavBar, { NAV_ITEMS } from './components/NavBar'
 import LiveDashboard from './components/LiveDashboard'
 import IncidentFeed from './components/IncidentFeed'
 import SopLibrary from './components/SopLibrary'
+import Actions from './components/Actions'
 import SopPerformance from './components/SopPerformance'
 import ActivityFeed from './components/ActivityFeed'
 import SignIn from './components/SignIn'
@@ -55,6 +56,7 @@ function Shell() {
       <main id="main" className="main" tabIndex={-1}>
         {page === 'dashboard' && <LiveDashboard />}
         {page === 'incidents' && <IncidentFeed />}
+        {page === 'actions' && <Actions />}
         {page === 'library' && <SopLibrary version={version} />}
         {page === 'sops' && <SopPerformance />}
         {page === 'activity' && <ActivityFeed />}

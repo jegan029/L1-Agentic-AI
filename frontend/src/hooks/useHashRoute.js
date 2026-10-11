@@ -1,6 +1,6 @@
 import { useMemo, useSyncExternalStore } from 'react'
 
-export const PAGES = ['dashboard', 'incidents', 'library', 'sops', 'activity']
+export const PAGES = ['dashboard', 'incidents', 'actions', 'library', 'sops', 'activity']
 
 function subscribe(cb) {
   window.addEventListener('hashchange', cb)
@@ -14,7 +14,7 @@ function decode(part) {
 
 /**
  * Routes: #/dashboard  #/incidents  #/incidents/INC0070001  #/library  #/library/<version id>
- * #/library/new  #/sops  #/activity
+ * #/library/new  #/actions  #/sops  #/activity
  */
 export function parseHash(hash) {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean)

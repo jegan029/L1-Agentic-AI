@@ -24,6 +24,13 @@ class ServiceNowSettings:
     assignment_group: str = ""
     sop_table: str = "kb_knowledge"
     incident_table: str = "incident"
+    timeout_seconds: int = 30
+    # Resolution code sent when an incident is resolved. Must be a value your
+    # instance accepts; a stock instance rejects Resolved without one.
+    close_code: str = ""
+    # Demo mode normally uses an in-memory ServiceNow. Set this to connect demo
+    # mode (mock tool adapters, sample SOPs) to a real instance for testing.
+    live_in_demo: bool = False
 
 
 @dataclass(frozen=True)
@@ -206,6 +213,9 @@ class Settings:
                 assignment_group=get("SERVICENOW_ASSIGNMENT_GROUP", ""),
                 sop_table=get("SERVICENOW_SOP_TABLE", "kb_knowledge"),
                 incident_table=get("SERVICENOW_INCIDENT_TABLE", "incident"),
+                timeout_seconds=int(get("SERVICENOW_TIMEOUT", "30")),
+                close_code=get("SERVICENOW_CLOSE_CODE", ""),
+                live_in_demo=get("SERVICENOW_LIVE_IN_DEMO", "false").lower() == "true",
             ),
             splunk=SplunkSettings(
                 base_url=get("SPLUNK_BASE_URL", ""),

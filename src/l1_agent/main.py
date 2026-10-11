@@ -42,7 +42,7 @@ from src.l1_agent.api.security import (
 from src.l1_agent.api.sops import make_sops_handler
 from src.l1_agent.api.stream import handle_stream
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
-from src.l1_agent.config.settings import Settings
+from src.l1_agent.config.settings import ConfigError, ServiceNowSettings, Settings
 from src.l1_agent.demo import MockServiceNowClient
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
@@ -65,6 +65,28 @@ logger = get_logger("main")
 _INCIDENT_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
 
+def check_servicenow_config(snow: ServiceNowSettings) -> None:
+    """Refuse a real ServiceNow connection that is incomplete or unscoped.
+
+    Without an assignment group the poller would pick up every new incident on
+    the instance, write work notes to it and reassign it.
+    """
+    missing = [
+        name
+        for name, value in (
+            ("SERVICENOW_BASE_URL", snow.base_url),
+            ("SERVICENOW_USERNAME", snow.username),
+            ("SERVICENOW_PASSWORD", snow.password),
+            ("SERVICENOW_ASSIGNMENT_GROUP", snow.assignment_group),
+        )
+        if not value
+    ]
+    if missing:
+        raise ConfigError("ServiceNow connection needs: " + ", ".join(missing))
+    if not snow.base_url.lower().startswith("https://"):
+        raise ConfigError("SERVICENOW_BASE_URL must start with https://")
+
+
 class L1AgentService:
     """Main service that manages the webhook listener and polling worker."""
 
@@ -72,10 +94,14 @@ class L1AgentService:
         validate_security_config(settings.agent)
         self._settings = settings
         # Demo mode has no ServiceNow: notes and updates go to an in-memory stand-in.
+        # SERVICENOW_LIVE_IN_DEMO connects demo mode to a real instance for testing.
+        self._live_servicenow = not settings.agent.demo_mode or settings.servicenow.live_in_demo
+        if self._live_servicenow:
+            check_servicenow_config(settings.servicenow)
         self._snow_client = (
-            MockServiceNowClient()
-            if settings.agent.demo_mode
-            else ServiceNowClient(settings.servicenow)
+            ServiceNowClient(settings.servicenow)
+            if self._live_servicenow
+            else MockServiceNowClient()
         )
         self._sop_matcher = SOPMatcher(settings.agent.sop_confidence_threshold)
         self._sop_parser = SOPParser()
@@ -335,10 +361,8 @@ class L1AgentService:
             self._settings.agent.webhook_port,
         )
 
-        # Start poll loop as background task. Demo mode has no ServiceNow to poll.
-        poll_task = (
-            None if self._settings.agent.demo_mode else asyncio.create_task(self._poll_loop())
-        )
+        # Start poll loop as background task when there is a real ServiceNow to poll.
+        poll_task = asyncio.create_task(self._poll_loop()) if self._live_servicenow else None
 
         # Wait for shutdown signal (Windows-compatible)
         stop_event = asyncio.Event()

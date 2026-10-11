@@ -164,6 +164,9 @@ class MockServiceNowClient:
         self.updates.append({"sys_id": sys_id, "fields": fields})
         return {"result": {"sys_id": sys_id}}
 
+    async def resolve_incident(self, sys_id: str, close_notes: str) -> dict:
+        return await self.update_incident(sys_id, {"state": "6", "close_notes": close_notes})
+
     async def get_sops(self, query: str = "", limit: int = 50) -> list:
         return []
 

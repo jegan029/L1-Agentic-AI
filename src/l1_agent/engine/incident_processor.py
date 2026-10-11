@@ -322,7 +322,7 @@ class IncidentProcessor:
             await self._history_store.record(incident, summary)
 
         if summary.outcome == ExecutionOutcome.RESOLVED:
-            await self._update_state(incident, state=6)  # Resolved
+            await self._resolve_in_itsm(incident, summary)
             metrics.increment("incidents.resolved")
             if self._memory and summary.sop_id:
                 self._memory.record(incident, summary, confidence_used=confidence)
@@ -380,6 +380,21 @@ class IncidentProcessor:
             await self._snow.add_work_note(incident.sys_id, note)
         except Exception as exc:
             logger.error("Failed to post work note for %s: %s", incident.number, exc)
+
+    async def _resolve_in_itsm(self, incident: Incident, summary: ExecutionSummary) -> None:
+        """Mark the incident resolved, with the verification as the resolution note."""
+        verify = next((r for r in summary.step_results if r.step_id == summary.verified_by), None)
+        notes = (
+            f"Resolved by L1 Agent using {summary.sop_title} ({summary.sop_id}). "
+            f"Verified by step {summary.verified_by}: "
+            f"{verify.input_summary if verify else 'verification passed'}."
+        )
+        try:
+            await self._snow.resolve_incident(incident.sys_id, notes)
+        except Exception as exc:
+            # The ticket stays open in the ITSM, which is the safe direction.
+            metrics.increment("incidents.resolve_update_failed")
+            logger.error("Failed to resolve %s in the ITSM: %s", incident.number, exc)
 
     async def _update_state(self, incident: Incident, state: int) -> None:
         """Update incident state field."""

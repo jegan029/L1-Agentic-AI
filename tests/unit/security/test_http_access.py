@@ -16,19 +16,32 @@ from src.l1_agent.api.security import (
     sign_webhook,
     validate_security_config,
 )
-from src.l1_agent.config.settings import AgentSettings, LLMSettings, Settings
-from src.l1_agent.main import L1AgentService
+from src.l1_agent.config.settings import (
+    AgentSettings,
+    ConfigError,
+    LLMSettings,
+    ServiceNowSettings,
+    Settings,
+)
+from src.l1_agent.main import L1AgentService, check_servicenow_config
 
 TOKEN = "t" * 40
 SECRET = "s" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
 PAYLOAD = {"sys_id": "abc123", "number": "INC0000001", "short_description": "x"}
+# Outside demo mode a ServiceNow connection must be fully described. Nothing here calls it.
+SNOW = ServiceNowSettings(
+    base_url="https://example.service-now.com",
+    username="svc",
+    password="x",
+    assignment_group="L1-Support",
+)
 
 
 def make_settings(**agent) -> Settings:
     base = dict(demo_mode=False, api_tokens=(TOKEN,), webhook_secret=SECRET)
     base.update(agent)
-    return Settings(agent=AgentSettings(**base), llm=LLMSettings(enabled=False))
+    return Settings(agent=AgentSettings(**base), llm=LLMSettings(enabled=False), servicenow=SNOW)
 
 
 @pytest.fixture
@@ -240,3 +253,41 @@ class TestStartupConfiguration:
             assert "default-src 'none'" in resp.headers["Content-Security-Policy"]
         finally:
             await client.close()
+
+
+class TestServiceNowConfiguration:
+    @pytest.mark.parametrize("field", ["base_url", "username", "password", "assignment_group"])
+    def test_incomplete_connection_is_refused(self, field):
+        with pytest.raises(ConfigError, match="ServiceNow connection needs"):
+            check_servicenow_config(replace(SNOW, **{field: ""}))
+
+    def test_unscoped_polling_is_refused(self):
+        """Without a group the poller would take every new incident on the instance."""
+        with pytest.raises(ConfigError, match="SERVICENOW_ASSIGNMENT_GROUP"):
+            L1AgentService(replace(make_settings(), servicenow=replace(SNOW, assignment_group="")))
+
+    def test_plain_http_is_refused(self):
+        with pytest.raises(ConfigError, match="https"):
+            check_servicenow_config(replace(SNOW, base_url="http://example.service-now.com"))
+
+    def test_demo_mode_uses_the_in_memory_stand_in_by_default(self):
+        from src.l1_agent.demo import MockServiceNowClient
+
+        service = L1AgentService(
+            Settings(agent=AgentSettings(demo_mode=True), llm=LLMSettings(enabled=False))
+        )
+        assert isinstance(service._snow_client, MockServiceNowClient)
+        assert service._live_servicenow is False
+
+    def test_demo_mode_can_be_pointed_at_a_real_instance(self):
+        from src.l1_agent.clients.servicenow_client import ServiceNowClient
+
+        service = L1AgentService(
+            Settings(
+                agent=AgentSettings(demo_mode=True),
+                llm=LLMSettings(enabled=False),
+                servicenow=replace(SNOW, live_in_demo=True),
+            )
+        )
+        assert isinstance(service._snow_client, ServiceNowClient)
+        assert service._live_servicenow is True

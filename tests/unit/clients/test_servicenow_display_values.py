@@ -111,3 +111,57 @@ class TestClient:
     def test_none_and_missing_fields(self):
         incident = Incident.from_servicenow({"sys_id": None, "number": None})
         assert incident.sys_id == "" and incident.number == ""
+
+
+class TestResolveAndErrors:
+    @pytest.mark.asyncio
+    async def test_resolve_sends_state_notes_and_configured_code(self):
+        client = ServiceNowClient(
+            ServiceNowSettings(
+                base_url="https://example.service-now.com", close_code="Solution provided"
+            )
+        )
+        with patch.object(client, "_patch", AsyncMock(return_value={"result": {}})) as patched:
+            await client.resolve_incident(SYS_ID, "Verified by step-verify")
+        assert patched.call_args.args[1] == {
+            "state": "6",
+            "close_notes": "Verified by step-verify",
+            "close_code": "Solution provided",
+        }
+
+    @pytest.mark.asyncio
+    async def test_error_carries_status_and_servicenow_message(self):
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        from src.l1_agent.clients.servicenow_client import ServiceNowError
+
+        async def deny(request):
+            return web.json_response(
+                {
+                    "error": {
+                        "message": "Operation Failed",
+                        "detail": "Data Policy Exception: Resolution code is mandatory",
+                    }
+                },
+                status=403,
+            )
+
+        app = web.Application()
+        app.router.add_patch("/api/now/table/incident/{sys_id}", deny)
+        server = TestServer(app)
+        await server.start_server()
+        client = ServiceNowClient(
+            ServiceNowSettings(
+                base_url=str(server.make_url("")).rstrip("/"), username="u", password="p-secret"
+            )
+        )
+        try:
+            with pytest.raises(ServiceNowError) as err:
+                await client.resolve_incident(SYS_ID, "notes")
+        finally:
+            await client.close()
+            await server.close()
+        assert err.value.status == 403
+        assert "Resolution code is mandatory" in str(err.value)
+        assert "p-secret" not in str(err.value)

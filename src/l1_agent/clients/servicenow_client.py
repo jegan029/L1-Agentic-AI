@@ -13,6 +13,25 @@ from src.l1_agent.utils.metrics import metrics
 
 logger = get_logger("servicenow_client")
 
+RESOLVED_STATE = "6"
+
+
+class ServiceNowError(RuntimeError):
+    """A Table API call failed. Carries the status and ServiceNow's own message."""
+
+    def __init__(
+        self, method: str, path: str, status: int, message: str = "", detail: str = ""
+    ) -> None:
+        self.status = status
+        self.message = message
+        self.detail = detail
+        text = f"ServiceNow {method} {path} returned {status}"
+        if message:
+            text += f": {message}"
+        if detail:
+            text += f" ({detail})"
+        super().__init__(text)
+
 
 class ServiceNowClient:
     """Async REST client for ServiceNow Table API."""
@@ -25,6 +44,7 @@ class ServiceNowClient:
             "Content-Type": "application/json",
             "Accept": "application/json",
         }
+        self._timeout = aiohttp.ClientTimeout(total=settings.timeout_seconds)
         self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -32,6 +52,7 @@ class ServiceNowClient:
             self._session = aiohttp.ClientSession(
                 auth=self._auth,
                 headers=self._headers,
+                timeout=self._timeout,
             )
         return self._session
 
@@ -39,19 +60,34 @@ class ServiceNowClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def _get(self, path: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Optional[Dict[str, str]] = None,
+        data: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         session = await self._get_session()
         url = f"{self._base_url}{path}"
-        async with session.get(url, params=params) as resp:
-            resp.raise_for_status()
+        async with session.request(method, url, params=params, json=data) as resp:
+            if resp.status >= 400:
+                message = detail = ""
+                try:
+                    error = (await resp.json(content_type=None)).get("error", {})
+                    if isinstance(error, dict):
+                        message = str(error.get("message", ""))[:300]
+                        detail = str(error.get("detail", ""))[:300]
+                except Exception:
+                    pass  # a hibernating instance answers with an HTML page
+                raise ServiceNowError(method, path, resp.status, message, detail)
             return await resp.json()
 
+    async def _get(self, path: str, params: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        return await self._request("GET", path, params=params)
+
     async def _patch(self, path: str, data: Dict[str, Any]) -> Dict[str, Any]:
-        session = await self._get_session()
-        url = f"{self._base_url}{path}"
-        async with session.patch(url, json=data) as resp:
-            resp.raise_for_status()
-            return await resp.json()
+        return await self._request("PATCH", path, data=data)
 
     # ── Incident operations ───────────────────────────────────────────
 
@@ -105,6 +141,17 @@ class ServiceNowClient:
     async def add_work_note(self, sys_id: str, note: str) -> Dict[str, Any]:
         """Add a work note to an incident."""
         return await self.update_incident(sys_id, {"work_notes": note})
+
+    async def resolve_incident(self, sys_id: str, close_notes: str) -> Dict[str, Any]:
+        """Move an incident to Resolved.
+
+        A stock instance has a data policy that rejects the Resolved state
+        unless a resolution code and resolution notes are supplied.
+        """
+        fields: Dict[str, Any] = {"state": RESOLVED_STATE, "close_notes": close_notes[:4000]}
+        if self._settings.close_code:
+            fields["close_code"] = self._settings.close_code
+        return await self.update_incident(sys_id, fields)
 
     # ── SOP / Runbook operations ──────────────────────────────────────
 

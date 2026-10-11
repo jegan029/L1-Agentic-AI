@@ -40,9 +40,11 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 # Live provider tests cost money and need a key: run them on purpose with
 #   pytest tests/live -m live_llm -v -s
-addopts = "-m 'not live_llm'"
+#   pytest tests/live -m live_servicenow -v -s   (writes to the configured instance)
+addopts = "-m 'not live_llm and not live_servicenow'"
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
+    "live_servicenow: reads and writes the configured ServiceNow instance; skipped unless SERVICENOW_* are set",
     "live_llm: calls the configured model provider; skipped unless LLM_API_KEY, LLM_ENDPOINT and LLM_MODEL are set",
 ]
 

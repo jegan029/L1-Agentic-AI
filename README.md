@@ -2,13 +2,14 @@
 
 An async Python service that takes a ServiceNow incident, matches it to a published Standard Operating Procedure (SOP), runs the SOP's steps through connectors, and ends in one explicit outcome: resolved with verification, or handed to a person with the evidence. Where the SOP and the tenant's policy allow it, it carries out the fix the SOP describes; by default it only records what it would have done. A React dashboard shows what the agent did.
 
-**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow connector has run against one developer instance (basic authentication; OAuth has not) and the model client against one hosted provider. Every operations connector (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock and against fixtures written from vendor documentation, and sign-in has only run against identity providers faked in the tests. The force start has only run against a mock scheduler: the real `sendevent` command, its exit codes and its timing are unverified. Opening a standard change from a template, adding a note, asking a group for approval and closing the change have run against one developer instance. Reading an approval or a rejection that a person gave there has not, and nor has the whole action pipeline. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
+**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow connector has run against one developer instance (basic authentication; OAuth has not) and the model client against one hosted provider. The model path (policy, redaction, budgets, the four advisor tasks) has run once against one hosted model through the OpenAI-compatible client; the Anthropic client has only run against fixtures written from its documentation. Every operations connector (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock and against fixtures written from vendor documentation, and sign-in has only run against identity providers faked in the tests. The force start has only run against a mock scheduler: the real `sendevent` command, its exit codes and its timing are unverified. Opening a standard change from a template, adding a note, asking a group for approval and closing the change have run against one developer instance. Reading an approval or a rejection that a person gave there has not, and nor has the whole action pipeline. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
 
 ## What it does today
 
 - Receives incidents by signed webhook or by polling ServiceNow, and claims each ticket before working it. A ticket someone else already holds is left alone.
 - Keeps SOPs as versions with a review workflow: one person submits a draft, a different person approves it, and only a published version is ever matched or run. Articles pulled from a ServiceNow knowledge base or a Git repository arrive as drafts.
-- Matches each incident to a published SOP by keyword, CI, category and assignment group. A field the ticket does not carry is left out of the score; it is not counted as a mismatch. A model, if configured, can help choose between candidates that already clear the confidence threshold. It has no tools and cannot decide what runs.
+- Matches each incident to a published SOP by keyword, CI, category and assignment group. A field the ticket does not carry is left out of the score; it is not counted as a mismatch. A model, if the tenant allows one, can help choose between candidates that already clear the confidence threshold. It has no tools and cannot decide what runs.
+- Uses a model, when a tenant switches it on, for four things and nothing else: ranking SOP candidates, pointing to a parameter value in the ticket, writing a labelled hand-over summary, and drafting an SOP from a prose article for people to review. Every request goes through one gateway: the tenant's model policy (providers, tasks, region, retention), redaction, token and cost budgets, a closed answer schema, and an audit record. A new tenant uses no model, and the agent works the same without one.
 - Binds typed parameters from the ticket (for example an Autosys job name), validates them, and stops if any cannot be bound.
 - Executes the SOP step by step through connectors: Splunk, IBM MQ (through IR360), Autosys, file shares, Dynatrace, a browser check and mainframe TN3270. Each connector declares its capabilities, their parameters and their risk tier in a manifest.
 - Carries out one kind of change so far: an Autosys force start of a failed job. Every change goes through a policy decision, a ServiceNow change record, an approval where one is required, pre-checks, verification and, where the connector declares one, rollback. A new tenant starts in shadow mode, where nothing is changed.
@@ -219,6 +220,9 @@ Every route is denied unless it is declared with an access rule; the service wil
 | `GET /api/policy` | `system.read` | Autonomy level, rules, kill switches, deployment ceiling |
 | `PUT /api/policy`, `POST /api/kill-switch/release` | `policy.manage` | Change the level or the rules; release the kill switch |
 | `POST /api/kill-switch/engage` | `actions.stop` | Stop every change for the tenant |
+| `GET /api/model` | `system.read` | The tenant's model policy, the configured provider (never its key), today's use |
+| `PUT /api/model` | `policy.manage` | Switch model use on or off; change providers, tasks, region, retention and budgets |
+| `GET /api/model/calls` | `audit.read` | Each model request: task, model id, prompt version, digests, tokens, outcome |
 | `/auth/login`, `/auth/callback`, `/auth/saml/*`, `/auth/break-glass`, `/auth/logout` | public, except logout | Sign-in and sign-out |
 
 A signed-in browser sends `X-CSRF-Token` (from `/api/me`) on every request that changes something. API tokens go in `Authorization: Bearer`.
@@ -227,7 +231,9 @@ A signed-in browser sends `X-CSRF-Token` (from `/api/me`) on every request that 
 
 ```bash
 pytest tests/ -v                         # live provider tests are excluded by default
-ruff check src/ tests/ && ruff format --check src/ tests/
+python -m evals.run                      # golden incidents, injection and redaction corpora
+python -m evals.run --live               # the same against the configured model (costs money)
+ruff check src/ tests/ evals/ && ruff format --check src/ tests/ evals/
 ```
 
 Tests in `tests/db` and `tests/api` run on SQLite and, when a PostgreSQL is available, on PostgreSQL too. Row level security, row locking and the audit guard exist only there:
@@ -269,10 +275,12 @@ src/l1_agent/
                        itsm/ (ServiceNow), knowledge/ (ServiceNow KB, Git), ops/ (the seven),
                        hub.py (a tenant's connections)
   adapters/            the seven original adapters the ops connectors run through, and their mocks
-  ai/                  model client and SOP ranking (advice only)
+  ai/                  model use: gateway, providers, tenant model policy, redaction,
+                       the four advisor tasks, versioned prompts (advice only)
   escalation/          L2 routing and the escalation flow
   models/ store/ notifications/ config/ utils/
 frontend/              React + Vite dashboard
+evals/                 evaluation suite for model use: corpora, stand-in models, checks
 data/sample_sops/      sample SOPs (published in demo mode); data/sample_drafts/ (left in review)
 docs/                  target architecture, threat model, controls matrix, ADRs, delivery plan
 ```
@@ -286,7 +294,8 @@ docs/                  target architecture, threat model, controls matrix, ADRs,
 - Opening a standard change from a template, adding a note, asking a group for approval and closing the change have run against one developer instance. Reading an approval or a rejection that a person gave there has not, and nor has the whole action pipeline against a real instance. An existing normal change on the ticket is not accepted as the change record, and ServiceNow approvals are polled, not pushed.
 - Policy rules are edited as JSON through the API or the command line. The dashboard sets the autonomy level and the kill switch and shows the rules.
 - A grant is issued and checked inside one process. Checking it in a separate runner needs the key split planned for the packaging phase.
-- Knowledge sources are a ServiceNow knowledge base and Git. Confluence and SharePoint are not built. A prose article becomes an empty draft; nothing drafts the steps for you yet.
+- Knowledge sources are a ServiceNow knowledge base and Git. Confluence and SharePoint are not built. A prose article becomes an empty draft unless the tenant allows a model to draft its steps.
 - Connections are set from the command line or the API; the dashboard has no screen for them yet.
+- Model use: one provider per deployment. Redaction before a model request is pattern matching: it does not find a person's name in running text (other than the ticket's caller), a postal address, or a secret with no recognisable shape. A provider's region and retention are what the operator declares; the product cannot check them. The model path (policy, redaction, budgets, the four advisor tasks) has run once against one hosted model through the OpenAI-compatible client; the Anthropic client has only run against fixtures written from its documentation. Answer quality has not been measured.
 - The audit log is not yet exported to a SIEM and has no retention control.
 - Connector behaviour is tested against mocks and hand-written fixtures only, and sign-in against faked identity providers only. ServiceNow OAuth has not run against a real instance.

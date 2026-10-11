@@ -467,4 +467,86 @@ Not verified: the force start against Autosys (`sendevent` exit codes, output an
 
 Decision recorded for Phase 5: **D6** a customer-supplied OpenAI-compatible endpoint and Anthropic are the supported model providers at launch, and running with no model is a supported configuration.
 
+## 9. Phase 5 record
+
+Delivered on branch `phase-5/model-hardening`, based on `phase-4/actions`. Decision D6 was taken before it started. The design is [ADR 0009](adr/0009-model-use.md); the documents for a model risk function are in [model-risk/](model-risk/).
+
+**What is and is not verified against a real model.** The gateway with the `rank`, `extract` and `interpret` tasks ran once against one hosted model through the OpenAI-compatible client. The Anthropic client has only run against fixtures written by hand from its documentation. Article drafting has only run against stand-in models. Answer quality has not been measured for any task.
+
+Exit criteria
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | The injection corpus produces zero tool calls outside the current step's declared capability and zero writes, measured at the connector boundary | `evals/checks.py` (`injection_tickets`, `calls_are_what_the_sop_declares`), run by `tests/evals/test_evals.py` and the CI job `evals`: 9 hostile incidents against 4 misbehaving stand-in models, calls recorded inside each connector's `invoke` and compared with what the published SOP and the ticket render. The same 9 against one real model, once: held |
+| 2 | With the provider disabled or returning garbage, every golden incident ends in a correct terminal state or NEEDS_HUMAN, never RESOLVED without verification | `evals/checks.py` (`golden`): 11 incidents with the model off, the deterministic stand-in, garbage, a failing provider, a hostile model and an obedient one. Outcome, SOP, verification step, capability calls and writes are identical in every case |
+| 3 | A redaction corpus shows no seeded secret or personal data item in any outbound provider request | `evals/checks.py` (`redaction`), `evals/redaction.json`: 24 items of 8 kinds, all four tasks, both provider clients, searched for in the raw bytes a local HTTP server received |
+| 4 | Exceeding the per-incident budget ends the advisor's involvement and the run continues deterministically or goes to NEEDS_HUMAN | `tests/db/test_model_governance.py` (`TestBudgets`), `tests/db/test_model_in_runs.py` (`TestABudgetInARun`): a budget reached in the middle of a run, and no budget at all, for four kinds of run; each ends as it does with no model |
+
+What the criteria do not show: the corpora are small and written by the authors of the code, and the redaction corpus covers recognised shapes only. Its `not_found` list gives examples that are sent as they are.
+
+Scope against the plan
+
+| Planned | Delivered |
+|---|---|
+| Provider abstraction | `ai/providers.py`: OpenAI-compatible, Anthropic, and a deterministic stand-in. One provider per deployment |
+| Per-tenant allow list, region and retention settings | `model_policies` and `ai/policy.py`. Off for a new tenant. Region and retention are the operator's declaration about the endpoint |
+| The four advisor tasks with schema-validated output | `ai/advisor.py`, `ai/schema.py`: `rank`, `extract`, `interpret`, `draft` |
+| Redaction before egress | `ai/redaction.py`, applied in the gateway to everything sent. Pattern matching |
+| Token and cost budgets | Per incident and per tenant per day, from the `model_calls` record |
+| Prompt versioning | `ai/prompts.py`; digests pinned by a test; versions required in the change log |
+| Evaluation suite in CI | `evals/`, CI job `evals`, `tests/evals/` |
+| Model inventory and change log | `docs/model-risk/` (inventory and intended use, validation evidence, change log), `docs/dpia-template.md`, `docs/sub-processors.md` |
+
+Engineering decisions and deviations
+
+- **The package is still `ai/`**, not `advisor/` as the target architecture named it.
+- **Model use is off for a new tenant.** `LLM_ENABLED=true` alone no longer sends anything.
+- **A model cannot steer a run into an SOP that makes a change.** Not in the plan; found while writing the injection corpus. Before this, a ticket that fitted a read-only SOP best and also cleared the threshold for the restart SOP could be moved to the restart by the model's ranking.
+- **A value located by a model never reaches a write**, and only parameters the SOP author marks (`source.advisor`) may be located at all.
+- **Redaction is reversible for personal data only.** A secret placeholder is never turned back into the secret.
+- **The audit log holds digests of a model's answer, not the answer.** ADR 0007 planned to store the validated answer; it can contain ticket text.
+- **The inventory check is on prompt versions and provider kinds**, not on configured model ids as the controls matrix had planned: the customer's model id is not known to the repository. It is in every `model.called` audit event.
+- **The older `AIAnalyzer` remains** for existing unit tests and as a fallback in the one-shot demo. A test asserts the service cannot build one.
+- **Output limits were raised after the first live run**, in which a model that reasons before answering had 7 of 16 answers cut short.
+
+Not built
+
+- More than one provider per deployment, or a tenant choosing between providers.
+- Recognition of names and addresses in running text.
+- A store of full prompts and answers.
+- A scheduled live evaluation, or any measure of answer quality.
+- An editing screen for the model policy rules.
+
+Defects found and fixed in this phase
+
+| Defect | Found by | Fix |
+|---|---|---|
+| A model's ranking could move a run to an SOP with an `ACTION` step | Writing the injection corpus | The pick is ignored unless that SOP is also the rules' best match |
+| The Anthropic client did not turn a request timeout into a provider error | Its own test | Caught and converted |
+| An IBAN followed by an upper-case word was not redacted | Writing the redaction tests | The candidate is shortened until its check digits pass |
+| Output limits too low for a reasoning model | The first live run | Raised per task |
+
+Changes to existing tests
+
+| Test file | Change | Why |
+|---|---|---|
+| `tests/conftest.py` | `make_service` takes an optional `advisors` | To build a service with a model gateway |
+| `tests/api/support.py` | `build` takes an optional `provider`; new `seed_model` | The model routes and tables |
+| `tests/db/test_tenant_isolation.py` | Seeds a model policy and a model call per tenant | Extended to the two new tables, not relaxed |
+| `tests/api/test_api_data.py` | Seeds the same; one more marker that must not leak | Extended to the new routes |
+
+No test was removed and no existing assertion was changed.
+
+Behaviour that changed for an existing deployment
+
+- A deployment with `LLM_ENABLED=true` sends nothing to a model until its tenant's model policy is set. Demo mode sets one for the demo tenant.
+- `LLM_ENDPOINT` must be `https` outside demo mode.
+- A model's ranking no longer moves a run to an SOP that makes a change.
+- With `interpret` enabled, an escalated run gets one more work note, labelled as model-drafted.
+- Migration `0004` must be applied.
+
+Verified: the full suite (1,685 tests) on Windows on SQLite and PostgreSQL 16 with 89% coverage (the last nine tests, added late, ran there on SQLite only), and the same 1,685 in a Linux container with PostgreSQL and SAML required; lint and format; bandit; the evaluation suite; a mutation check in which 25 guards were removed one at a time and each removal was caught; the evaluation suite's golden and injection corpora once against one hosted model; the one-shot demo; the demo service over HTTP (the model routes, switching model use off, an invalid policy refused, audit verification); both container images; the production frontend build.
+
+Not verified: the Anthropic client against the live API; article drafting and redaction against a real model; answer quality; the dashboard's model card and labels in a browser; several workers reaching a daily budget together; GitHub CI for this branch.
+
 Open decisions: D7 (product name, licence, preview connectors) is needed before Phase 6.

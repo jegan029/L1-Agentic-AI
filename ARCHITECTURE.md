@@ -159,12 +159,43 @@ ACTION step
 
 The force start has only run against a mock scheduler: the real `sendevent` command, its exit codes and its timing are unverified. Opening a standard change from a template, adding a note, asking a group for approval and closing the change have run against one developer instance. Reading an approval or a rejection that a person gave there has not, and nor has the whole action pipeline against a real instance.
 
-## 12. Other safeguards
+## 12. Model use ([ADR 0009](docs/adr/0009-model-use.md))
 
-- **Model boundary.** Ticket text is redacted, length-limited and delimited before it is sent. Model output is never logged and is only ever read as an SOP choice.
+A tenant with no model policy uses no model. When a tenant switches it on, a model advises on four things and decides none of them.
+
+| Task | Asked for | What the engine does with the answer |
+|---|---|---|
+| `rank` | The best SOP candidate | Takes the pick only if it clears the threshold on the rules' own score and, when it differs from the rules' best match, has no `ACTION` step |
+| `extract` | Where in the ticket a value is | Uses it only for a parameter the SOP author marked (`source.advisor`), in an SOP with no `ACTION` step, when the value is in the ticket word for word and passes the parameter's validation |
+| `interpret` | A hand-over summary | Posts it, labelled as model-drafted, after the outcome is settled |
+| `draft` | Steps from a prose article | Keeps them only if they pass the validator and change nothing; the result is a draft for two people |
+
+```
+IncidentProcessor / SOPExecutor / sop.ingest
+        ↓  Advisor (ai/advisor.py): one method per task
+ModelGateway.ask (ai/gateway.py)                 the only caller of a provider
+        ├─ tenant model policy, read every time:  on? task? provider? region? retention?
+        ├─ redaction of everything sent           placeholders such as [[EMAIL_1]]
+        ├─ budgets from the record of calls       per incident, per tenant per day
+        ├─ Provider.complete                      one named function; text is never read
+        ├─ answer checked against a closed schema
+        └─ model_calls row + audit event          digests and token counts, no text
+```
+
+- **Providers** (`ai/providers.py`): an OpenAI-compatible endpoint, Anthropic, and a deterministic stand-in for demo mode, CI and the evaluation suite. One per deployment.
+- **Never raises, never returns text.** `ask` gives the validated answer or nothing, and the caller carries on without it.
+- **Past a budget** the request is not sent, the refusal is recorded, and the advisor takes no further part in that run.
+- **A located parameter is journalled** on the run (`runs.advised_parameters`), so a resumed run does not ask again.
+- **Evaluation** (`evals/`): golden incidents, an injection corpus and a redaction corpus, run in CI against stand-in models that obey injected text, give the worst valid answer, return garbage, or fail. Capability calls are counted inside each connector's `invoke`; provider requests are captured as bytes at a local HTTP server.
+
+The model path (policy, redaction, budgets, the four advisor tasks) has run once against one hosted model through the OpenAI-compatible client; the Anthropic client has only run against fixtures written from its documentation. Redaction is pattern matching and does not find a name in running text or a secret with no recognisable shape.
+
+## 13. Other safeguards
+
+- **Model boundary.** Everything sent to a model is redacted, length-limited and delimited. Model output is never logged, never stored (only its digest), and only ever read as one of four schema-checked answers.
 - **Logs and secrets.** Operational logs are JSON with pattern-based redaction. Secrets fetched from Vault or AWS are passed to the settings object and are not written to the process environment.
 
-## 13. What this design does not have yet
+## 14. What this design does not have yet
 
 | Gap | Consequence today | Phase |
 |---|---|---|
@@ -172,7 +203,8 @@ The force start has only run against a mock scheduler: the real `sendevent` comm
 | Connectors still run through the original adapters | Read retries are not limited to the error classes a capability lists as retryable. Writes are never retried. | 6 |
 | Connectors are not loaded through entry points, and there is no signed list of permitted connector versions | Only the first-party list in code is loaded. | 6 |
 | The engine role is not restricted to the published view | The view is the only path the engine code uses; the application role can still read the version table. | 6 |
-| Confluence and SharePoint sources; the `lookup` parameter source; drafting steps from prose | Prose articles become empty drafts for a person to structure. | 5 |
+| Confluence and SharePoint sources; the `lookup` parameter source | Knowledge comes from a ServiceNow knowledge base or Git. | 6 |
+| One model provider per deployment; no store of prompts and answers; redaction by pattern only | A tenant's list allows or refuses the deployment's provider. Only digests of model traffic are kept. Names in running text are sent. | 6 |
 | No screen for connections | Command line and API only. | 6 |
 | The browser connector uses a local Chrome | Marked preview and not in the default image. | 6 |
 | One write capability, verified only against a mock | The Autosys force start has not run against a scheduler. The Autosys REST API is not implemented. | needs a test environment |

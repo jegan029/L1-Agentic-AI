@@ -1,6 +1,6 @@
 # L1 Engineer Agent: runbook
 
-How to run and operate the service as it stands after Phase 4. Installation and the demo quick start are in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
+How to run and operate the service as it stands after Phase 5. Installation and the demo quick start are in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
 
 This is pre-release software. Sign-in has been tested only against identity providers faked in the test suite, and the tool adapters only against mocks. The Autosys force start has only run against a mock scheduler, and the ServiceNow change and approval calls have run against one developer instance only (reading a person's approval there has not run at all). Expect to find differences on first contact with real systems, and start every tenant in shadow mode.
 
@@ -191,6 +191,70 @@ l1-agent killswitch status
 
 Or **Actions → Stop all changes** in the dashboard. An operator or tenant administrator can engage the tenant's switch; only a tenant administrator can release it. A third switch is local to a process: while the file named by `ACTIONS_KILL_SWITCH_FILE` exists, that process makes no change. With any switch on, runs still read and diagnose; a run that reaches a change ends `aborted` and the ticket goes to a person. The switches are read from the database each time, so they take effect on the next change, not after a delay.
 
+### 2.7 Using a model
+
+The agent works without a model, and a new tenant uses none. Switch it on only after your own review of what will be sent and to whom. The design is in [ADR 0009](docs/adr/0009-model-use.md) and the description for a model risk function in [docs/model-risk/](docs/model-risk/).
+
+**The provider (per deployment)**
+
+```bash
+LLM_ENABLED=true
+LLM_PROVIDER=openai_compatible        # or anthropic
+LLM_ENDPOINT=https://models.example/v1
+LLM_MODEL=vendor/model-name
+LLM_API_KEY_REF=vault:secret/data/l1-agent#llm_api_key   # read for each request
+LLM_REGION=eu                         # what you state about where the endpoint processes data
+LLM_RETENTION_DAYS=0                  # what you state about how long it keeps prompts
+LLM_INPUT_PRICE_PER_MTOK=3            # for cost budgets; leave unset for token budgets only
+LLM_OUTPUT_PRICE_PER_MTOK=15
+```
+
+The endpoint must be `https`. Region and retention are your declaration: the agent checks each tenant's rule against them and cannot verify them with the provider. Take them from your contract with the provider.
+
+**The tenant's policy**
+
+```bash
+l1-agent model show
+l1-agent model set --on --rules model-rules.json
+l1-agent model set --off
+l1-agent model usage
+```
+
+```json
+{
+  "providers": ["openai_compatible"],
+  "tasks": ["rank", "interpret"],
+  "regions": ["eu"],
+  "max_retention_days": 30,
+  "budgets": {"incident_tokens": 20000, "daily_tokens": 1000000, "incident_cost_usd": 0.05, "daily_cost_usd": 20}
+}
+```
+
+| Task | What the model is asked | What it can affect |
+|---|---|---|
+| `rank` | Which SOP candidate fits best | Which of two read-only procedures runs, when both already fit the ticket |
+| `extract` | Where in the ticket a value is | Whether a read-only procedure can run, for a parameter the SOP author marked with `"advisor": true` |
+| `interpret` | A hand-over summary of a run that did not resolve | A note on the ticket, labelled as model-drafted |
+| `draft` | Steps from a prose knowledge article | A draft SOP, marked as model-drafted, that two people must still pass |
+
+- Start with `rank` and `interpret`. Add `extract` and `draft` when you have looked at what they produce.
+- With `regions` set, a provider that states no region is refused. With `max_retention_days` set, a provider that states no retention is refused.
+- A change takes effect on the next request. Switching off needs no restart.
+- Past a budget the request is not sent and the run goes on without the model.
+
+**What is sent**
+
+Ticket text, check results and article text, after redaction. Secrets and personal data of a recognised shape are replaced with placeholders. Redaction is pattern matching: it does not find a person's name in running text (other than the ticket's caller), a postal address, or a secret that looks like ordinary words. If your tickets carry such data and that is not acceptable, do not enable the model.
+
+**Checking a model before you rely on it**
+
+```bash
+python -m evals.run            # stand-in models; no cost; also runs in CI
+python -m evals.run --live     # your configured model; about forty requests
+```
+
+The live run needs a source checkout: the `evals/` directory is not in the container image. Record the result in `docs/model-risk/change-log.md` whenever the model id, the provider or a prompt version changes.
+
 ## 3. Health and monitoring
 
 | Route | Use | Needs |
@@ -253,6 +317,10 @@ After restoring a database backup, run `audit verify --checkpoints` against the 
 | Run ends `escalated` with "Low confidence SOP match" | No SOP reached the threshold | The work note shows the score and which signals were compared. |
 | Run ends `needs_human` with "did not finish in N attempts" | A worker died on this run repeatedly | Check worker logs around the run id; the journal shows the last completed step. |
 | Run ends `needs_human` with "rejected the Resolved update" | Invalid resolution code, or a business rule | Fix `SERVICENOW_CLOSE_CODE`. |
+| The model seems to do nothing | The tenant has no model policy, the task is not listed, or the provider fails a region or retention rule | `l1-agent model show`; the Actions page says why each task is not used. |
+| `model.budget_exceeded` in the audit log | A run or the day reached its token or cost budget | Nothing to do: the run went on without the model. Raise the budget if it is too low. |
+| Many `invalid` outcomes in `l1-agent model usage` | The model's answers do not fit the schema, or are cut short. A model that reasons before answering needs a large output allowance | Run `python -m evals.run --live`. Tell us the model id. |
+| Many `error` outcomes | The provider is failing or timing out | Check the provider. Raise `LLM_TIMEOUT_SECONDS` if it is slow. |
 | Run ends `needs_human` after an adapter error | Target system down, or its circuit breaker is open | Check the target; the breaker resets after `AGENT_CB_RESET_SECONDS`. |
 
 ## 6. Data the service keeps
@@ -272,6 +340,8 @@ Everything is in PostgreSQL.
 | `actions` | Every policy decision: capability, parameters, hash, tier, approver, change number, result | Cannot be deleted. What was decided and approved cannot be changed, for any database role. |
 | `platform_flags` | The global kill switch | The only table besides `tenants` with no tenant. The application can read it and cannot write it. |
 | `knowledge_sources` | How far each source has been read | |
+| `model_policies` | Whether the tenant uses a model, with which providers, tasks and budgets | |
+| `model_calls` | Each model request: task, model id, prompt version, digests, token counts, cost, outcome | No prompt or answer text. Cannot be changed or deleted. Grows with use; no pruning yet. |
 
 Back up the database as a whole. There are no files to back up.
 
@@ -288,5 +358,7 @@ Back up the database as a whole. There are no files to back up.
 - The same change is made at most once per incident. If a restart is needed twice, the second is a person's.
 - When a change record cannot be closed automatically it is left open with a note.
 - ServiceNow approvals are polled; a decision takes up to `ACTIONS_SERVICENOW_POLL_SECONDS` to be seen.
+- One model provider per deployment.
+- The daily model budget is checked without a lock: several workers at once can pass it by the size of the requests in flight.
 - The webhook secret is shared and is rotated by changing the setting and restarting.
 - The service does not serve TLS.

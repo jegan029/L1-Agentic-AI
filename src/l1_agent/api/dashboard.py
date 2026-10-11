@@ -27,12 +27,18 @@ def make_dashboard_handler(store: IncidentHistoryStore):
 
         resolution_rate = round(resolved / received * 100, 1) if received else 0.0
 
-        # Average resolution time from histogram
-        hist = histograms.get("sop.execution_duration_ms", {})
-        avg_ms = hist.get("mean", 0.0)
+        # Average SOP run time: rule-based and AI executors record separate histograms.
+        hist = (
+            histograms.get("sop.execution_duration_ms")
+            or histograms.get("sop.ai_execution_duration_ms")
+            or {}
+        )
+        # The snapshot's histogram stats expose `avg` (not `mean`). None until a SOP has run.
+        avg_ms = hist.get("avg") if hist.get("count") else None
 
         currently_processing = int(gauges.get("active_incidents", 0))
-        uptime = gauges.get("l1_agent_uptime_seconds", 0.0)
+        # Uptime is a top-level field of the metrics snapshot, not a gauge.
+        uptime = snap.get("uptime_seconds", 0.0)
 
         # Escalation reason breakdown
         escalation_reasons = []
@@ -49,7 +55,7 @@ def make_dashboard_handler(store: IncidentHistoryStore):
                 "incidents_escalated": escalated,
                 "incidents_failed": failed,
                 "resolution_rate_pct": resolution_rate,
-                "avg_resolution_ms": round(avg_ms, 1),
+                "avg_resolution_ms": round(avg_ms, 1) if avg_ms is not None else None,
                 "currently_processing": currently_processing,
             },
             "outcome_breakdown": [

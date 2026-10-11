@@ -35,7 +35,10 @@ _SECRET_MAPPINGS: List[Dict[str, str]] = [
     {"env_key": "DYNATRACE_API_TOKEN", "vault_key": "dynatrace/api_token"},
     {"env_key": "LLM_API_KEY", "vault_key": "llm/api_key"},
     {"env_key": "SMB_PASSWORD", "vault_key": "smb/password"},
-    {"env_key": "AGENT_API_TOKENS", "vault_key": "agent/api_tokens"},
+    {"env_key": "DATABASE_URL", "vault_key": "database/url"},
+    {"env_key": "OIDC_CLIENT_SECRET", "vault_key": "auth/oidc_client_secret"},
+    {"env_key": "BREAK_GLASS_PASSWORD_HASH", "vault_key": "auth/break_glass_password_hash"},
+    {"env_key": "AUDIT_CHECKPOINT_KEY", "vault_key": "auth/audit_checkpoint_key"},
     {"env_key": "AGENT_WEBHOOK_SECRET", "vault_key": "agent/webhook_secret"},
 ]
 

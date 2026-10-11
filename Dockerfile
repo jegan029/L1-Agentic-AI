@@ -11,8 +11,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY requirements.txt requirements-connectors.txt ./
-RUN pip install --no-cache-dir -r requirements.txt -r requirements-connectors.txt
+COPY requirements.txt requirements-connectors.txt requirements-saml.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -r requirements-connectors.txt -r requirements-saml.txt
 
 # Copy application code
 COPY src/ src/
@@ -20,9 +20,8 @@ COPY data/ data/
 
 ENV PYTHONPATH=/app
 
-# Create non-root user. It owns data/ because run history is written there.
-RUN groupadd -r l1agent && useradd -r -g l1agent -d /app l1agent && \
-    chown -R l1agent:l1agent /app/data
+# Create non-root user. Nothing under /app is writable by it: state is in the database.
+RUN groupadd -r l1agent && useradd -r -g l1agent -d /app l1agent
 USER l1agent
 
 # ─── Demo mode target (docker build --target demo) ───────────────────
@@ -41,4 +40,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # accept connections from the pod network; credentials are still mandatory.
 ENV AGENT_WEBHOOK_HOST=0.0.0.0
 
-ENTRYPOINT ["python", "-m", "src.l1_agent.main"]
+# `serve` by default. Run migrations as a separate job with the migration role:
+#   docker run --rm -e DATABASE_MIGRATION_URL=... l1-agent migrate
+ENTRYPOINT ["python", "-m", "src.l1_agent.cli"]
+CMD ["serve"]

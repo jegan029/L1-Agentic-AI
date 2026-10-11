@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import tempfile
 from pathlib import Path
 from typing import List
 
@@ -32,7 +31,6 @@ from src.l1_agent.escalation.l2_router import L2Router
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.models.sop import SOP
 from src.l1_agent.sop.validator import ensure_valid
-from src.l1_agent.store.incident_history import IncidentHistoryStore
 from src.l1_agent.utils.logging import get_logger, setup_logging
 
 logger = get_logger("demo")
@@ -177,7 +175,7 @@ class MockServiceNowClient:
         pass
 
 
-def build_demo_processor(snow: MockServiceNowClient, history_path: Path) -> IncidentProcessor:
+def build_demo_processor(snow: MockServiceNowClient, event_bus=None) -> IncidentProcessor:
     """The same processor the service uses, wired to mocks."""
     llm = MockLLMClient()
     return IncidentProcessor(
@@ -185,58 +183,83 @@ def build_demo_processor(snow: MockServiceNowClient, history_path: Path) -> Inci
         sop_matcher=SOPMatcher(confidence_threshold=0.6),
         sop_parser=SOPParser(),
         executor=SOPExecutor(
-            adapters=build_mock_adapters(), retry_max_attempts=1, retry_base_delay=0
+            adapters=build_mock_adapters(),
+            retry_max_attempts=1,
+            retry_base_delay=0,
+            event_bus=event_bus,
         ),
         sop_cache=load_sample_sops(),
         confidence_threshold=0.6,
         llm_client=llm,
         ai_analyzer=AIAnalyzer(llm_client=llm),
-        history_store=IncidentHistoryStore(path=history_path),
+        event_bus=event_bus,
         l2_router=L2Router(),
     )
 
 
 async def run_demo() -> List[dict]:
-    """Run the demo scenarios end-to-end. Returns one result row per incident."""
+    """Run the demo scenarios end-to-end. Returns one result row per incident.
+
+    Uses the same path as the service: intake, the job queue, the worker and
+    the audit log, on a throwaway SQLite database.
+    """
+    # Imported here: the service layer imports this module for its mocks.
+    from src.l1_agent.audit.log import Actor, verify
+    from src.l1_agent.db.engine import DEMO_TENANT_SLUG, Database
+    from src.l1_agent.service.runs import DbEventBus, RunService, record_by_number
+
     setup_logging("WARNING")
     print("\n" + "=" * 72)
     print("  L1 ENGINEER AGENT - DEMO (mock adapters, mock ServiceNow, mock model)")
     print("=" * 72)
 
     snow = MockServiceNowClient()
+    db = Database.create("", demo_mode=True)
     rows: List[dict] = []
-    with tempfile.TemporaryDirectory() as tmp:
-        processor = build_demo_processor(snow, Path(tmp) / "history.jsonl")
+    try:
+        await db.create_schema_for_demo()
+        tenant_id = await db.ensure_tenant(DEMO_TENANT_SLUG, "Demo tenant")
+        service = RunService(db, build_demo_processor(snow, DbEventBus(db)))
+        intake = Actor.system("demo")
         for payload in DEMO_INCIDENTS:
             incident = Incident.from_servicenow(payload)
-            result = await processor.process_incident(incident)
-            summary = result.summary
-            assert summary is not None
+            await service.ingest(tenant_id, incident, intake)
+            await service.work_once([tenant_id])
+            record = await record_by_number(db, tenant_id, incident.number)
+            assert record is not None
             rows.append(
                 {
                     "incident": incident.number,
-                    "sop": summary.sop_id or "(none)",
-                    "outcome": summary.outcome_label,
-                    "verified_by": summary.verified_by,
-                    "reason": summary.escalation_reason,
+                    "sop": record["sop_id"] or "(none)",
+                    "outcome": record["outcome"],
+                    "verified_by": record["verified_by"],
+                    "reason": record["escalation_reason"],
                 }
             )
             print(f"\n--- {incident.number}: {incident.short_description}")
-            print(f"  SOP:      {summary.sop_id or '(no SOP matched)'}")
-            print(f"  Outcome:  {summary.outcome_label.upper()}")
-            if summary.verified_by:
-                print(f"  Verified: step {summary.verified_by} passed")
-            if summary.escalation_reason:
-                print(f"  Reason:   {summary.escalation_reason}")
-            for r in summary.step_results:
-                first_line = r.output_summary.splitlines()[0] if r.output_summary else ""
-                print(f"    [{r.status.value:9}] {r.step_id} ({r.step_type}) {first_line[:70]}")
+            print(f"  SOP:      {record['sop_id'] or '(no SOP matched)'}")
+            print(f"  Outcome:  {record['outcome'].upper()}")
+            if record["verified_by"]:
+                print(f"  Verified: step {record['verified_by']} passed")
+            if record["escalation_reason"]:
+                print(f"  Reason:   {record['escalation_reason']}")
+            for r in record["step_results"]:
+                first_line = r["output_summary"].splitlines()[0] if r["output_summary"] else ""
+                print(f"    [{r['status']:9}] {r['step_id']} ({r['step_type']}) {first_line[:70]}")
 
         # A second delivery of the first incident is recognised and ignored.
-        again = await processor.process_incident(Incident.from_servicenow(SAMPLE_INCIDENT))
-        print(f"\n--- Redelivery of {again.incident_number}: {again.status.value} (no run created)")
+        again = await service.ingest(tenant_id, Incident.from_servicenow(SAMPLE_INCIDENT), intake)
+        status = "accepted" if again.accepted else "duplicate"
+        print(f"\n--- Redelivery of {SAMPLE_INCIDENT['number']}: {status} (no run created)")
 
-    print(f"\nWork notes posted to the mock ServiceNow: {len(snow.work_notes)}")
+        chain = await verify(db, tenant_id)
+        print(f"\nWork notes posted to the mock ServiceNow: {len(snow.work_notes)}")
+        print(
+            f"Audit log: {chain.events_checked} events, "
+            f"hash chain {'verified' if chain.ok else 'BROKEN'}"
+        )
+    finally:
+        await db.close()
     print("=" * 72 + "\n")
     return rows
 

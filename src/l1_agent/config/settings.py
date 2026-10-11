@@ -156,12 +156,54 @@ class AgentSettings:
     webhook_host: str = "127.0.0.1"
     webhook_port: int = 8080
     # Interim access control (src/l1_agent/api/security.py)
-    api_tokens: tuple = ()
     webhook_secret: str = ""
     webhook_max_skew_seconds: int = 300
     cors_allowed_origins: tuple = ()
     # Tenant-supplied L2 routing file; empty uses the packaged example.
     l2_routing_path: str = ""
+
+
+@dataclass(frozen=True)
+class DatabaseSettings:
+    # The application role. Row level security applies to it; it cannot migrate.
+    url: str = ""
+    # The role that owns the schema. Used only by `l1-agent migrate` and tenant creation.
+    migration_url: str = ""
+    app_role: str = "l1_app"
+    # The tenant this deployment takes incidents for (ADR 0003, shape A).
+    tenant_slug: str = "default"
+
+
+@dataclass(frozen=True)
+class AuthSettings:
+    oidc_issuer: str = ""
+    oidc_client_id: str = ""
+    oidc_client_secret: str = ""
+    oidc_redirect_uri: str = ""
+    oidc_scopes: str = "openid profile email"
+    oidc_groups_claim: str = "groups"
+    saml_idp_metadata_path: str = ""
+    saml_sp_entity_id: str = ""
+    saml_acs_url: str = ""
+    saml_groups_attribute: str = "groups"
+    session_hours: int = 8
+    session_idle_minutes: int = 30
+    # Cookies are Secure unless demo mode says otherwise.
+    cookie_secure: bool = True
+    # scrypt hash of the break-glass password. Empty disables the account.
+    break_glass_password_hash: str = ""
+    audit_checkpoint_key: str = ""
+    rate_limit_per_minute: int = 600
+    login_rate_limit_per_minute: int = 20
+
+
+@dataclass(frozen=True)
+class WorkerSettings:
+    poll_interval_seconds: float = 1.0
+    visibility_timeout_seconds: int = 300
+    max_attempts: int = 3
+    # Run the worker inside the API process. Separate processes are the production shape.
+    embedded: bool = True
 
 
 @dataclass(frozen=True)
@@ -178,6 +220,9 @@ class Settings:
     agent: AgentSettings = field(default_factory=AgentSettings)
     secrets: SecretsSettings = field(default_factory=SecretsSettings)
     smtp: SmtpSettings = field(default_factory=SmtpSettings)
+    database: DatabaseSettings = field(default_factory=DatabaseSettings)
+    auth: AuthSettings = field(default_factory=AuthSettings)
+    worker: WorkerSettings = field(default_factory=WorkerSettings)
 
     @classmethod
     def from_env(cls, secrets: Optional[Mapping[str, str]] = None) -> "Settings":
@@ -278,7 +323,6 @@ class Settings:
                 log_level=get("AGENT_LOG_LEVEL", "INFO"),
                 webhook_host=get("AGENT_WEBHOOK_HOST", "127.0.0.1"),
                 webhook_port=int(get("AGENT_WEBHOOK_PORT", "8080")),
-                api_tokens=tuple(_csv(get("AGENT_API_TOKENS", ""))),
                 webhook_secret=get("AGENT_WEBHOOK_SECRET", ""),
                 webhook_max_skew_seconds=int(get("AGENT_WEBHOOK_MAX_SKEW_SECONDS", "300")),
                 cors_allowed_origins=tuple(_csv(get("AGENT_CORS_ORIGINS", ""))),
@@ -301,5 +345,36 @@ class Settings:
                 user=get("SMTP_USER", ""),
                 password=get("SMTP_PASSWORD", ""),
                 from_address=get("SMTP_FROM", get("SMTP_USER", "")),
+            ),
+            database=DatabaseSettings(
+                url=get("DATABASE_URL", ""),
+                migration_url=get("DATABASE_MIGRATION_URL", ""),
+                app_role=get("DATABASE_APP_ROLE", "l1_app"),
+                tenant_slug=get("TENANT_SLUG", "demo" if demo_mode else "default"),
+            ),
+            auth=AuthSettings(
+                oidc_issuer=get("OIDC_ISSUER", "").rstrip("/"),
+                oidc_client_id=get("OIDC_CLIENT_ID", ""),
+                oidc_client_secret=get("OIDC_CLIENT_SECRET", ""),
+                oidc_redirect_uri=get("OIDC_REDIRECT_URI", ""),
+                oidc_scopes=get("OIDC_SCOPES", "openid profile email"),
+                oidc_groups_claim=get("OIDC_GROUPS_CLAIM", "groups"),
+                saml_idp_metadata_path=get("SAML_IDP_METADATA_PATH", ""),
+                saml_sp_entity_id=get("SAML_SP_ENTITY_ID", ""),
+                saml_acs_url=get("SAML_ACS_URL", ""),
+                saml_groups_attribute=get("SAML_GROUPS_ATTRIBUTE", "groups"),
+                session_hours=int(get("SESSION_HOURS", "8")),
+                session_idle_minutes=int(get("SESSION_IDLE_MINUTES", "30")),
+                cookie_secure=demo_only_off("SESSION_COOKIE_SECURE"),
+                break_glass_password_hash=get("BREAK_GLASS_PASSWORD_HASH", ""),
+                audit_checkpoint_key=get("AUDIT_CHECKPOINT_KEY", ""),
+                rate_limit_per_minute=int(get("RATE_LIMIT_PER_MINUTE", "600")),
+                login_rate_limit_per_minute=int(get("LOGIN_RATE_LIMIT_PER_MINUTE", "20")),
+            ),
+            worker=WorkerSettings(
+                poll_interval_seconds=float(get("WORKER_POLL_INTERVAL", "1.0")),
+                visibility_timeout_seconds=int(get("WORKER_VISIBILITY_TIMEOUT", "300")),
+                max_attempts=int(get("WORKER_MAX_ATTEMPTS", "3")),
+                embedded=get("WORKER_EMBEDDED", "true").lower() == "true",
             ),
         )

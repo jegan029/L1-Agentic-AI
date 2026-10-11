@@ -39,7 +39,7 @@ from src.l1_agent.utils.metrics import metrics
 from src.l1_agent.utils.retry import CircuitBreaker, retry_with_backoff
 
 if TYPE_CHECKING:
-    from src.l1_agent.events.event_bus import EventBus
+    from src.l1_agent.engine.journal import EventPublisher, RunJournal
 
 logger = get_logger("executor")
 
@@ -65,7 +65,7 @@ class SOPExecutor:
         circuit_breakers: Optional[Dict[str, CircuitBreaker]] = None,
         retry_max_attempts: int = 3,
         retry_base_delay: float = 1.0,
-        event_bus: Optional["EventBus"] = None,
+        event_bus: Optional["EventPublisher"] = None,
     ) -> None:
         self._adapters = adapters
         self._circuit_breakers = circuit_breakers or {}
@@ -78,6 +78,7 @@ class SOPExecutor:
         incident: Incident,
         sop: SOP,
         work_note_callback: Any = None,
+        journal: Optional["RunJournal"] = None,
     ) -> ExecutionSummary:
         """Execute an SOP for a given incident.
 
@@ -85,6 +86,8 @@ class SOPExecutor:
             incident: The incident being processed.
             sop: The matched SOP to execute.
             work_note_callback: Async callable(sys_id, note) for posting work notes.
+            journal: Durable record of the run. A step it already holds a result
+                for is not executed again; its recorded result is used instead.
 
         Returns:
             ExecutionSummary with all step results and a terminal outcome.
@@ -122,15 +125,16 @@ class SOPExecutor:
                     reason = f"Parameter binding failed: {exc}"
 
             if not is_terminal(state):
-                await self._note(
-                    work_note_callback,
-                    incident,
-                    f"[L1 Agent] Starting SOP: {sop.title} ({sop.sop_id})\n"
-                    f"Steps available: {len(sop.steps)}",
-                    "start",
-                )
+                if not (journal and journal.resumed):
+                    await self._note(
+                        work_note_callback,
+                        incident,
+                        f"[L1 Agent] Starting SOP: {sop.title} ({sop.sop_id})\n"
+                        f"Steps available: {len(sop.steps)}",
+                        "start",
+                    )
                 state, reason, verified_by = await self._run_steps(
-                    incident, steps, values, summary, work_note_callback
+                    incident, steps, values, summary, work_note_callback, journal
                 )
         except Exception as exc:  # engine fault: never leave a run without an outcome
             logger.error("SOP execution aborted by an internal error: %s", exc)
@@ -171,8 +175,14 @@ class SOPExecutor:
         values: Dict[str, Any],
         summary: ExecutionSummary,
         work_note_callback: Any,
+        journal: Optional["RunJournal"] = None,
     ) -> tuple:
-        """Walk the step graph. Returns (terminal state, reason, verified_by)."""
+        """Walk the step graph. Returns (terminal state, reason, verified_by).
+
+        With a journal, a step that completed in an earlier attempt is replayed
+        from its recorded result. The route through the graph depends only on
+        step results, so replay reaches the same point without repeating a call.
+        """
         state = RunState.EXECUTING
         reason = ""
         verified_by = ""
@@ -190,40 +200,50 @@ class SOPExecutor:
             visited.add(current_id)
             step_type = step.step_type.upper()
 
-            await self._publish(
-                {
-                    "type": "step_executing",
-                    "incident_number": incident.number,
-                    "step_id": step.step_id,
-                    "step_type": step.step_type,
-                    "description": step.description,
-                }
-            )
-
-            step_start = time.perf_counter()
             if step_type == StepType.VERIFY.value and not step.requires_approval:
                 state = transition(state, RunEvent.VERIFY_STARTED)
-            result = await self._execute_step(step, incident, summary, values, state)
-            result.duration_ms = (time.perf_counter() - step_start) * 1000
-            summary.step_results.append(result)
 
-            await self._publish(
-                {
-                    "type": "step_done",
-                    "incident_number": incident.number,
-                    "step_id": step.step_id,
-                    "status": result.status.value,
-                    "output_summary": result.output_summary[:200],
-                    "duration_ms": round(result.duration_ms, 1),
-                }
-            )
-            await self._note(
-                work_note_callback,
-                incident,
-                f"[L1 Agent] Step {step.step_id} ({step.step_type}): "
-                f"{result.status.value.upper()}\n{result.output_summary}",
-                f"step {step.step_id}",
-            )
+            recorded = journal.completed(step.step_id) if journal else None
+            if recorded is not None:
+                result = recorded
+                summary.step_results.append(result)
+            else:
+                await self._publish(
+                    {
+                        "type": "step_executing",
+                        "incident_number": incident.number,
+                        "step_id": step.step_id,
+                        "step_type": step.step_type,
+                        "description": step.description,
+                    }
+                )
+                if journal:
+                    await journal.step_started(step)
+                step_start = time.perf_counter()
+                result = await self._execute_step(step, incident, summary, values, state)
+                result.duration_ms = (time.perf_counter() - step_start) * 1000
+                summary.step_results.append(result)
+                if journal:
+                    # Committed before anything else is told about the result.
+                    await journal.step_completed(step, result)
+
+                await self._publish(
+                    {
+                        "type": "step_done",
+                        "incident_number": incident.number,
+                        "step_id": step.step_id,
+                        "status": result.status.value,
+                        "output_summary": result.output_summary[:200],
+                        "duration_ms": round(result.duration_ms, 1),
+                    }
+                )
+                await self._note(
+                    work_note_callback,
+                    incident,
+                    f"[L1 Agent] Step {step.step_id} ({step.step_type}): "
+                    f"{result.status.value.upper()}\n{result.output_summary}",
+                    f"step {step.step_id}",
+                )
 
             # Decide the transition and the next step.
             next_id = ""

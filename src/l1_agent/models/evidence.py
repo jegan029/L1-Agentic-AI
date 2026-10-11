@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -35,6 +35,17 @@ class StepResult:
     duration_ms: float = 0.0
     # Structured adapter output, used by DECISION and VERIFY expressions.
     data: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        """Everything, for the run journal. `from_dict` restores an equal result."""
+        return {**asdict(self), "status": self.status.value}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "StepResult":
+        known = {f.name for f in fields(cls)}
+        values = {k: v for k, v in data.items() if k in known}
+        values["status"] = StepStatus(values["status"])
+        return cls(**values)
 
     def to_audit_dict(self) -> dict:
         return {

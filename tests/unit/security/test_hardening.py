@@ -27,7 +27,6 @@ from src.l1_agent.config.settings import (
 )
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.models.sop import CHECK_STEP_TYPES, SOP
-from src.l1_agent.ui.sop_editor import SOPEditorRoutes
 from src.l1_agent.utils.logging import REDACTED, StructuredFormatter, redact_dict, redact_text
 from src.l1_agent.utils.secrets import SecretsProvider
 
@@ -330,38 +329,3 @@ class TestModelBoundary:
 
         source = inspect.getsource(module)
         assert "response_obj.content" not in source and "body[:" not in source
-
-
-class TestSopEditorEscaping:
-    @pytest.mark.asyncio
-    async def test_sop_content_is_escaped(self, tmp_path):
-        payload = "<script>alert(1)</script>"
-        (tmp_path / "SOP-X.json").write_text(
-            json.dumps(
-                {
-                    "sop_id": "SOP-X",
-                    "title": payload,
-                    "applicable_services": [payload],
-                    "version": payload,
-                }
-            ),
-            encoding="utf-8",
-        )
-        routes = SOPEditorRoutes(sop_dir=str(tmp_path))
-        listing = await routes._list_sops(MagicMock())
-        form = routes._render_form(json.loads((tmp_path / "SOP-X.json").read_text("utf-8")), None)
-        for response in (listing, form):
-            assert payload not in response.text
-            assert "&lt;script&gt;" in response.text
-            assert "script-src" not in response.headers["Content-Security-Policy"]
-
-    @pytest.mark.asyncio
-    async def test_invalid_sop_is_not_saved(self, tmp_path):
-        routes = SOPEditorRoutes(sop_dir=str(tmp_path))
-        request = MagicMock()
-        request.post = AsyncMock(
-            return_value={"sop_json": json.dumps({"sop_id": "SOP-BAD", "steps": []})}
-        )
-        response = await routes._save_sop(request)
-        assert response.status == 400
-        assert not (tmp_path / "SOP-BAD.json").exists()

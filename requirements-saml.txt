@@ -1,0 +1,3 @@
+# SAML 2.0 sign-in. Needs the native xmlsec library; wheels bundle it on
+# common platforms. Leave this out if you only use OpenID Connect.
+python3-saml>=1.16.0

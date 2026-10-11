@@ -29,8 +29,7 @@ from src.l1_agent.utils.logging import get_logger, set_correlation_id
 from src.l1_agent.utils.metrics import metrics
 
 if TYPE_CHECKING:
-    from src.l1_agent.events.event_bus import EventBus
-    from src.l1_agent.store.incident_history import IncidentHistoryStore
+    from src.l1_agent.engine.journal import EventPublisher, RunJournal, StoredMatch
 
 logger = get_logger("incident_processor")
 
@@ -76,8 +75,7 @@ class IncidentProcessor:
         llm_client: Optional[LLMClient] = None,
         ai_analyzer: Optional[AIAnalyzer] = None,
         memory: Optional[ResolutionMemory] = None,
-        event_bus: Optional["EventBus"] = None,
-        history_store: Optional["IncidentHistoryStore"] = None,
+        event_bus: Optional["EventPublisher"] = None,
         l2_router: Optional[L2Router] = None,
     ) -> None:
         self._snow = snow_client
@@ -90,7 +88,6 @@ class IncidentProcessor:
         self._rejected_sops: Set[str] = set()
         self._memory = memory
         self._event_bus = event_bus
-        self._history_store = history_store
         self._l2_router = l2_router or L2Router()
 
         self._llm = llm_client
@@ -126,8 +123,20 @@ class IncidentProcessor:
                 }
             )
 
+        summary = await self.run_once(incident)
+        return ProcessResult(ProcessStatus.PROCESSED, incident.number, summary)
+
+    async def run_once(
+        self, incident: Incident, journal: Optional["RunJournal"] = None
+    ) -> ExecutionSummary:
+        """Take one incident to a terminal outcome. No duplicate check is made here.
+
+        With a journal the run is durable: called again after a crash, it reuses
+        the recorded SOP choice and step results instead of repeating them.
+        """
+        set_correlation_id(incident.number)
         try:
-            summary = await self._run(incident)
+            return await self._run(incident, journal)
         except Exception as exc:
             # Nothing may leave an incident without an outcome a person can see.
             logger.error("Unhandled error processing %s: %s", incident.number, exc)
@@ -138,20 +147,40 @@ class IncidentProcessor:
                 outcome=ExecutionOutcome.NEEDS_HUMAN,
                 escalation_reason=f"Internal error: {type(exc).__name__}",
             )
-            await self._hand_to_human(incident, summary, record=True)
-        return ProcessResult(ProcessStatus.PROCESSED, incident.number, summary)
+            await self._hand_to_human(incident, summary)
+            return summary
 
     # ── Run ───────────────────────────────────────────────────────────
 
-    async def _run(self, incident: Incident) -> ExecutionSummary:
+    async def _run(
+        self, incident: Incident, journal: Optional["RunJournal"] = None
+    ) -> ExecutionSummary:
         state = transition(RunState.RECEIVED, RunEvent.START)
-        await self._post_note(
-            incident,
-            "[L1 Agent] Incident received. Searching for applicable SOP...\n"
-            f"Category: {incident.category} | CI: {incident.cmdb_ci}",
-        )
-
-        match = await self._match_sop(incident)
+        stored = journal.match if journal else None
+        if stored:
+            # A resumed run keeps the SOP it started with. Matching again could
+            # pick a different one, and model advice is not repeatable.
+            match = await self._stored_match(incident, stored)
+            if match is None:
+                summary = ExecutionSummary(
+                    incident_number=incident.number,
+                    sop_id=stored.sop_id,
+                    sop_title="",
+                    outcome=ExecutionOutcome.NEEDS_HUMAN,
+                    escalation_reason=(
+                        f"The run was interrupted and SOP {stored.sop_id} "
+                        f"v{stored.sop_version} is no longer available to resume it"
+                    ),
+                )
+                await self._hand_to_human(incident, summary)
+                return summary
+        else:
+            await self._post_note(
+                incident,
+                "[L1 Agent] Incident received. Searching for applicable SOP...\n"
+                f"Category: {incident.category} | CI: {incident.cmdb_ci}",
+            )
+            match = await self._match_sop(incident)
 
         if not match.sop:
             state = transition(state, RunEvent.NO_SOP)
@@ -187,29 +216,32 @@ class IncidentProcessor:
 
         sop = match.sop
         transition(state, RunEvent.SOP_MATCHED)
-        await self._post_note(
-            incident,
-            f"[L1 Agent] SOP matched: {sop.title} v{sop.version} "
-            f"(confidence: {match.confidence:.2f})\n"
-            f"Rationale: {match.rationale}",
-        )
-        if self._event_bus:
-            await self._event_bus.publish(
-                {
-                    "type": "sop_matched",
-                    "incident_number": incident.number,
-                    "sop_id": sop.sop_id,
-                    "sop_title": sop.title,
-                    "confidence": round(match.confidence, 3),
-                }
+        if not stored:
+            if journal:
+                await journal.record_match(sop, match.confidence, match.rationale)
+            await self._post_note(
+                incident,
+                f"[L1 Agent] SOP matched: {sop.title} v{sop.version} "
+                f"(confidence: {match.confidence:.2f})\n"
+                f"Rationale: {match.rationale}",
             )
-
-        await self._update_state(incident, state=2)  # In Progress
+            if self._event_bus:
+                await self._event_bus.publish(
+                    {
+                        "type": "sop_matched",
+                        "incident_number": incident.number,
+                        "sop_id": sop.sop_id,
+                        "sop_title": sop.title,
+                        "confidence": round(match.confidence, 3),
+                    }
+                )
+            await self._update_state(incident, state=2)  # In Progress
 
         summary = await self._executor.execute_sop(
             incident,
             sop,
             work_note_callback=self._snow.add_work_note,
+            journal=journal,
         )
         return await self._post_conclusion(incident, summary, confidence=match.confidence)
 
@@ -262,6 +294,19 @@ class IncidentProcessor:
             rationale=f"{own_score.rationale} | Model-drafted rationale: {rationale}",
         )
 
+    async def _stored_match(
+        self, incident: Incident, stored: "StoredMatch"
+    ) -> Optional[MatchResult]:
+        """The SOP an earlier attempt chose, if that exact version can still run."""
+        if not self._sop_cache:
+            await self._refresh_sop_cache()
+        for sop in self._executable_sops():
+            if sop.sop_id == stored.sop_id and str(sop.version) == stored.sop_version:
+                return MatchResult(
+                    sop=sop, confidence=stored.confidence, rationale=stored.rationale
+                )
+        return None
+
     async def _refresh_sop_cache(self) -> None:
         """Reload SOPs from ServiceNow."""
         try:
@@ -306,7 +351,6 @@ class IncidentProcessor:
             sop_name=sop.title if sop else None,
             confidence=match.confidence if sop else None,
             event_bus=self._event_bus,
-            history_store=self._history_store,
             snow_client=self._snow,
         )
         return summary
@@ -335,9 +379,6 @@ class IncidentProcessor:
 
         await self._post_note(incident, summary.to_work_note())
 
-        if self._history_store:
-            await self._history_store.record(incident, summary)
-
         if summary.outcome == ExecutionOutcome.RESOLVED:
             metrics.increment("incidents.resolved")
             if self._memory and summary.sop_id:
@@ -360,7 +401,6 @@ class IncidentProcessor:
                 f"[L1 Agent] Escalation packet:\n{_format_escalation(packet)}",
             )
             metrics.increment("incidents.escalated", labels={"reason": "sop_execution"})
-            # history already recorded above; pass history_store=None to avoid double-write
             await escalate_to_l2(
                 incident=incident,
                 summary=summary,
@@ -368,16 +408,17 @@ class IncidentProcessor:
                 l2_router=self._l2_router,
                 sop_name=summary.sop_title or None,
                 event_bus=self._event_bus,
-                history_store=None,
                 snow_client=self._snow,
             )
         else:
-            await self._hand_to_human(incident, summary, record=False)
+            await self._hand_to_human(incident, summary)
         return summary
 
-    async def _hand_to_human(
-        self, incident: Incident, summary: ExecutionSummary, *, record: bool
-    ) -> None:
+    async def hand_to_human(self, incident: Incident, summary: ExecutionSummary) -> None:
+        """Route an incident the engine could not finish to a person."""
+        await self._hand_to_human(incident, summary)
+
+    async def _hand_to_human(self, incident: Incident, summary: ExecutionSummary) -> None:
         """NEEDS_HUMAN or ABORTED: the incident stays open and is routed to a person."""
         metrics.increment("incidents.needs_human")
         await escalate_to_l2(
@@ -387,7 +428,6 @@ class IncidentProcessor:
             l2_router=self._l2_router,
             sop_name=summary.sop_title or None,
             event_bus=self._event_bus,
-            history_store=self._history_store if record else None,
             snow_client=self._snow,
         )
 

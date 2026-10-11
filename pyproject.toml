@@ -10,8 +10,15 @@ requires-python = ">=3.11"
 
 dependencies = [
     "aiohttp>=3.9.0",
-    "aiohttp-cors>=0.7.0",
     "python-dotenv>=1.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "httpx>=0.27.0",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "alembic>=1.13.0",
+    "asyncpg>=0.29.0",
+    "aiosqlite>=0.20.0",
+    "pyjwt[crypto]>=2.8.0",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +30,9 @@ dev = [
     "hypothesis>=6.98.0",
     "ruff>=0.3.0",
 ]
+saml = [
+    "python3-saml>=1.16.0",
+]
 connectors = [
     "selenium>=4.18.0",
     "py3270>=0.3.5",
@@ -31,7 +41,7 @@ connectors = [
 ]
 
 [project.scripts]
-l1-agent = "src.l1_agent.main:main"
+l1-agent = "src.l1_agent.cli:main"
 l1-agent-demo = "src.l1_agent.demo:main"
 
 [tool.pytest.ini_options]
@@ -41,6 +51,8 @@ asyncio_mode = "auto"
 #   pytest tests/live -m live_llm -v -s
 #   pytest tests/live -m live_servicenow -v -s   (writes to the configured instance)
 addopts = "-m 'not live_llm and not live_servicenow'"
+# PostgreSQL tests run when L1_TEST_PG_ADMIN_URL is set (see tests/conftest.py).
+filterwarnings = ["ignore:Setting per-request cookies:DeprecationWarning"]
 markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "live_servicenow: reads and writes the configured ServiceNow instance; skipped unless SERVICENOW_* are set",

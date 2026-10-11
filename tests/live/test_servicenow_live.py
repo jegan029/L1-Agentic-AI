@@ -130,10 +130,12 @@ class TestConnection:
 
     @pytest.mark.asyncio
     async def test_wrong_password_is_reported_as_401(self):
+        # A made-up user, so this never counts as a failed login against the real
+        # account (repeated failures can lock it).
         bad = ServiceNowClient(
             ServiceNowSettings(
                 base_url=os.environ["SERVICENOW_BASE_URL"],
-                username=os.environ["SERVICENOW_USERNAME"],
+                username="l1-agent-no-such-user",
                 password="definitely-not-the-password",
             )
         )

@@ -1,6 +1,6 @@
 # ADR 0006: HTTP framework and identity
 
-Status: proposed, awaiting review. Engineering decision, noted here because it replaces a module instead of evolving it.
+Status: accepted and implemented in Phase 2, with the differences listed at the end.
 
 ## Context
 
@@ -34,3 +34,13 @@ Routes are registered through one helper that requires a permission and a tenant
 
 - Stay on aiohttp with middleware. Workable, but validation, OpenAPI and the route-permission registry would be custom code to maintain.
 - Delegate all sign-in to an identity broker (for example Keycloak) and support only OIDC in the product. Simpler code, but adds a stateful component to every customer deployment. Kept as a fallback if native SAML proves costly.
+
+## As built in Phase 2
+
+- OpenID Connect is implemented directly on `httpx` and `PyJWT`, not Authlib. The flow is small, and doing it directly keeps the list of accepted signing algorithms explicit.
+- SAML uses `python3-saml` as an optional dependency. Its wheels installed on Windows and Linux here, so the fallback to an identity broker was not needed.
+- The route registry adds routes straight to the application. FastAPI's own `/docs`, `/redoc` and `/openapi.json` are off; the API description is served at `/api/openapi.json` behind a permission.
+- API tokens can carry read permissions only. Approval and administration always need a person.
+- Segregation of duties on SOP and action approval is not built; there is nothing to approve until Phases 3 and 4. The role table already keeps administration, audit and approval apart.
+- Sessions take their roles at sign-in. A mapping change applies at the next sign-in, not to open sessions.
+- The HTML SOP editor was removed in this phase instead of Phase 3. It was aiohttp code with no review step, and porting it to be deleted one phase later was not worth it. Demo mode has no SOP editing until the review screen exists.

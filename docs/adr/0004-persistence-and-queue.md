@@ -1,6 +1,6 @@
 # ADR 0004: Persistence, job queue and idempotency
 
-Status: proposed, awaiting review. Engineering decision.
+Status: accepted and implemented in Phase 2, with the differences listed at the end.
 
 ## Context
 
@@ -46,3 +46,13 @@ Demo mode must keep running without infrastructure. The repository layer has one
 - Redis plus Celery or RQ. Rejected: a second stateful dependency in the customer environment and no transactional coupling with state.
 - Temporal. A good fit for durable workflows, but a heavy platform for a customer to operate, and it would hold run history outside our audited store.
 - Kafka. Not justified at this volume.
+
+## As built in Phase 2
+
+- The queue is the in-house implementation (`service/runs.py`), about 150 lines. `procrastinate` was not adopted: it brings its own schema and migrations, which would sit outside the row level security and audit design here.
+- Access is SQLAlchemy Core, not the ORM. Queries are few and explicit.
+- Server-sent events read an `events` table by polling once a second. `LISTEN/NOTIFY` was not used: polling is the same code on both dialects and survives a connection pooler.
+- `runs.generation` exists but nothing reopens an incident yet. `action_executions` and the ServiceNow claim step arrive with Phases 3 and 4.
+- The idempotency key is `(tenant_id, source, external_id)`; `source` stands in for the ITSM connection id until connections are records (Phase 3).
+- The application role is a member of a group role, `l1_app`, created by the first migration. The service checks at start-up that it is not connected as a role that can bypass isolation.
+- A resumed run replays recorded step results. A crash during the final ITSM update can repeat the closing work notes; that update is not journalled step by step.

@@ -1,6 +1,6 @@
 # Delivery plan
 
-Status: Phase 0 output, awaiting review. No product code has been changed.
+Status: Phases 1 and 2 delivered (records in sections 5 and 6). Sections 1 to 4 are the Phase 0 plan as written and describe the code before Phase 1.
 
 This plan has three parts: the verified baseline (what the code does today), the decisions that need an owner before Phase 1 starts, and the phase-by-phase scope with exit criteria.
 
@@ -275,3 +275,45 @@ Test expectations changed, as announced
 Tests removed with the code they covered: `tests/unit/ai/test_ai_executor.py` (6 tests), eight investigation-tool cases in `test_tool_definitions.py`, one in `test_mock_llm.py` (replaced by a test that the mock makes no operational tool call).
 
 Not done in Phase 1, by design: persistence, tenancy, SSO and roles, audit log, connector SDK, SOP review workflow, write actions, redaction evaluation corpus. See phases 2 to 5.
+
+## 6. Phase 2 record
+
+Delivered on branch `phase-2/foundations`, based on `phase-1/correctness-and-safety`. Decision applied: D4, single tenant in the customer environment first, with tenant isolation enforced in the data layer from the start.
+
+Exit criteria
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | Two workers, one incident, exactly one run | `tests/db/test_runs_durable.py`: twelve concurrent deliveries create one run; eight concurrent claims hand one job to one worker. On PostgreSQL. |
+| 2 | Tenant A's session sees nothing of tenant B, with the filter omitted | `tests/db/test_tenant_isolation.py`: unfiltered select, raw SQL, joins, insert, update and delete on every tenant table. `tests/api/test_api_data.py`: every read route over HTTP. |
+| 3 | A route without a declared permission fails start-up | `tests/api/test_http_access.py::TestRouteRegistry`. |
+| 4 | `audit verify` detects a modified, deleted and reordered row | `tests/db/test_audit_log.py`, also an inserted row and, with a checkpoint, a removed tail and a rewritten chain. |
+| 5 | A killed worker's run resumes without repeating a completed step | `tests/db/test_worker_killed.py` kills a real worker process; `tests/db/test_runs_durable.py` covers the same in one process. |
+
+Deviations from the plan
+
+| Item | What happened |
+|---|---|
+| HTML SOP editor | Removed now, not in Phase 3. Demo mode has no SOP editing until the review screen exists. Three tests went with it. |
+| Static API tokens (`AGENT_API_TOKENS`) | Removed. Replaced by sign-in and by scoped tokens stored as hashes. |
+| In-memory history, event bus and JSONL files | Removed. The database is the only state. `ResolutionMemory` is no longer wired into the service; its module remains for Phase 5. |
+| Runner split (ADR 0003, points 2 to 5) | Not built. Adapters run in the worker. Moved to Phases 4 and 6. |
+| Per-tenant connections | Not built. One deployment serves one tenant's ServiceNow and identity provider. Phase 3. |
+| Audit export, retention, legal hold, evidence store | Not in the Phase 2 scope of this plan; still to be scheduled. |
+| Library choices | In-house queue instead of `procrastinate`; `httpx` and `PyJWT` instead of Authlib; polling instead of `LISTEN/NOTIFY`. Reasons are in ADRs 0004 and 0006. |
+| Dashboard | Gained a sign-in screen and sign-out. No screens yet for tokens, role mappings or the audit log; those are API and command line only. |
+
+Test expectations changed
+
+| Test | Before | Now | Reason |
+|---|---|---|---|
+| `test_http_access.py` (moved to `tests/api/`) | aiohttp, static bearer token | FastAPI, scoped database token or session | The HTTP layer and the credential type were replaced. Every assertion was kept or tightened; the list of public routes is now asserted exactly. |
+| Start-up without credentials | Refused without `AGENT_API_TOKENS` and `AGENT_WEBHOOK_SECRET` | Refused without `AGENT_WEBHOOK_SECRET`; a missing identity provider is a warning | A deployment can be driven by tokens alone; without a webhook secret the intake would be open. |
+| Demo mode on a non-loopback address | Refused without both credentials | Refused unless an identity provider and a webhook secret are both set | Same rule, new credentials. |
+
+Tests removed with the code they covered: the demo-mode SOP editor test and two SOP editor escaping tests.
+
+Verified by running: 755 tests on Windows and in a Linux container, on SQLite and PostgreSQL 16, none skipped; the production container image end to end against PostgreSQL (migrate, tenant, token, signed webhook, verified resolution, audit verification, refusal to start as the migration role); the runbook's database set-up with a non-superuser migration role.
+
+Not verified: sign-in against a real identity provider; PostgreSQL behind a connection pooler or on a managed service; behaviour at production volumes; the new CI workflow on the hosted runner; the dashboard sign-in screen in a browser.
+

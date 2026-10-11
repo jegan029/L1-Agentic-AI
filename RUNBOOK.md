@@ -1,17 +1,18 @@
 # L1 Engineer Agent: runbook
 
-How to run and operate the service as it stands after Phase 1. Installation and the demo quick start are in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
+How to run and operate the service as it stands after Phase 2. Installation and the demo quick start are in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
 
-This is pre-release software. Run it against production systems only with that understood: state is lost on restart, there is one shared credential set, and only the ServiceNow client has been exercised against a real instance.
+This is pre-release software. Sign-in has been tested only against identity providers faked in the test suite, and the tool adapters only against mocks. Expect to find differences on first contact with real systems.
 
 ## 1. Run it
 
-| Mode | Command | Talks to |
+| Mode | Command | Needs |
 |---|---|---|
-| One-shot demo | `python -m src.l1_agent.demo` | Nothing. Five sample incidents, all mocks. |
-| Demo service | `AGENT_DEMO_MODE=true LLM_ENABLED=false python -m src.l1_agent.main` | Nothing. Loopback only, no credentials needed. |
+| One-shot demo | `python -m src.l1_agent.demo` | Nothing. Five sample incidents, all mocks, a throwaway SQLite file. |
+| Demo service | `AGENT_DEMO_MODE=true LLM_ENABLED=false python -m src.l1_agent.main` | Nothing. Loopback only; every caller is the demo user. |
 | Demo service with real ServiceNow | add `SERVICENOW_LIVE_IN_DEMO=true` and the `SERVICENOW_*` settings | ServiceNow for real; tool adapters stay mocked. |
-| Full service | `python -m src.l1_agent.main` | Everything configured. |
+| Full service | `l1-agent serve` (or `python -m src.l1_agent.cli serve`) | PostgreSQL, a webhook secret, ServiceNow, an identity provider. |
+| Extra workers | `l1-agent worker` | The same database. Set `WORKER_EMBEDDED=false` on the API process if workers run only here. |
 
 Containers:
 
@@ -19,80 +20,132 @@ Containers:
 docker build -t l1-agent .                         # production image
 docker build --target demo -t l1-agent-demo .      # one-shot demo image
 docker run --rm l1-agent-demo
+docker run --rm --env-file .env l1-agent migrate   # with DATABASE_MIGRATION_URL
 docker run --rm --env-file .env -p 127.0.0.1:8080:8080 l1-agent
 ```
 
-The image runs as a non-root user and listens on all interfaces inside the container, so publish the port deliberately and put TLS termination in front of it.
+The image runs as a non-root user and writes nothing to its filesystem. It listens on all interfaces inside the container, so publish the port deliberately and put TLS termination in front of it. The session cookie is marked Secure: the dashboard must be reached over HTTPS.
 
-## 2. Before the first start outside demo mode
+## 2. First-time set-up
 
-The service checks its configuration and refuses to start if any of these is missing or unsafe.
+### 2.1 Database
 
-| Check | Setting |
+PostgreSQL 15 or later. Two roles, on purpose:
+
+| Role | Used by | Can do |
+|---|---|---|
+| Migration role | `l1-agent migrate`, `l1-agent tenant create` | Owns the schema. Needs `CREATEROLE` once, to create the group role `l1_app`, or create that role beforehand. |
+| Application role | `serve`, `worker`, every other command | A login that is a member of `l1_app`. Row level security applies to it. |
+
+```sql
+-- as a database administrator
+CREATE ROLE l1_owner LOGIN PASSWORD '...' CREATEROLE;
+CREATE DATABASE l1agent OWNER l1_owner;
+CREATE ROLE l1_app_login LOGIN PASSWORD '...';
+```
+
+```bash
+export DATABASE_MIGRATION_URL=postgresql+asyncpg://l1_owner:...@db:5432/l1agent
+export DATABASE_URL=postgresql+asyncpg://l1_app_login:...@db:5432/l1agent
+l1-agent migrate
+psql -c "GRANT l1_app TO l1_app_login"          # as the migration role or an administrator
+l1-agent tenant create --slug default --name "Your organisation"
+```
+
+The service refuses to start if `DATABASE_URL` is a superuser, owns the tables, can bypass row level security, can create tenants or can change audit rows. That is deliberate: give it the application role.
+
+Run `l1-agent migrate` before starting a new version. Migrations are forward only.
+
+### 2.2 Access
+
+| Need | Setting or command |
 |---|---|
-| API bearer tokens, 32 or more characters each | `AGENT_API_TOKENS` |
 | Webhook signing secret, 32 or more characters | `AGENT_WEBHOOK_SECRET` |
-| ServiceNow URL (https), user, password | `SERVICENOW_BASE_URL`, `SERVICENOW_USERNAME`, `SERVICENOW_PASSWORD` |
-| The one group the poller takes work from | `SERVICENOW_ASSIGNMENT_GROUP` |
-| TLS verification left on | `*_VERIFY_SSL`, `MAINFRAME_USE_TLS` |
+| Sign-in with OpenID Connect | `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` (`https://<service>/auth/callback`) |
+| Sign-in with SAML | `SAML_IDP_METADATA_PATH`, `SAML_SP_ENTITY_ID`, `SAML_ACS_URL` (`https://<service>/auth/saml/acs`); give the identity provider `/auth/saml/metadata` |
+| The first administrator | `l1-agent roles grant --group <idp group> --role tenant_admin` |
+| Other roles | Same command, or the administrator uses `PUT /api/role-mappings` |
+| A token for a script or the dashboard dev proxy | `l1-agent token create --name ci --permission incidents.read` |
+| Emergency access when the identity provider is down | `l1-agent breakglass hash`, then set `BREAK_GLASS_PASSWORD_HASH` |
 
-Generate a token with `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+A user whose groups map to no role cannot sign in. Roles are read at sign-in; a change takes effect at the user's next sign-in. Tokens are shown once, expire (365 days at most) and can carry only read permissions.
 
-## 3. Connect ServiceNow
+The identity provider must send the user's groups: in the `groups` claim of the ID token (`OIDC_GROUPS_CLAIM`) or the `groups` SAML attribute (`SAML_GROUPS_ATTRIBUTE`).
 
-1. Create a service account with the `itil` role. It needs to read and update incidents and read the knowledge table.
+### 2.3 ServiceNow
+
+1. Create a service account with the `itil` role. It reads and updates incidents and reads the knowledge table.
 2. Create the intake assignment group and set `SERVICENOW_ASSIGNMENT_GROUP` to its exact name. The poller takes only incidents that are New and assigned to that group.
 3. Create every L2 group named in your routing file. An escalation to a group that does not exist on the instance will not land with a team.
-4. Set `SERVICENOW_CLOSE_CODE` to a value in your instance's incident *Resolution code* list. A stock instance refuses the Resolved state without one and silently discards a value that is not in the list. If the update is refused, the run is recorded as `needs_human` with ServiceNow's reason.
-5. Check the connection: `pytest tests/live -m live_servicenow -v -s`. This creates incidents tagged `[L1-AGENT-TEST]` in the intake group and leaves them there; do not run it against production.
+4. Set `SERVICENOW_CLOSE_CODE` to a value in your instance's incident *Resolution code* list. If the update is refused, the run is recorded as `needs_human` with ServiceNow's reason.
+5. Check the connection: `pytest tests/live -m live_servicenow -v -s`. This creates incidents tagged `[L1-AGENT-TEST]` and leaves them there; do not run it against production.
 
-For better SOP matching, populate the CI and category on incidents and list the same values in each SOP. Matching works without them, on ticket text and assignment group, but with less to go on.
+Webhook senders must sign each request as described in the README.
 
-Webhook senders must sign each request as described in the README. An unsigned or late request gets `401`.
+## 3. Health and monitoring
 
-## 4. Health and monitoring
+| Route | Use | Needs |
+|---|---|---|
+| `GET /health` | Liveness. Status only. | Nothing |
+| `GET /api/status` | Mode and a metrics snapshot | `system.read` |
+| `GET /metrics` | Prometheus text format, for this process | `metrics.read` |
+| `GET /api/audit/verify` | Recompute the audit chain | `audit.read` |
 
-| Route | Use |
-|---|---|
-| `GET /health` | Liveness. Returns status only, no credentials needed. |
-| `GET /api/status` | Mode and a metrics snapshot. Bearer token. |
-| `GET /metrics` | Prometheus text format. Bearer token. |
+Logs are JSON on standard output. Counters worth alerting on: `http.denied{reason=...}`, `auth.login_failed`, `runs.resumed`, `jobs.infrastructure_errors`.
 
-Logs are JSON on standard output. Useful counters include `servicenow.incidents_polled`, `servicenow.incident_updates` and `http.denied{reason=...}`.
+Queue state is in the `jobs` table: `queued`, `running` (with `locked_until`), `done`, `dead`. A `dead` job's run was recorded as `needs_human`.
 
-## 5. SOPs
+## 4. Audit log
 
-In demo mode the service loads the JSON files in `data/sample_sops/`. Outside demo mode it reads the ServiceNow knowledge table (`SERVICENOW_SOP_TABLE`); an article that is prose, not the JSON schema, becomes a draft and is never matched or run. Loading from a real knowledge base is untested.
+```bash
+l1-agent audit verify                               # exit status 2 if the chain is broken
+l1-agent audit checkpoint >> /secure/checkpoints.jsonl
+l1-agent audit verify --checkpoints /secure/checkpoints.jsonl
+l1-agent audit timeline --run <run id>              # one run, from audit events alone
+```
 
-An SOP that fails validation is not loaded, and the log says why. The schema and an example are in the README under *Writing an SOP*.
+Schedule `audit checkpoint` and write its output somewhere the database administrator cannot change, such as your SIEM or write-once storage. Without checkpoints, verification cannot tell that the newest events were removed. `AUDIT_CHECKPOINT_KEY` signs them.
 
-## 6. What to do when
+After restoring a database backup, run `audit verify --checkpoints` against the checkpoints taken before the backup.
+
+## 5. What to do when
 
 | Symptom | Likely cause | Action |
 |---|---|---|
-| Service exits at start with `SecurityConfigError` or `ConfigError` | A required setting from section 2 is missing or unsafe | The message names the setting. |
-| Every API call returns `401` | Missing or wrong bearer token | Send `Authorization: Bearer <token>`. For the dashboard, set `L1_API_TOKEN` in `frontend/.env`. |
+| Exits at start with "the database role is a superuser" or "owns the tables" | `DATABASE_URL` is the migration role | Use the application login (section 2.1). |
+| Exits with "Tenant ... does not exist" | No tenant, or the wrong `TENANT_SLUG` | `l1-agent tenant create`. |
+| Exits with `SecurityConfigError` or `ConfigError` | A required setting is missing or unsafe | The message names it. |
+| Sign-in ends with "sign-in failed" | The reason is not shown to the browser | Look for `auth.login_failed` in the audit log; its payload has the reason. Most often: no group mapped to a role. |
+| Signed in, but an action returns `403` | The role lacks the permission, or a missing CSRF token | `GET /api/me` lists roles and permissions. Refusals are audited as `access.denied`. |
+| API token returns `401` | Expired, revoked, or for another tenant | `l1-agent token list`. |
 | Webhook returns `401` | Bad signature, clock skew over five minutes, or a replayed request | Check the secret and the sender's clock. |
-| ServiceNow calls return `401` | Wrong credentials, locked account, or a hibernating developer instance | Sign in to the instance in a browser with the same account. |
-| Incidents are never picked up | Not in state New, or not in the intake group | Check the ticket and `SERVICENOW_ASSIGNMENT_GROUP`. |
-| Run ends `escalated` with "Low confidence SOP match" | No SOP reached the threshold | The work note shows the score and which signals were compared. Add keywords, or CI and category, to the SOP. |
-| Run ends `needs_human` with "rejected the Resolved update" | Invalid resolution code, or a business rule on the instance | Fix `SERVICENOW_CLOSE_CODE`; the reason from ServiceNow is in the work note. |
-| Run ends `needs_human` with an unbound parameter | The ticket text did not contain what the SOP extracts | Correct the ticket, or widen the SOP's extraction pattern. |
+| Requests return `429` | Rate limit | `RATE_LIMIT_PER_MINUTE`, `LOGIN_RATE_LIMIT_PER_MINUTE`. |
+| Incidents are never picked up | Not New, or not in the intake group | Check the ticket and `SERVICENOW_ASSIGNMENT_GROUP`. |
+| Runs are accepted but never finish | No worker is running | `WORKER_EMBEDDED=true`, or start `l1-agent worker`. |
+| Run ends `escalated` with "Low confidence SOP match" | No SOP reached the threshold | The work note shows the score and which signals were compared. |
+| Run ends `needs_human` with "did not finish in N attempts" | A worker died on this run repeatedly | Check worker logs around the run id; the journal shows the last completed step. |
+| Run ends `needs_human` with "rejected the Resolved update" | Invalid resolution code, or a business rule | Fix `SERVICENOW_CLOSE_CODE`. |
 | Run ends `needs_human` after an adapter error | Target system down, or its circuit breaker is open | Check the target; the breaker resets after `AGENT_CB_RESET_SECONDS`. |
-| Incident accepted but never processed | The service restarted mid-run | Reassign or re-send the incident. In-flight work is not persisted. |
 
-## 7. Data the service keeps
+## 6. Data the service keeps
 
-| File | Content | Notes |
+Everything is in PostgreSQL.
+
+| Table | Content | Notes |
 |---|---|---|
-| `data/incident_history.jsonl` | The last 1,000 runs with their evidence | Read back at start. Contains ticket text. |
-| `data/resolution_memory.jsonl` | Outcome per SOP, used to adjust match scores | |
+| `incidents`, `runs`, `run_steps` | Ticket text, the SOP chosen, each step's result and evidence | Contains whatever is in your tickets. No retention control yet. |
+| `events` | Progress events for the dashboard stream | Grows; safe to prune by age. No automatic pruning yet. |
+| `jobs` | The queue | |
+| `audit_events` | The audit chain | Cannot be changed or pruned. Free text is redacted; evidence is a digest. |
+| `users`, `sessions`, `api_tokens`, `role_mappings` | Identity provider subject, email and display name; hashes of credentials | No password is stored. |
 
-Both are plain files with no retention control and no integrity protection. Protect the directory, and do not treat either as an audit record. To clear history, stop the service and delete the file.
+Back up the database as a whole. There are no files to back up.
 
-## 8. Known operational limits
+## 7. Known operational limits
 
-- A restart loses in-flight incidents and the record of which incidents were already handled, so an incident still New in the intake group will be picked up again.
-- One process only. Two instances polling the same group will both take the same incident.
-- Tokens and the webhook secret are shared and are rotated by changing the setting and restarting.
+- One deployment serves one tenant's ServiceNow, identity provider and tool connections.
+- A worker that dies while writing the final ServiceNow update can cause the closing work notes to be posted twice when the run is resumed. The outcome is recorded once.
+- If a worker stalls for longer than `WORKER_VISIBILITY_TIMEOUT` without dying, a second worker can pick up its run. Both then replay the same journal and the first conclusion stands, but work notes may repeat.
+- The rate limit and the metrics are per process.
+- The webhook secret is shared and is rotated by changing the setting and restarting.
 - The service does not serve TLS.

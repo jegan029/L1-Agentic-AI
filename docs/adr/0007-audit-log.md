@@ -1,6 +1,6 @@
 # ADR 0007: Tamper-evident audit log
 
-Status: proposed, awaiting review. Engineering decision.
+Status: accepted. Storage, atomicity, verification and reconstruction implemented in Phase 2; the rest is listed at the end.
 
 ## Context
 
@@ -56,3 +56,12 @@ Larger artefacts (tool outputs, model bodies) go to an evidence store addressed 
 
 - Rely on the SIEM as the audit log. Rejected: the product must be able to prove its own history, and reconstruction must not depend on a third system.
 - A ledger database or blockchain. Rejected: more infrastructure for the customer and no stronger than chain plus external checkpoints for this threat model.
+
+## As built in Phase 2
+
+- One chain per tenant. There is no platform-level chain yet; tenant creation is the first event in the tenant's own chain.
+- Checkpoints are HMAC-signed and produced by `l1-agent audit checkpoint`. Writing them to a store the database administrator does not control is an operator step, not automatic.
+- Verification runs on demand (`audit verify`, `/api/audit/verify`). It is not yet scheduled, and raises no alert.
+- Reconstruction is a filter by run id over audit events (`audit timeline`). A test deletes the operational rows and compares.
+- Not built: export to a SIEM, retention and tombstones, legal hold, the evidence store, per-tenant encryption keys, and events for model calls, ITSM writes and connector writes.
+- Actor ids are the identity provider issuer and subject. Email and display name are kept in `users`, outside the chain.

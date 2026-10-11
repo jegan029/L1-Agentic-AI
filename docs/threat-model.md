@@ -1,6 +1,6 @@
 # Threat model
 
-Status: Phase 0 output, awaiting review. Method: STRIDE per trust boundary, plus the OWASP Top 10 for LLM Applications (2025 list). It covers the target architecture and records which threats are open in today's code.
+Status: written in Phase 0 and not yet revised. Phases 1 and 2 have since delivered the mitigations marked for them; the [controls matrix](controls-matrix.md) says which exist now, with their tests. The "Current" column below still describes the code before Phase 1. Method: STRIDE per trust boundary, plus the OWASP Top 10 for LLM Applications (2025 list). It covers the target architecture and records which threats are open in today's code.
 
 "Current" describes the code at commit `db38e1f` as verified in the [delivery plan](delivery-plan.md). "Mitigation" names the design control and the phase that delivers it. Nothing in the mitigation column exists yet.
 

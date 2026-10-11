@@ -1,6 +1,6 @@
 # ADR 0003: Deployment shape and tenancy
 
-Status: proposed, awaiting review. Contains a commercial decision (D4 in the delivery plan).
+Status: accepted. D4 decided: lead with shape A, single tenant in the customer environment.
 
 ## Context
 
@@ -54,3 +54,9 @@ In shape A both planes are deployed together and the protocol runs in-cluster. I
 
 - Multi-tenant SaaS with inbound access to customer systems through a VPN. Rejected: buyers will refuse it.
 - Shape A with no plane split. Rejected: it makes shape B a rewrite and puts connector credentials in the same process as the web tier.
+
+## As built in Phase 2
+
+- Point 1 holds: every row carries `tenant_id` and PostgreSQL row level security enforces it, with one tenant or many.
+- Points 2 to 5 are not built. Adapters still run inside the worker process; the runner split, action grants and the evidence store arrive with write actions and packaging (Phases 4 and 6).
+- The ServiceNow connection, webhook secret, identity provider and adapters are configured per deployment, so one process serves one tenant. Per-tenant connections arrive with the connector registry in Phase 3.

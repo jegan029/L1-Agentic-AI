@@ -2,7 +2,7 @@
 
 An async Python service that takes a ServiceNow incident, matches it to a published Standard Operating Procedure (SOP), runs the SOP's diagnostic steps through tool adapters, and ends in one explicit outcome: resolved with verification, or handed to a person with the evidence. A React dashboard shows what the agent did.
 
-**Status: pre-release.** This is a working demo being turned into a product. It runs against mock adapters. Behaviour against a real ServiceNow, Autosys, Splunk, Dynatrace, IBM MQ or mainframe is unverified. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
+**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow client has run against one developer instance and the model client against one hosted provider. Every tool adapter (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock, and sign-in has only run against identity providers faked in the tests. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
 
 ## What it does today
 
@@ -76,22 +76,25 @@ What the sample scenarios do against the mocks:
 
 ## Running outside demo mode
 
-The service refuses to start unless access control is configured.
+Outside demo mode the service needs PostgreSQL, a webhook secret and, for people to sign in, an identity provider. It refuses to start in an unsafe configuration. [RUNBOOK.md](RUNBOOK.md) has the full set-up; in short:
 
 ```bash
 cp .env.example .env     # then fill in values; never commit .env
-pip install -r requirements.txt -r requirements-connectors.txt
-python -m src.l1_agent.main
+pip install -r requirements.txt -r requirements-connectors.txt   # add requirements-saml.txt for SAML
+l1-agent migrate                                   # as the migration role
+l1-agent tenant create --slug default
+l1-agent roles grant --group <idp group> --role tenant_admin
+l1-agent serve
 ```
 
-| Variable | Purpose |
+| Area | What applies |
 |---|---|
-| `AGENT_API_TOKENS` | Comma-separated bearer tokens for every route except the webhook and `/health`. At least 32 characters each. |
-| `AGENT_WEBHOOK_SECRET` | Shared secret for the webhook signature. At least 32 characters. |
-| `AGENT_WEBHOOK_HOST` | Bind address. Defaults to `127.0.0.1`. |
-| `AGENT_CORS_ORIGINS` | Exact browser origins allowed to call the API. Empty by default; `*` is refused. |
-| `L2_ROUTING_PATH` | Your CI-pattern to L2-team routing file. The packaged one is an example. |
-| `SECRETS_BACKEND` | `env`, `vault` or `aws`. Fetched secrets are never written to the process environment. |
+| Database | PostgreSQL 15+. The service connects as a restricted role; row level security separates tenants. SQLite is demo mode only. |
+| Sign-in | OpenID Connect or SAML 2.0. No local passwords, except one optional break-glass account whose every use is audited. |
+| Roles | Viewer, operator, approver, SOP author, SOP approver, tenant administrator, auditor, assigned from identity provider groups. |
+| Scripts | Scoped API tokens (`l1-agent token create`), read permissions only. |
+| Webhook | HMAC signature with a timestamp; replays are rejected. |
+| Audit | Append-only, hash-chained log; `l1-agent audit verify`. |
 
 Webhook callers sign each request:
 
@@ -100,13 +103,11 @@ X-L1-Timestamp: <unix seconds>
 X-L1-Signature: sha256=<hex HMAC-SHA256 of "<timestamp>.<raw body>" with AGENT_WEBHOOK_SECRET>
 ```
 
-Requests older than five minutes and repeated signatures are rejected.
-
-This token scheme is a stopgap. Single sign-on, roles and tenant isolation are Phase 2 of the [delivery plan](docs/delivery-plan.md). Terminate TLS in front of the service; it does not serve HTTPS itself.
+Terminate TLS in front of the service; it does not serve HTTPS itself, and the session cookie is only sent over HTTPS.
 
 TLS verification towards Splunk, Dynatrace and IR360 is always on, and the mainframe connection uses TLS. The switches that turn these off are accepted only in demo mode.
 
-For the dashboard, set `L1_API_TOKEN` in `frontend/.env` so the Vite dev proxy can add the bearer token on the server side. Branding is set with the `VITE_BRAND_*` variables in `frontend/.env.example`.
+The dashboard signs in through the service and must be served from the same origin as the API. In development the Vite proxy does that. Branding is set with the `VITE_BRAND_*` variables in `frontend/.env.example`.
 
 ## Writing an SOP
 
@@ -158,43 +159,66 @@ A prose knowledge article fetched from ServiceNow becomes a draft. Drafts are ne
 
 ## API
 
-| Route | Auth | Purpose |
+Every route is denied unless it is declared with an access rule; the service will not start otherwise.
+
+| Route | Needs | Purpose |
 |---|---|---|
 | `POST /webhook/incident` | HMAC signature | Incident intake |
-| `GET /health` | none | Liveness only, no detail |
-| `GET /api/status` | bearer | Metrics snapshot and mode |
-| `GET /metrics` | bearer | Prometheus text format |
-| `GET /api/dashboard/summary` | bearer | KPI counts and breakdowns |
-| `GET /api/incidents[/{number}]` | bearer | Incident history and execution trace |
-| `GET /api/sops/stats` | bearer | Per-SOP outcome counts |
-| `GET /api/stream` | bearer | Server-sent events: `incident_received`, `sop_matched`, `step_executing`, `step_done`, `incident_resolved`, `incident_escalated`, `heartbeat` |
+| `GET /health` | nothing | Liveness only, no detail |
+| `GET /api/me` | any sign-in | Who is signed in, roles, CSRF token |
+| `GET /api/dashboard/summary`, `/api/incidents[/{number}]`, `/api/sops/stats` | `incidents.read` | Runs and their evidence |
+| `GET /api/stream` | `incidents.read` | Server-sent events: `incident_received`, `sop_matched`, `step_executing`, `step_done`, `incident_resolved`, `incident_escalated`, `heartbeat` |
+| `GET /api/status`, `/api/openapi.json` | `system.read` | Mode, metrics snapshot, API description |
+| `GET /metrics` | `metrics.read` | Prometheus text format |
+| `GET /api/audit/events`, `/api/audit/verify` | `audit.read` | The audit log and its integrity |
+| `/api/tokens`, `/api/role-mappings` | `tokens.manage`, `roles.manage` | Access administration |
+| `/auth/login`, `/auth/callback`, `/auth/saml/*`, `/auth/break-glass`, `/auth/logout` | public, except logout | Sign-in and sign-out |
 
-The `/sop-editor/` pages exist only in demo mode. They write SOP files with no review step, so they are not part of the product.
+A signed-in browser sends `X-CSRF-Token` (from `/api/me`) on every request that changes something. API tokens go in `Authorization: Bearer`.
 
 ## Tests
 
 ```bash
-pytest tests/ -v                         # live model tests are excluded by default
-pytest tests/unit/ --cov=src/l1_agent
+pytest tests/ -v                         # live provider tests are excluded by default
 ruff check src/ tests/ && ruff format --check src/ tests/
 ```
 
-[tests/unit/engine/test_no_unverified_resolve.py](tests/unit/engine/test_no_unverified_resolve.py) searches the run state machine and every sample SOP for a route to `resolved` without verification, and runs randomly generated SOP graphs against adapters that pass, fail and raise.
+Tests in `tests/db` and `tests/api` run on SQLite and, when a PostgreSQL is available, on PostgreSQL too. Row level security, row locking and the audit guard exist only there:
+
+```bash
+docker run -d --name l1-pg -e POSTGRES_PASSWORD=postgres -p 127.0.0.1:5432:5432 postgres:16
+export L1_TEST_PG_ADMIN_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgres
+pytest tests/ -v
+```
+
+Without that variable the PostgreSQL tests are skipped locally. CI sets it and fails if any is skipped.
+
+What the key tests prove:
+
+- [tests/unit/engine/test_no_unverified_resolve.py](tests/unit/engine/test_no_unverified_resolve.py): no route to `resolved` without verification, in the state machine, in every sample SOP and in random SOP graphs.
+- [tests/db/test_runs_durable.py](tests/db/test_runs_durable.py) and [tests/db/test_worker_killed.py](tests/db/test_worker_killed.py): one run per incident under concurrent delivery, and a killed worker's run is resumed without repeating a completed step.
+- [tests/db/test_tenant_isolation.py](tests/db/test_tenant_isolation.py): with the tenant filter deliberately left out, a query still sees one tenant.
+- [tests/db/test_audit_log.py](tests/db/test_audit_log.py): a changed, removed, inserted or reordered audit event is detected.
+- [tests/api/test_http_access.py](tests/api/test_http_access.py): an undeclared route stops start-up, and every route refuses a caller without the right credentials.
 
 ## Layout
 
 ```
 src/l1_agent/
-  main.py              service assembly and routes
+  main.py, cli.py      service assembly and the l1-agent command
   demo.py              sample incidents through the real engine
-  engine/              state machine, executor, expressions, parameters, matcher, processor
+  engine/              state machine, executor, journal, expressions, parameters, matcher, processor
+  service/runs.py      intake, job queue, worker, run records
+  db/                  schema, tenant-scoped connections, migrations
+  audit/               hash-chained audit log
+  auth/                roles, sessions, API tokens, OpenID Connect, SAML, break-glass
+  api/                 routes, access control, middleware
   sop/                 SOP validator
   adapters/            seven tool adapters, their mocks, and parameter schemas
   ai/                  model client and SOP ranking (advice only)
-  api/                 dashboard handlers, SSE, access control
   clients/             ServiceNow client
   escalation/          L2 routing and the escalation flow
-  models/ store/ events/ notifications/ config/ utils/
+  models/ store/ notifications/ config/ utils/
 frontend/              React + Vite dashboard
 data/sample_sops/      sample SOPs
 docs/                  target architecture, threat model, controls matrix, ADRs, delivery plan
@@ -204,8 +228,8 @@ docs/                  target architecture, threat model, controls matrix, ADRs,
 
 ## Known limits
 
-- State is in memory and in JSONL files. A restart loses in-flight incidents and the duplicate-detection record. A database and durable queue are Phase 2.
-- One tenant, one set of credentials.
-- No single sign-on or roles; shared bearer tokens only.
-- No audit log beyond operational logs and ServiceNow work notes.
-- Connector behaviour is tested against mocks and hand-written fixtures only.
+- One deployment serves one tenant's ServiceNow, identity provider and tool connections. The data layer isolates tenants; the connections are not yet per tenant.
+- Adapters are read only. There are no remediation actions, approvals or policy engine yet.
+- SOPs are files or knowledge articles; there is no review and approval workflow yet.
+- The audit log is not yet exported to a SIEM and has no retention control.
+- Connector behaviour is tested against mocks and hand-written fixtures only, and sign-in against faked identity providers only.

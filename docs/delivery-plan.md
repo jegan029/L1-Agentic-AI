@@ -258,6 +258,6 @@ Test expectations changed, as announced
 | `test_confidence_threshold.py`, `test_models.py` | Built RESOLVED summaries with no verification | Supply `verified_by` | The summary type now refuses the old construction |
 | `test_analyzer.py` | unchanged | unchanged | The rationale text was reworded to keep the assertion true without echoing model output |
 
-Tests removed with the code they covered: `tests/unit/ai/test_ai_executor.py` (7 tests), nine investigation-tool cases in `test_tool_definitions.py`, one in `test_mock_llm.py` (replaced by a test that the mock makes no operational tool call).
+Tests removed with the code they covered: `tests/unit/ai/test_ai_executor.py` (6 tests), eight investigation-tool cases in `test_tool_definitions.py`, one in `test_mock_llm.py` (replaced by a test that the mock makes no operational tool call).
 
 Not done in Phase 1, by design: persistence, tenancy, SSO and roles, audit log, connector SDK, SOP review workflow, write actions, redaction evaluation corpus. See phases 2 to 5.

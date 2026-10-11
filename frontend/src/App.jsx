@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { AgentProvider, useEvents } from './context/AgentContext'
+import { SessionProvider, useSession } from './context/SessionContext'
 import { useHashRoute } from './hooks/useHashRoute'
 import { eventText } from './utils/eventText'
 import { brand } from './brand'
@@ -8,6 +9,7 @@ import LiveDashboard from './components/LiveDashboard'
 import IncidentFeed from './components/IncidentFeed'
 import SopPerformance from './components/SopPerformance'
 import ActivityFeed from './components/ActivityFeed'
+import SignIn from './components/SignIn'
 
 const PAGE_TITLES = Object.fromEntries(NAV_ITEMS.map(i => [i.key, i.label]))
 
@@ -65,10 +67,21 @@ function Shell() {
   )
 }
 
-export default function App() {
+/** Nothing that calls the API is mounted until someone is signed in. */
+function Gate() {
+  const { status } = useSession()
+  if (status !== 'signed-in') return <SignIn />
   return (
     <AgentProvider>
       <Shell />
     </AgentProvider>
+  )
+}
+
+export default function App() {
+  return (
+    <SessionProvider>
+      <Gate />
+    </SessionProvider>
   )
 }

@@ -1,5 +1,6 @@
 import { brand } from '../brand'
 import { useConnection } from '../context/AgentContext'
+import { useSession } from '../context/SessionContext'
 import Icon from './Icon'
 
 export const NAV_ITEMS = [
@@ -19,12 +20,28 @@ function ConnectionStatus() {
   )
 }
 
+function Account() {
+  const { user, signOut } = useSession()
+  if (!user) return null
+  // The demo user and API tokens have no session to end.
+  const canSignOut = user.kind === 'user'
+  return (
+    <span className="utilbar__account">
+      <span title={user.roles.join(', ') || user.kind}>{user.display}</span>
+      {canSignOut && (
+        <button type="button" className="utilbar__signout" onClick={signOut}>Sign out</button>
+      )}
+    </span>
+  )
+}
+
 export default function NavBar({ activePage }) {
   return (
     <>
       <div className="utilbar">
         <span className="utilbar__org">{brand.orgBanner || brand.product}</span>
         <ConnectionStatus />
+        <Account />
       </div>
 
       <header className="masthead">

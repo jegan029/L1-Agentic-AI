@@ -593,3 +593,21 @@ dialog.drawer::backdrop { background: rgba(2, 11, 91, 0.3); }
   .strip__value { font-size: 24px; }
   .donut-row { gap: 20px; }
 }
+
+/* ── Sign-in ───────────────────────────────────────────────────── */
+.signin {
+  min-height: 100vh; display: grid; place-items: center;
+  padding: var(--page-x); background: var(--bg-1, #f5f6fb);
+}
+.signin__card { width: min(420px, 100%); padding: 32px; display: grid; gap: 16px; }
+.signin__logo { height: 32px; width: auto; justify-self: start; }
+.signin__lead { color: var(--text-secondary); }
+.signin__method { justify-content: center; text-decoration: none; min-height: 44px; }
+.signin__error { color: var(--failed); }
+.signin__emergency { border-top: 1px solid var(--border-subtle); padding-top: 16px; color: var(--text-secondary); }
+.signin__emergency summary { cursor: pointer; font-weight: 600; color: var(--text-primary); }
+.signin__emergency form { display: grid; gap: 8px; margin-top: 12px; }
+
+.utilbar__account { display: inline-flex; align-items: center; gap: 12px; white-space: nowrap; }
+.utilbar__signout { text-decoration: underline; color: inherit; padding: 4px 0; }
+.utilbar__signout:hover { text-decoration-thickness: 2px; }

@@ -108,7 +108,7 @@ These are product, commercial or irreversible choices. Each has a recommendation
 | D4 | Lead deployment shape (ADR 0003). | Single-tenant in the customer environment first; keep the runner split so the hosted control plane can follow. |
 | D5 | Highest tier allowed to run without a human approval. **Decided: as recommended.** | T1 only. T2 always needs an approval bound to the action hash, in every autonomy level. This is a liability position as much as an engineering one. |
 | D6 | Model providers at launch, and whether "no model" is a supported configuration. **Decided: as recommended.** | Support a customer-supplied OpenAI-compatible endpoint and Anthropic. Make the engine fully functional with the model disabled, because some buyers will start that way. |
-| D7 | Product name, licence, and whether the mainframe and browser connectors ship in the first release. | Ship both connectors as T0 read only and labelled preview. They carry the most risk for the least reference-case value. |
+| D7 | Product name, licence, and whether the mainframe and browser connectors ship in the first release. **Decided before Phase 6:** the name is "L1 and L2 AI-Ops"; no licence is declared for now; both connectors ship as recommended. | Ship both connectors as T0 read only and labelled preview. They carry the most risk for the least reference-case value. |
 | D8 | ServiceNow approval mechanism: approval on a change request created from a standard change template, or a custom approval record. Whether we ship a ServiceNow scoped application. **Decided: as recommended.** | Standard change template plus approval on the change request. A scoped application is the durable answer but adds store certification work; defer it to after Phase 6. |
 
 ## 3. Phases
@@ -549,4 +549,95 @@ Verified: the full suite (1,685 tests) on Windows on SQLite and PostgreSQL 16 wi
 
 Not verified: the Anthropic client against the live API; article drafting and redaction against a real model; answer quality; the dashboard's model card and labels in a browser; several workers reaching a daily budget together; GitHub CI for this branch.
 
-Open decisions: D7 (product name, licence, preview connectors) is needed before Phase 6.
+Open decisions: D7 (product name, licence, preview connectors) is needed before Phase 6. *(Taken; see section 2 and the Phase 6 record.)*
+
+## 10. Phase 6 record
+
+Delivered on branch `phase-6/packaging`, based on `phase-5/model-hardening`. Decision D7 was taken before it started: the product is named **L1 and L2 AI-Ops** (chart and images `l1-and-l2-ai-ops`; the Python package and the command keep the names `l1_agent` and `l1-agent`), no licence is declared, and the mainframe and browser connectors ship as previews, read only. The design of the runner is [ADR 0010](adr/0010-runner-protocol.md). Installing and operating it is in the [operator guide](operator-guide.md); what it does and does not protect against is in the [security guide](security-guide.md).
+
+**What is and is not verified outside a test process.** The control plane and the runner have run as separate processes on one machine (the compose demo, on PostgreSQL, all sample incidents) and in one local Kubernetes cluster (kind), where the chart was installed, tested, upgraded and its database restored from a backup. Nothing has run in a managed cluster, behind a real ingress, across a real network boundary, or against any real target system that had not been reached before this phase. The CI job that produces a bill of materials and the workflow that signs released images are written and **have never run**. The dependency audit and the image scan were each run once by hand. The new workflow as a whole has not run on the hosted runner.
+
+Exit criteria
+
+| # | Criterion | Evidence |
+|---|---|---|
+| 1 | The "done means" list as an automated end-to-end test against mocks: onboard a tenant, connect ServiceNow, a knowledge source, Autosys and Splunk, approve an SOP, set autonomy to shadow, run the scenario | `tests/e2e/test_done_means.py`, on SQLite and on PostgreSQL. The real service assembly; the tenant made with the command line; ServiceNow, Splunk, Autosys and a Git SOP source connected through the HTTP API by an administrator; the SOP submitted by an author, refused when the author tries to approve it, approved and published by someone else; autonomy set to shadow; an incident picked up by the poller, worked by a worker, with every connector call made by a real runner over the protocol. It ends escalated with one shadowed action, nothing changed, the ticket claimed and handed over, and the audit chain verified. What stands in: ServiceNow is an HTTPS server written by hand from the Table API documentation; Autosys and Splunk are the mock adapters, held by the runner; sign-in is a session written to the database. The brief's own section 10 is not in the repository; the list used is the one this plan quotes from it |
+| 2 | A CI job parses the controls matrix and fails if any row marked implemented points at a missing file or a test that does not pass | `tools/controls_matrix.py`, run in the `tests` job after the suite, against that run's results, with a skipped test counted as a failure. `tests/unit/test_controls_matrix_tool.py` shows it failing for a missing file, a name no longer in a file, a renamed test, an undefined CI job, a failing test, a test that did not run and a skipped test. Run locally against a full run: 49 rows marked implemented, 112 test selections, all present and passed. During the phase it caught one real failure this way |
+| 3 | The container runs as non-root with a read-only root filesystem in the chart's default values, verified by a chart test | `tests/deploy/test_helm_chart.py` (`TestEveryContainerIsLockedDown`) on the rendered manifests, with values that set nothing about security; the values schema refuses to render with either setting undone. The chart's own `helm test` pod checks it from inside a running container. In a kind cluster: `helm test` passed, and each of the four containers reported a non-zero uid and could not write to its root filesystem |
+
+Scope against the plan
+
+| Planned | Delivered |
+|---|---|
+| Helm chart | `deploy/helm/l1-and-l2-ai-ops/`: an install job (migrations, tenant, runner enrolment; safe to repeat), API, workers, runner, dashboard, ingress, network policies, disruption budgets, a values schema and a test pod. It creates no secret |
+| Runner image and outbound-only protocol | `src/l1_agent/runner/`, `Dockerfile` target `runner`, migration `0005`. Two routes, both called by the runner; three Ed25519 key pairs; the runner's own ceiling. **Without mutual TLS**, which the threat model had planned |
+| Connector set-up wizard | The dashboard's Set-up page: a form per connector built from its manifest, credentials as references, save and test from where the calls are made. ServiceNow can now be connected this way, not only through the environment |
+| Tenant onboarding flow | `service/onboarding.py`, `GET /api/onboarding`, `l1-agent onboarding`, and the checklist at the top of the Set-up page. Computed from what exists; nothing stored |
+| Operator and security documentation | `docs/operator-guide.md`, `docs/security-guide.md`, `docs/asvs-self-assessment.md` (by chapter, not by requirement), `deploy/helm/l1-and-l2-ai-ops/README.md`; README, RUNBOOK, ARCHITECTURE, threat model and three ADRs brought up to date |
+| SBOM | CI job `sbom` and the release workflow. Never run |
+| Image signing | `.github/workflows/release.yml`: keyless signature and a signed bill of materials for each image digest. Never run; no release exists |
+| Hash-pinned dependencies | `requirements.lock`, `requirements-dev.lock`; the image installs with `--require-hashes`; base images pinned by digest; GitHub Actions pinned by commit; CI fails if a lock file is out of date |
+| Scanning in CI | Dependency audit (`pip-audit`, `npm audit`) and an image scan (Trivy), both blocking. Run by hand once: the audits found nothing; the scan found two high-severity findings in packaging tools bundled with the Python base image and 43 in the nginx base, which were fixed, and then nothing high or critical with a fix available |
+| Controls matrix completed, every row pointing at code and a passing test | Every row now says Implemented, Partial or Not built, and Implemented is checked. **Not every row is implemented**: 49 are, 10 are partial, 3 are not built (below) |
+
+Engineering decisions and deviations
+
+- **No mutual TLS.** The runner authenticates the server by certificate and itself by a signature on each request; every call and every grant is signed too. Signatures work wherever TLS ends; binding a client certificate to a tenant would have had to be done by an ingress we do not control. Recorded in ADR 0010 and in the threat model.
+- **The key that authorises a write is not in the web tier.** Calls and grants are signed with different keys so that the API, which must be able to queue a connection test, cannot mint a grant.
+- **`RUNNER_MODE` is `embedded` in the code and `remote` in the chart.** A deployment configured before this phase behaves as it did.
+- **A runner can be recognised by its key alone**, so that an install job can enrol it before it first starts. Where several tenants shared a control plane it would be given an identity that names its tenant.
+- **The ITSM connection and the SOP sources stay in the control plane.** Only the seven operations connectors are behind the runner.
+- **Evidence still travels to the control plane.** Keeping it at the customer's site with digests only (ADR 0003, point 5) is not built.
+- **No plug-in mechanism for connectors.** Entry points and a signed list, which Phase 3 had moved here, were not built, and that is now the position: only first-party connectors load.
+- **The service starts without a ServiceNow connection** and takes no incident until one is entered. It had refused to start. A stored connection wins over the environment's, and a broken stored one does not fall back.
+- **The dashboard is its own image**, served by nginx, which also passes the API through so both share an origin. A production build now asks no other origin for anything: the typeface is no longer loaded from Google Fonts unless a build asks for it.
+- **Two things outside the plan's scope line were built because the matrix needed them**: an export of a tenant's data that can be verified from its files alone (RS-05), and a restore drill inside the chart's install test (RS-04).
+- **The API can serve TLS itself**, so that the in-cluster connection from the runner is encrypted without a mesh.
+- **Demo mode can start with an empty tenant** (`AGENT_DEMO_SEED=false`), which the end-to-end test and anyone walking through set-up need.
+
+Not built
+
+- Mutual TLS in the product; key rotation; hardware-backed keys; remembering used call ids across a runner restart.
+- Export to a SIEM (AU-04); retention, erasure, legal hold and an evidence store (AU-05); encryption at rest by the product (CR-04, the platform's). An import to match the export.
+- Any limit on outbound traffic in the chart. A health endpoint for a worker or a runner. Routing of some connectors to one runner and others to another.
+- A screen for role mappings, for policy rules, for model policy rules, or for the audit log.
+- The hosted shape (ADR 0003, B). Nothing has run with the two planes on different networks.
+- A requirement-by-requirement ASVS assessment.
+
+Defects found and fixed in this phase
+
+| Defect | Found by | Fix |
+|---|---|---|
+| The Phase 5 branch fails its secret scan on GitHub: one made-up AWS key in the redaction corpus was not on the reviewed list | Looking at the hosted run after the push | Added to `.gitleaksignore`, after reading the value. The Phase 5 branch itself is still red |
+| The dashboard requested a font from a third party on every load | Writing the dashboard's content security policy | Opt-in at build time; allowed by the server only if configured |
+| `l1-agent tenant create` wrote a second `tenant.created` event when run for a tenant that exists | Writing the install job | It now leaves an existing tenant alone |
+| The chart tests imported a package (PyYAML) that was installed on the development machine and declared nowhere | Running the suite in a clean Linux container, installed from the lock file | Added to the dev requirements and the lock file |
+| The image carried `setuptools` and `wheel` from its base, whose bundled copies have known high-severity issues; the first nginx base chosen for the dashboard was behind on 43 fixes | Running the image scan by hand | The two tools are removed after installation (nothing imports them at run time); the dashboard's base moved to a current one, pinned by digest |
+
+Changes to existing tests
+
+| Test file | Change | Why |
+|---|---|---|
+| `tests/unit/actions/test_write_needs_a_decision.py` | The list of places allowed to attach a grant verifier has two entries, not one | The runner is the second place. The assertion is still an exact list |
+| `tests/conftest.py`, `tests/actions_support.py` | `make_service` and `make_world` take optional `connectors`, `grant_key`, `tenant`, `adapters` | To run the existing action scenarios through a runner |
+| `tests/api/support.py` | New `seed_runner` | The runner's two tables |
+| `tests/db/test_tenant_isolation.py`, `tests/api/test_api_data.py` | Seed a runner and a queued call per tenant; one more marker that must not leak; one more cross-tenant write that must fail | Extended to the new tables and routes, not relaxed |
+
+No test was removed and no other existing assertion was changed.
+
+Behaviour that changed for an existing deployment
+
+- Migration `0005` must be applied.
+- Outside demo mode, with no `SERVICENOW_*` settings, the service starts and takes no incident (the webhook answers 503) where it used to refuse to start. With incomplete settings it still refuses.
+- A `servicenow` connection stored for the tenant is used in place of the environment's.
+- The image runs as uid 10001, has no `curl`, and installs from `requirements.lock`. Mount a writable `/tmp` if the root filesystem is read only.
+- The dashboard no longer loads the Inter typeface from Google Fonts unless built with `VITE_FONT_STYLESHEET`.
+- `GET /api/connectors` items carry `settings` and `runs_on`; `config` is still the schema.
+- A grant is now an Ed25519 signature. Nothing to configure unless a runner is used.
+- CI installs from the lock files and has four more jobs (`deps`, `sbom`, `image-scan`, `chart-install`); `docker-build` is now `images`.
+
+Verified: the full suite (1,917 tests, none skipped) on Windows, on SQLite and PostgreSQL 16, with 90% coverage, and the same suite (1,917 tests, none skipped) in a Linux container installed from `requirements-dev.lock` with hashes, with PostgreSQL, SAML and Helm required; the controls matrix check against each run's results in strict mode; lint and format; bandit; the evaluation suite; the one-shot demo; `pip-audit` on `requirements.lock` and `npm audit` on the dashboard's shipped dependencies (no findings); a Trivy scan of the control plane and dashboard images (nothing high or critical with a fix, after the fixes above); all four image targets built from the lock file and pinned bases, started read-only as a non-root user; the compose demo from a clean start (PostgreSQL, API, worker, runner with mock connectors, dashboard), with all sample incidents worked through the runner; the chart in a kind cluster through `tools/ci/kind_install.sh` (install job, `helm test`, each container's uid and read-only root, the runner connected over TLS with a private CA and recognised by its key, the audit chain, a second upgrade that changed nothing, and a backup restored and verified); the production frontend build; the Set-up page once in a headless browser against the demo, with no console errors.
+
+Not verified: the new CI workflow on the hosted runner, any of it (its steps were run by hand, one at a time, on this machine); the bill of materials and image signing, which have never run anywhere; the image scan and the audits as CI jobs; the chart in a managed cluster, behind an ingress controller, with an enforcing network plug-in, against a managed database; the runner across a real network, through a proxy, with a client certificate, or with the Vault or AWS backends; the Set-up page's forms in a browser (they were driven through the API); everything listed as unverified in earlier phases, which is unchanged: no real Autosys, Splunk, Dynatrace, IBM MQ, mainframe or identity provider, and the action pipeline never against a real instance.
+
+Open decisions: none recorded. Whether to publish a release (which is what first runs the signing workflow), and what licence to declare, are still to be decided.

@@ -1,6 +1,6 @@
 # Threat model
 
-Status: written in Phase 0. Phases 1 to 5 have since delivered the mitigations marked for them; the [controls matrix](controls-matrix.md) says which exist now, with their tests. The "Current" column below still describes the code before Phase 1. Method: STRIDE per trust boundary, plus the OWASP Top 10 for LLM Applications (2025 list). It covers the target architecture and records which threats are open in today's code.
+Status: written in Phase 0. Phases 1 to 6 have since delivered the mitigations marked for them, except where a row now says otherwise; the [controls matrix](controls-matrix.md) says which exist now, with their tests. The "Current" column below still describes the code before Phase 1. Method: STRIDE per trust boundary, plus the OWASP Top 10 for LLM Applications (2025 list). It covers the target architecture and records which threats are open in today's code.
 
 "Current" describes the code at commit `db38e1f` as verified in the [delivery plan](delivery-plan.md). "Mitigation" names the design control and the phase that delivers it. Nothing in the mitigation column exists yet.
 
@@ -95,10 +95,12 @@ Status: written in Phase 0. Phases 1 to 5 have since delivered the mitigations m
 
 | # | Threat | Type | Current | Mitigation |
 |---|---|---|---|---|
-| E1 | Rogue runner registers and receives work | S | No runner | Mutual TLS with tenant-bound certificates; enrolment by tenant admin (Phase 6) |
-| E2 | Compromised control plane instructs a runner to perform arbitrary writes | E | Not applicable | Runner-local ceiling the control plane cannot raise; signed single-use grants bound to action hash; local kill switch (Phases 4, 6) |
-| E3 | Grant replayed or altered in transit | T | Not applicable | Signature, expiry, single-use id recorded by the runner (Phase 4) |
-| E4 | Runner unreachable, runs hang | D | Not applicable | Step timeout leads to NEEDS_HUMAN; honest health (Phase 3) |
+| E1 | Rogue runner registers and receives work | S | Mitigated (Phase 6): a runner is known only by a public key that a tenant administrator enrolled; every request is signed, fresh and accepted once; revocation takes effect on the next request. **Not as first designed:** there is no mutual TLS with tenant-bound certificates ([ADR 0010](adr/0010-runner-protocol.md)) | Certificates, if a buyer requires them at the transport |
+| E2 | Compromised control plane instructs a runner to perform arbitrary writes | E | Mitigated (Phases 4, 6): a write needs a grant signed with a key the web tier never holds, checked by the runner with the public half; the runner has its own maximum tier (reads only unless raised), its own target lists and its own kill switch, none of which the control plane can change. A compromise of a **worker** still yields the grant key: see section 7 | Keep |
+| E3 | Grant or call replayed or altered in transit | T | Mitigated (Phase 6): signature, expiry and a single-use id, for the call and for the grant, each under its own key and purpose label. Used ids are remembered in memory, so a runner that restarts would accept a recorded call again until it expires; replaying one needs the dispatch key or a break of TLS | Remember used ids across a restart |
+| E4 | Runner unreachable, runs hang | D | Mitigated (Phase 6): a call nobody takes is withdrawn after its timeout and the step ends as an error, so the run goes to a person. A write a runner took and never answered is not sent again; the target is read to learn what happened | Keep |
+| E5 | Compromised control plane uses the runner to read, or to collect a credential | I, E | **Open in part.** It holds the key that signs calls, and the connection's address travels with each call, so within the runner's limits it can ask for any read and can point a connector at a host of its choosing, where the runner would present that connector's credential. Reduced by the runner's capability list, by the limit on where a credential reference may point, and by connections the runner holds itself, which replace what it is sent | Outbound network rules around the runner, which are the operator's; the chart sets none |
+| E6 | The runner's key file is copied | S | Reduced: the copy can ask for the tenant's calls and return results for calls it holds, but cannot make the control plane authorise anything, and a write still needs a valid grant and the runner's own limits. Revoking the enrolment ends it | Keys in hardware, or short-lived certificates |
 
 ### 4.6 Runner to customer systems
 
@@ -127,7 +129,7 @@ Status: written in Phase 0. Phases 1 to 5 have since delivered the mitigations m
 | G3 | Secrets in logs | I | Redaction on structured keys only | Message-text redaction; tests with seeded secrets (Phase 1) |
 | G4 | Database administrator edits run history or audit | T, R | Files on disk, no integrity | Hash chain with external checkpoints; verify command (Phase 2) |
 | G5 | Audit log deleted or truncated | T, R | No audit log | Revoked privileges, trigger, external checkpoints, SIEM export (Phase 2) |
-| G6 | Backup theft | I | No backups | Encrypted backups; documented in operator guide (Phase 6) |
+| G6 | Backup theft | I | Not a product control: backups are the database service's. The operator guide says to encrypt them (Phase 6). A backup holds ticket text and evidence but no connector credential | Keep |
 | G7 | Evidence altered after the fact | T | No evidence store | Content-addressed store with write-once retention (Phase 2) |
 
 ### 4.8 Product to SIEM
@@ -141,10 +143,10 @@ Status: written in Phase 0. Phases 1 to 5 have since delivered the mitigations m
 
 | # | Threat | Type | Current | Mitigation |
 |---|---|---|---|---|
-| I1 | Malicious or vulnerable dependency | T, E | Unpinned ranges; a large transitive tree from CrewAI; no scanning has ever run | Remove CrewAI; hash-pinned lock file; dependency and image scanning as gates (Phases 1, 6) |
-| I2 | Tampered image | T | Unsigned | Signed images, SBOM, digest-pinned base (Phase 6) |
+| I1 | Malicious or vulnerable dependency | T, E | Reduced (Phases 1, 6): CrewAI removed; every package pinned with hashes and installed with `--require-hashes`. The dependency audit and the image scan are defined as blocking gates and have not yet run in CI; each was run once by hand, and what the scan found was fixed | See them run in CI, and keep the pins moving |
+| I2 | Tampered image | T | Reduced (Phase 6): base images pinned by digest; the chart can deploy by digest. Signing and a bill of materials are defined in a release workflow that **has never run**, so no signed image exists and nothing verifies one | Publish a signed release; an admission controller in the customer's cluster |
 | I3 | Secret committed to the repository | I | No scanning. None found in this review, but history was not exhaustively scanned | Secret scanning in CI and pre-commit (Phase 1) |
-| I4 | Malicious connector package loaded | E | Not applicable | First-party allow list, signed (Phase 3) |
+| I4 | Malicious connector package loaded | E | Mitigated by absence: only the first-party connectors in `connectors/catalog.py` are registered, in the control plane and in the runner. There is no plug-in mechanism, and so no signed list of permitted ones | A decision, with an ADR, before third-party connectors are allowed |
 
 ## 5. OWASP Top 10 for LLM Applications
 
@@ -186,6 +188,13 @@ These go into the evaluation suite and the security test suite as they become te
 19. An article tells the drafting model to add a step that makes a change. Expected: the draft has no such step, or the article becomes a draft with no steps. *(Tested, Phase 5.)*
 20. A model's summary says the incident is resolved. Expected: the outcome and the ticket's state are unchanged; the text is labelled. *(Tested, Phase 5.)*
 21. A run passes its model budget half way. Expected: no further request; the outcome is what it would be with no model. *(Tested, Phase 5.)*
+22. The control plane signs a write and hands it to the runner with no grant, or with a grant signed by the key that signs calls. Expected: refused by the runner; nothing reaches the target. *(Tested, Phase 6.)*
+23. The control plane signs a write for a target that is on the tenant's allow list and not on the runner's own. Expected: refused by the runner. *(Tested, Phase 6.)*
+24. A call is changed after it was signed, presented under another id, presented twice, or presented after it expired. Expected: not made. *(Tested, Phase 6.)*
+25. A request to the runner's routes carries a browser session, an API token, a signature from a key that was never enrolled, or a replay of a good request. Expected: 401. *(Tested, Phase 6.)*
+26. The kill switch is engaged while a write is waiting for a runner. Expected: the write is not handed out. *(Tested, Phase 6.)*
+27. A runner takes a write and its answer never arrives. Expected: the write is not sent again; the target is read; the run goes on only if the target shows the result. *(Tested, Phase 6.)*
+28. The control plane sends a connection whose credential reference points at the runner's own key. Expected: the reference is not followed. *(Tested, Phase 6.)*
 
 ## 7. Risks accepted or left open
 
@@ -193,7 +202,9 @@ These go into the evaluation suite and the security test suite as they become te
 |---|---|
 | A reviewer approves a harmful SOP | Reduced by diff, validator and tier summary; not eliminated. Shadow mode for new versions limits impact. |
 | The tenant administrator sets an over-permissive policy | Their authority. Every change is audited; the deployment ceiling (`ACTIONS_MAX_TIER`, `ACTIONS_MAX_AUTONOMY`) gives the infrastructure owner an independent limit, and no policy can make a T2 action run without an approval. |
-| Code running inside the worker process forges a grant | Not defended: the signing key is in that process. The grant stops mistakes and misuse of the connector interface, not an attacker with code execution in the worker. Reduced when the runner holds only a public key (Phase 6). |
+| Code running inside the worker process forges a grant | Not defended: the grant key is in that process. From Phase 6 it is only there: the API tier and the runner do not have it. A forged grant still meets the runner's own limits (tier, its own target list, its kill switch), so what such an attacker can do is bounded by what the runner's operator allowed. |
+| A control plane that has been taken over reads through the runner | Open in part (E5). Stated in the security guide with what an operator can do about it. |
+| Mutual TLS between runner and control plane | Not built. The runner authenticates the server by certificate and itself by signature. Recorded in ADR 0010 as a departure from this document's first design. |
 | The integration user in ServiceNow is used to approve a change itself | The agent never writes an approval decision, only requests. A person with that account could. Reduced by ServiceNow's own controls on who may approve; listed for the deployment guide. |
 | An approver approves without reading | Reduced by showing exactly the capability, parameters and tier, and by the expiry. Not eliminated. |
 | Database owner rewrites the audit chain | Detected by external checkpoints where the customer configures them; undetected if they do not. Documented as a deployment requirement. |

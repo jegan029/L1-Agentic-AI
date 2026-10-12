@@ -1,8 +1,10 @@
-# L1 Engineer Agent
+# L1 and L2 AI-Ops
+
+*The Python package and the command line are still named `l1_agent` and `l1-agent`.*
 
 An async Python service that takes a ServiceNow incident, matches it to a published Standard Operating Procedure (SOP), runs the SOP's steps through connectors, and ends in one explicit outcome: resolved with verification, or handed to a person with the evidence. Where the SOP and the tenant's policy allow it, it carries out the fix the SOP describes; by default it only records what it would have done. A React dashboard shows what the agent did.
 
-**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow connector has run against one developer instance (basic authentication; OAuth has not) and the model client against one hosted provider. The model path (policy, redaction, budgets, the four advisor tasks) has run once against one hosted model through the OpenAI-compatible client; the Anthropic client has only run against fixtures written from its documentation. Every operations connector (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock and against fixtures written from vendor documentation, and sign-in has only run against identity providers faked in the tests. The force start has only run against a mock scheduler: the real `sendevent` command, its exit codes and its timing are unverified. Opening a standard change from a template, adding a note, asking a group for approval and closing the change have run against one developer instance. Reading an approval or a rejection that a person gave there has not, and nor has the whole action pipeline. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/).
+**Status: pre-release.** This is a working demo being turned into a product. The ServiceNow connector has run against one developer instance (basic authentication; OAuth has not) and the model client against one hosted provider. The model path (policy, redaction, budgets, the four advisor tasks) has run once against one hosted model through the OpenAI-compatible client; the Anthropic client has only run against fixtures written from its documentation. Every operations connector (Autosys, Splunk, Dynatrace, IBM MQ, mainframe, file shares, browser) has only run against a mock and against fixtures written from vendor documentation, and sign-in has only run against identity providers faked in the tests. The force start has only run against a mock scheduler: the real `sendevent` command, its exit codes and its timing are unverified. Opening a standard change from a template, adding a note, asking a group for approval and closing the change have run against one developer instance. Reading an approval or a rejection that a person gave there has not, and nor has the whole action pipeline. The runner, which makes connector calls in place of the worker, has only talked to a control plane in the same process, on the same machine or in one local test cluster. The Helm chart has been installed in a local kind cluster and nowhere else. The CI jobs that audit dependencies, scan images and produce a bill of materials have not yet run in CI (the audit and the scan were each run once by hand), and the workflow that signs released images has never run. It holds no security or compliance certification. The plan, architecture, threat model and controls matrix are in [docs/](docs/); [docs/operator-guide.md](docs/operator-guide.md) covers installing it and [docs/security-guide.md](docs/security-guide.md) what it does and does not protect against.
 
 ## What it does today
 
@@ -13,6 +15,9 @@ An async Python service that takes a ServiceNow incident, matches it to a publis
 - Binds typed parameters from the ticket (for example an Autosys job name), validates them, and stops if any cannot be bound.
 - Executes the SOP step by step through connectors: Splunk, IBM MQ (through IR360), Autosys, file shares, Dynatrace, a browser check and mainframe TN3270. Each connector declares its capabilities, their parameters and their risk tier in a manifest.
 - Carries out one kind of change so far: an Autosys force start of a failed job. Every change goes through a policy decision, a ServiceNow change record, an approval where one is required, pre-checks, verification and, where the connector declares one, rollback. A new tenant starts in shadow mode, where nothing is changed.
+- Can make every operations connector call from a separate **runner** that sits in your network, connects outwards only, reads the credentials itself and has limits of its own that the control plane cannot raise ([ADR 0010](docs/adr/0010-runner-protocol.md)).
+- Shows what is and is not set up for a tenant, and lets an administrator connect ServiceNow, the SOP sources and each connector, and enrol a runner, from the dashboard's **Set-up** page.
+- Installs on Kubernetes from a Helm chart in which every container runs as a non-root user on a read-only root filesystem.
 - Ends every run in one of four outcomes.
 
 | Outcome | Meaning |
@@ -64,6 +69,13 @@ npm install
 npm run dev        # http://localhost:5173, proxies /api/* to 127.0.0.1:8080
 ```
 
+The whole shape on one machine, with Docker: PostgreSQL, the API, a worker, a runner holding the mock connectors, and the dashboard on `http://127.0.0.1:8088`.
+
+```bash
+docker compose -f deploy/compose/docker-compose.yml up --build
+docker compose -f deploy/compose/docker-compose.yml run --rm incidents   # sends the sample incidents
+```
+
 Send an incident to the demo service:
 
 ```bash
@@ -95,7 +107,7 @@ What the sample scenarios do against the mocks:
 
 ## Running outside demo mode
 
-Outside demo mode the service needs PostgreSQL, a webhook secret and, for people to sign in, an identity provider. It refuses to start in an unsafe configuration. [RUNBOOK.md](RUNBOOK.md) has the full set-up; in short:
+Outside demo mode the service needs PostgreSQL, a webhook secret and, for people to sign in, an identity provider. It refuses to start in an unsafe configuration. On Kubernetes, use the Helm chart: [docs/operator-guide.md](docs/operator-guide.md). As plain processes, [RUNBOOK.md](RUNBOOK.md) has the full set-up; in short:
 
 ```bash
 cp .env.example .env     # then fill in values; never commit .env
@@ -104,7 +116,10 @@ l1-agent migrate                                   # as the migration role
 l1-agent tenant create --slug default
 l1-agent roles grant --group <idp group> --role tenant_admin
 l1-agent serve
+l1-agent onboarding                                # what is left to set up
 ```
+
+ServiceNow can be given in the environment (`SERVICENOW_*`) or entered on the Set-up page. Without either the service starts and takes no incident.
 
 | Area | What applies |
 |---|---|
@@ -122,11 +137,11 @@ X-L1-Timestamp: <unix seconds>
 X-L1-Signature: sha256=<hex HMAC-SHA256 of "<timestamp>.<raw body>" with AGENT_WEBHOOK_SECRET>
 ```
 
-Terminate TLS in front of the service; it does not serve HTTPS itself, and the session cookie is only sent over HTTPS.
+Terminate TLS in front of the service, or give it a certificate (`AGENT_TLS_CERT_FILE`, `AGENT_TLS_KEY_FILE`) and it serves HTTPS itself. The session cookie is only sent over HTTPS.
 
 TLS verification towards Splunk, Dynatrace and IR360 is always on, and the mainframe connection uses TLS. The switches that turn these off are accepted only in demo mode.
 
-The dashboard signs in through the service and must be served from the same origin as the API. In development the Vite proxy does that. Branding is set with the `VITE_BRAND_*` variables in `frontend/.env.example`.
+The dashboard signs in through the service and must be served from the same origin as the API. In development the Vite proxy does that; the dashboard image (`docker build --target ui .`) does it with nginx. Branding is set with the `VITE_BRAND_*` variables in `frontend/.env.example`. A production build asks no other origin for anything: the Inter typeface is loaded from Google Fonts only if `VITE_FONT_STYLESHEET` is set at build time and the server's content security policy allows it.
 
 ## Writing an SOP
 
@@ -214,7 +229,11 @@ Every route is denied unless it is declared with an access rule; the service wil
 | `POST /api/sops`, `PUT`/`DELETE /api/sop-versions/{id}`, `POST .../submit`, `POST /api/knowledge/sync` | `sops.author` | Write, submit and discard drafts; pull drafts from the knowledge sources |
 | `POST /api/sop-versions/{id}/approve`, `.../request-changes`, `.../publish`, `POST /api/sops/{sop_id}/retire` | `sops.approve` | Review. The author of a version cannot approve it |
 | `GET /api/connectors` | `system.read` | Every connector's manifest and whether this tenant has configured it. No credentials |
-| `PUT`/`DELETE /api/connectors/{id}/connection`, `POST /api/connectors/{id}/test` | `connectors.manage` | A connector's settings and credential references; test the connection |
+| `PUT`/`DELETE /api/connectors/{id}/connection`, `POST /api/connectors/{id}/test` | `connectors.manage` | A connector's settings and credential references; test the connection from where its calls are made |
+| `GET /api/onboarding` | `system.read` | The set-up steps for the tenant, each read from what exists now |
+| `GET /api/runners` | `system.read` | Enrolled runners, whether each is connected, and the public keys a runner is configured with |
+| `POST /api/runners`, `DELETE /api/runners/{id}` | `connectors.manage` | Enrol a runner's public key; revoke a runner |
+| `POST /runner/v1/claim`, `POST /runner/v1/calls/{id}/result` | A runner's signature | The runner asks for calls and returns results. Not for people or tokens |
 | `GET /api/actions[/{id}]` | `incidents.read` | Every action: the policy decision, the approval, the result |
 | `POST /api/actions/{id}/approve`, `.../reject` | `actions.approve` | Decide a waiting action. The request carries the hash of the action that was shown |
 | `GET /api/policy` | `system.read` | Autonomy level, rules, kill switches, deployment ceiling |
@@ -233,7 +252,9 @@ A signed-in browser sends `X-CSRF-Token` (from `/api/me`) on every request that 
 pytest tests/ -v                         # live provider tests are excluded by default
 python -m evals.run                      # golden incidents, injection and redaction corpora
 python -m evals.run --live               # the same against the configured model (costs money)
-ruff check src/ tests/ evals/ && ruff format --check src/ tests/ evals/
+ruff check src/ tests/ evals/ tools/ && ruff format --check src/ tests/ evals/ tools/
+python -m tools.controls_matrix          # the controls matrix names files and tests that exist
+bash tools/ci/kind_install.sh            # install the chart in a kind cluster (needs docker, kind, helm)
 ```
 
 Tests in `tests/db` and `tests/api` run on SQLite and, when a PostgreSQL is available, on PostgreSQL too. Row level security, row locking and the audit guard exist only there:
@@ -244,7 +265,7 @@ export L1_TEST_PG_ADMIN_URL=postgresql://postgres:postgres@127.0.0.1:5432/postgr
 pytest tests/ -v
 ```
 
-Without that variable the PostgreSQL tests are skipped locally. CI sets it and fails if any is skipped.
+Without that variable the PostgreSQL tests are skipped locally. CI sets it and fails if any is skipped. The chart tests in `tests/deploy` need the `helm` command and are skipped without it, except in CI.
 
 What the key tests prove:
 
@@ -256,6 +277,9 @@ What the key tests prove:
 - [tests/db/test_sop_lifecycle.py](tests/db/test_sop_lifecycle.py): a draft, or anything not published, cannot reach the engine; an author cannot approve their own version, in the service or by writing to the table; a submitted version cannot be changed.
 - [tests/unit/connectors/test_manifest_lint.py](tests/unit/connectors/test_manifest_lint.py): a connector whose write capability lacks a tier, verify operation, closed schema, scopes or allow list is not registered.
 - [tests/unit/connectors/test_secrets.py](tests/unit/connectors/test_secrets.py): a credential rotated in the secrets backend is used on the next call without a restart.
+- [tests/runner/](tests/runner/): a runner refuses a call that was changed, replayed, expired or signed by another key; refuses a write without a grant from the policy engine, above its own tier or to a target not on its own list; and a write whose result is lost is read back, never sent twice.
+- [tests/e2e/test_done_means.py](tests/e2e/test_done_means.py): from an empty tenant to a first run in shadow, through the real service, a stand-in ServiceNow over HTTPS, a Git SOP source and a runner.
+- [tests/deploy/test_helm_chart.py](tests/deploy/test_helm_chart.py): in the chart's default values every container is non-root with a read-only root filesystem, the runner has no database credential, and only workers hold the key that authorises a write.
 - [tests/contract/](tests/contract/): each connector against recorded conversations, including errors and paging. The recordings were written by hand from vendor documentation; they are not captures from live systems.
 
 ## Layout
@@ -277,12 +301,17 @@ src/l1_agent/
   adapters/            the seven original adapters the ops connectors run through, and their mocks
   ai/                  model use: gateway, providers, tenant model policy, redaction,
                        the four advisor tasks, versioned prompts (advice only)
+  runner/              the runner and its protocol: keys, signed calls, the queue,
+                       the runner's own ceiling, the runner process
   escalation/          L2 routing and the escalation flow
   models/ store/ notifications/ config/ utils/
 frontend/              React + Vite dashboard
 evals/                 evaluation suite for model use: corpora, stand-in models, checks
+deploy/                helm/ (the chart), compose/ (the one-machine demo), nginx/ (the dashboard's server)
+tools/                 controls_matrix.py (the check on docs/controls-matrix.md), ci/ (the chart's install test)
 data/sample_sops/      sample SOPs (published in demo mode); data/sample_drafts/ (left in review)
-docs/                  target architecture, threat model, controls matrix, ADRs, delivery plan
+docs/                  operator guide, security guide, target architecture, threat model,
+                       controls matrix, ASVS self-assessment, ADRs, delivery plan
 ```
 
 [ARCHITECTURE.md](ARCHITECTURE.md) describes the code as built and [RUNBOOK.md](RUNBOOK.md) covers running it. [docs/](docs/) holds the target design and the plan to reach it.
@@ -293,9 +322,11 @@ docs/                  target architecture, threat model, controls matrix, ADRs,
 - One write capability exists, the Autosys force start, and it has only run against a mock scheduler. The Autosys REST API is not implemented; the command line is.
 - Opening a standard change from a template, adding a note, asking a group for approval and closing the change have run against one developer instance. Reading an approval or a rejection that a person gave there has not, and nor has the whole action pipeline against a real instance. An existing normal change on the ticket is not accepted as the change record, and ServiceNow approvals are polled, not pushed.
 - Policy rules are edited as JSON through the API or the command line. The dashboard sets the autonomy level and the kill switch and shows the rules.
-- A grant is issued and checked inside one process. Checking it in a separate runner needs the key split planned for the packaging phase.
+- The runner has never run across a real network boundary, through a proxy, or against a real target system. There is no mutual TLS between it and the control plane: the runner checks the server's certificate and signs each request. A control plane that had been taken over could still ask a runner for reads within the runner's limits ([security guide](docs/security-guide.md)).
+- The Helm chart has been installed in a local kind cluster only. It sets no limit on outbound traffic.
+- No signed image and no bill of materials exist yet: the jobs that make them have never run. The dependency audit and the image scan have been run by hand once and not yet in CI.
 - Knowledge sources are a ServiceNow knowledge base and Git. Confluence and SharePoint are not built. A prose article becomes an empty draft unless the tenant allows a model to draft its steps.
-- Connections are set from the command line or the API; the dashboard has no screen for them yet.
+- The Set-up page was looked at once in a headless browser against the demo; its forms were exercised through the API, not in a browser. Policy rules and model policy rules still have no editing screen.
 - Model use: one provider per deployment. Redaction before a model request is pattern matching: it does not find a person's name in running text (other than the ticket's caller), a postal address, or a secret with no recognisable shape. A provider's region and retention are what the operator declares; the product cannot check them. The model path (policy, redaction, budgets, the four advisor tasks) has run once against one hosted model through the OpenAI-compatible client; the Anthropic client has only run against fixtures written from its documentation. Answer quality has not been measured.
-- The audit log is not yet exported to a SIEM and has no retention control.
+- The audit log is not exported to a SIEM, and nothing is ever deleted: there is no retention period, erasure or legal hold. `l1-agent export create` writes a tenant's records to files; there is no import.
 - Connector behaviour is tested against mocks and hand-written fixtures only, and sign-in against faked identity providers only. ServiceNow OAuth has not run against a real instance.

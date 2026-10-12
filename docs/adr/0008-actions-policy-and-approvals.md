@@ -57,7 +57,7 @@ The effective level is the lowest of three: the tenant's level, the level set fo
 
 The signing key is random per process and lives in `actions/grants.py → GrantAuthority`. The only code that calls `mint` is `ActionService._authorise`, and it does so only after the database update in stage 6 succeeds. `tests/unit/actions/test_write_needs_a_decision.py` proves this three ways: every write capability in the registry is refused without a grant; a forged, expired, reused or mismatched grant is refused; and a search of the source tree finds `mint` called nowhere else.
 
-A grant is minted and redeemed in the same process. When the runner is split out in Phase 6 the key becomes an asymmetric pair, with the private half in the control plane.
+A grant is minted and redeemed in the same process. When the runner is split out in Phase 6 the key becomes an asymmetric pair, with the private half in the control plane. *(Done in Phase 6: an Ed25519 pair, the private half in the workers only, and the runner checks a grant with the public half. With `RUNNER_MODE=embedded` both halves are still in the worker. See [ADR 0010](0010-runner-protocol.md).)*
 
 ### Approvals
 

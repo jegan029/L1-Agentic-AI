@@ -1,8 +1,8 @@
-# L1 Engineer Agent: runbook
+# L1 and L2 AI-Ops: runbook
 
-How to run and operate the service as it stands after Phase 5. Installation and the demo quick start are in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
+How to run and operate the service as it stands after Phase 6. Installing on Kubernetes, the keys, upgrades and backup are in [docs/operator-guide.md](docs/operator-guide.md); the demo quick start is in [README.md](README.md); every setting is listed with comments in [.env.example](.env.example).
 
-This is pre-release software. Sign-in has been tested only against identity providers faked in the test suite, and the tool adapters only against mocks. The Autosys force start has only run against a mock scheduler, and the ServiceNow change and approval calls have run against one developer instance only (reading a person's approval there has not run at all). Expect to find differences on first contact with real systems, and start every tenant in shadow mode.
+This is pre-release software. Sign-in has been tested only against identity providers faked in the test suite, and the tool adapters only against mocks. The Autosys force start has only run against a mock scheduler, and the ServiceNow change and approval calls have run against one developer instance only (reading a person's approval there has not run at all). The runner has only talked to a control plane on the same machine or in one local test cluster. Expect to find differences on first contact with real systems, and start every tenant in shadow mode.
 
 ## 1. Run it
 
@@ -13,18 +13,22 @@ This is pre-release software. Sign-in has been tested only against identity prov
 | Demo service with real ServiceNow | add `SERVICENOW_LIVE_IN_DEMO=true` and the `SERVICENOW_*` settings | ServiceNow for real; tool adapters stay mocked. |
 | Full service | `l1-agent serve` (or `python -m src.l1_agent.cli serve`) | PostgreSQL, a webhook secret, ServiceNow, an identity provider. |
 | Extra workers | `l1-agent worker` | The same database. Set `WORKER_EMBEDDED=false` on the API process if workers run only here. |
+| Runner | `l1-agent runner run` | No database. The control plane's address, its own key and the control plane's public keys (section 2.8). |
+| The whole shape, as a demo | `docker compose -f deploy/compose/docker-compose.yml up --build` | Docker. PostgreSQL, API, worker, a runner with mock connectors, the dashboard on `127.0.0.1:8088`. |
 
 Containers:
 
 ```bash
-docker build -t l1-agent .                         # production image
+docker build -t l1-agent .                         # control plane: API, workers, migrations
+docker build --target runner -t l1-agent-runner .  # the same code, started as the runner
+docker build --target ui -t l1-agent-ui .          # the dashboard, served by nginx
 docker build --target demo -t l1-agent-demo .      # one-shot demo image
 docker run --rm l1-agent-demo
 docker run --rm --env-file .env l1-agent migrate   # with DATABASE_MIGRATION_URL
 docker run --rm --env-file .env -p 127.0.0.1:8080:8080 l1-agent
 ```
 
-The image runs as a non-root user and writes nothing to its filesystem. It listens on all interfaces inside the container, so publish the port deliberately and put TLS termination in front of it. The session cookie is marked Secure: the dashboard must be reached over HTTPS.
+The image runs as a non-root user (uid 10001) and writes nothing outside `/tmp`, so it can run with a read-only root filesystem and a writable `/tmp`. Its Python packages are installed from `requirements.lock`, every one at a pinned version with a checked hash. It listens on all interfaces inside the container, so publish the port deliberately. Put TLS termination in front of it, or give it a certificate with `AGENT_TLS_CERT_FILE` and `AGENT_TLS_KEY_FILE`. The session cookie is marked Secure: the dashboard must be reached over HTTPS.
 
 ## 2. First-time set-up
 
@@ -74,6 +78,8 @@ The identity provider must send the user's groups: in the `groups` claim of the 
 
 ### 2.3 ServiceNow
 
+The connection can be given in the environment (`SERVICENOW_*`, as below) or entered on the dashboard's Set-up page, which stores it like any other connection: settings plus a reference to the password. A stored connection wins over the environment's, is picked up by every process within about 15 seconds, and if it is broken the service does not fall back to the environment's: it takes no incident until the stored one is fixed or removed. With no connection at all the service starts, the webhook answers 503 and the poller does nothing. `l1-agent connection test --connector servicenow` signs in and makes the two reads intake depends on.
+
 1. Create a service account with the `itil` role. It reads and updates incidents, reads `sys_user` to find its own id, and reads the knowledge table if you use it as an SOP source.
 2. Create the intake assignment group and set `SERVICENOW_ASSIGNMENT_GROUP` to its exact name. The poller takes only incidents that are New and assigned to that group.
 3. Create every L2 group named in your routing file. An escalation to a group that does not exist on the instance will not land with a team.
@@ -111,6 +117,8 @@ A tenant with no stored connection for a connector uses the deployment's environ
 **Rotating a credential.** Change it in the secrets backend. Nothing is restarted. Values are cached for 30 seconds; and when a call fails and the backend holds a different value from the one that was used, the connector reads the new value and repeats the call once. For ServiceNow the same happens on a `401`. A credential given as a plain value in the environment (no reference) is read once at start-up and does not follow a rotation.
 
 Changed connection settings are picked up within about 15 seconds. Every change is in the audit log as `connection.updated`, with the references but never a value.
+
+The dashboard's **Set-up** page does the same: it shows each connector, what it can do, whether it is connected and from where, and a form built from the connector's own settings schema. *Save and test* stores the connection and then tests it from where its calls will be made. `l1-agent onboarding` prints the set-up steps and what is missing; it exits 0 when every required step is done and 3 otherwise.
 
 ### 2.5 SOPs and knowledge sources
 
@@ -255,6 +263,41 @@ python -m evals.run --live     # your configured model; about forty requests
 
 The live run needs a source checkout: the `evals/` directory is not in the container image. Record the result in `docs/model-risk/change-log.md` whenever the model id, the provider or a prompt version changes.
 
+### 2.8 The runner
+
+With `RUNNER_MODE=remote` on the API and the workers, no call to Splunk, Autosys or any other operations system is made by them. A runner makes each one ([ADR 0010](docs/adr/0010-runner-protocol.md)). `RUNNER_MODE=embedded` (the default) makes the calls in the worker, as before.
+
+```bash
+l1-agent runner keygen --out dispatch.key     # for the control plane: signs calls
+l1-agent runner keygen --out grant.key        # for the workers: signs grants for writes
+l1-agent runner keygen --out runner.key       # on the runner's machine
+l1-agent runner enrol --name runner-1 --public-key-file runner.key.pub
+l1-agent runner list                          # connected, idle or revoked
+l1-agent runner revoke --id <id>              # refused from its next request
+```
+
+| Process | Settings |
+|---|---|
+| API | `RUNNER_MODE=remote`, `RUNNER_DISPATCH_KEY_REF=file:/path/dispatch.key` |
+| Worker | The same, and `ACTIONS_GRANT_KEY_REF=file:/path/grant.key`. Give the grant key to workers only |
+| Runner | `RUNNER_CONTROL_PLANE_URL=https://...`, `RUNNER_PRIVATE_KEY_REF=file:/path/runner.key`, `RUNNER_DISPATCH_PUBLIC_KEY`, `RUNNER_GRANT_PUBLIC_KEY` (or each with `_FILE`) |
+
+A runner that was not given `RUNNER_ID` is recognised by its key. That is enough while one deployment serves one tenant.
+
+**The runner's own limits.** Set where the runner runs; nothing in the control plane can change them.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `RUNNER_MAX_TIER` | `T0` | The highest tier it will carry out. `T0` is reads only |
+| `RUNNER_GRANT_PUBLIC_KEY` | empty | Without it the runner refuses every write |
+| `RUNNER_TARGETS_FILE` | none | JSON: connector, then allow list setting, then patterns. A write is made only to a target listed here |
+| `RUNNER_CAPABILITIES` | `*` | Patterns of capability ids it will carry out |
+| `RUNNER_SECRET_REF_PREFIXES` | empty | Where a credential reference sent by the control plane may point. Empty: none is followed |
+| `RUNNER_CONNECTIONS_FILE` | none | Connections the runner holds itself. For a connector listed here, what the control plane sends is ignored |
+| `RUNNER_KILL_SWITCH_FILE` | none | While the file exists the runner makes no write |
+
+A refusal by the runner reaches the run as the step's error text, for example *this runner has no list of its own for 'force_start_jobs', so it makes no write to any target*. Nothing was changed.
+
 ## 3. Health and monitoring
 
 | Route | Use | Needs |
@@ -264,7 +307,9 @@ The live run needs a source checkout: the `evals/` directory is not in the conta
 | `GET /metrics` | Prometheus text format, for this process | `metrics.read` |
 | `GET /api/audit/verify` | Recompute the audit chain | `audit.read` |
 
-Logs are JSON on standard output. Counters worth alerting on: `http.denied{reason=...}`, `auth.login_failed`, `runs.resumed`, `jobs.infrastructure_errors`.
+Logs are JSON on standard output. Counters worth alerting on: `http.denied{reason=...}`, `auth.login_failed`, `runs.resumed`, `jobs.infrastructure_errors`, and with a runner `runner.calls_unanswered` and `actions.outcome_unknown`.
+
+A worker and a runner have no listener and so no health route. A runner is healthy when the control plane has heard from it in the last 90 seconds: `l1-agent runner list`, `GET /api/runners`, or the Set-up page.
 
 Queue state is in the `jobs` table: `queued`, `running` (with `locked_until`), `done`, `dead`. A `dead` job's run was recorded as `needs_human`.
 
@@ -304,7 +349,7 @@ After restoring a database backup, run `audit verify --checkpoints` against the 
 | Approve returns `403` "author of the SOP cannot approve a T2 action" | Working as intended | Another approver decides. |
 | Approve returns `409` | Already decided, expired, or not the action that was shown | Reload the page. |
 | Run ends `escalated` with "ran but was not verified" | The job was started and did not reach `SU` in the wait the SOP allows, or failed again | The change record is closed as unsuccessful. L2 has both status reads. |
-| Run ends `needs_human` with "Whether it happened is not known" | A worker died between sending the write and recording its result | Check the scheduler. The agent did not send it again. |
+| Run ends `needs_human` with "Whether it happened is not known" | A worker died between sending the write and recording its result, or a runner took the write and never answered | Check the scheduler. The agent did not send it again. |
 | `change.close_failed` in the audit log | The instance refused a state change when closing the change. The entry names the condition the instance says is unmet, most often "Assignment group is not empty" | Set `SERVICENOW_CHANGE_ASSIGNMENT_GROUP` or add a group to the template. Close this change by hand. The run's outcome is unaffected. |
 | Every run ends `escalated` with "No applicable SOP found" | No SOP is published for this tenant | `l1-agent sop list`. Drafts and versions in review are never matched. |
 | Run ends `needs_human` with "Adapter '...' not configured" | The SOP calls a connector this tenant has no connection for | `l1-agent connection set`, or `GET /api/connectors` to see the state and any error. |
@@ -322,6 +367,10 @@ After restoring a database backup, run `audit verify --checkpoints` against the 
 | Many `invalid` outcomes in `l1-agent model usage` | The model's answers do not fit the schema, or are cut short. A model that reasons before answering needs a large output allowance | Run `python -m evals.run --live`. Tell us the model id. |
 | Many `error` outcomes | The provider is failing or timing out | Check the provider. Raise `LLM_TIMEOUT_SECONDS` if it is slow. |
 | Run ends `needs_human` after an adapter error | Target system down, or its circuit breaker is open | Check the target; the breaker resets after `AGENT_CB_RESET_SECONDS`. |
+| A step ends "No runner took the call in time" | `RUNNER_MODE=remote` and no runner is connected | `l1-agent runner list` shows when each last asked for work. The runner's own log says why it cannot reach the control plane: a 401 means its key is not enrolled, was revoked, or its clock is more than a minute out. The run has gone to a person and nothing was changed. |
+| A step is refused with "this runner ..." | The runner's own limits (section 2.8) | Raise `RUNNER_MAX_TIER`, list the target in `RUNNER_TARGETS_FILE`, or add the reference's prefix to `RUNNER_SECRET_REF_PREFIXES`, where the runner runs. |
+| A write ends "The grant was not issued by the policy engine" | The runner's `RUNNER_GRANT_PUBLIC_KEY` is not the public half of the workers' grant key, or a worker has no `ACTIONS_GRANT_KEY_REF` | `GET /api/runners` shows the public keys a runner should be given. Nothing was changed. |
+| The webhook returns `503` | No usable ServiceNow connection | Section 2.3. `l1-agent onboarding` says why. |
 
 ## 6. Data the service keeps
 
@@ -343,7 +392,7 @@ Everything is in PostgreSQL.
 | `model_policies` | Whether the tenant uses a model, with which providers, tasks and budgets | |
 | `model_calls` | Each model request: task, model id, prompt version, digests, token counts, cost, outcome | No prompt or answer text. Cannot be changed or deleted. Grows with use; no pruning yet. |
 
-Back up the database as a whole. There are no files to back up.
+Back up the database as a whole. There are no files to back up. The procedure, a restore drill and the export for leaving with your data are in [docs/operator-guide.md](docs/operator-guide.md), section 7.
 
 ## 7. Known operational limits
 
@@ -361,4 +410,8 @@ Back up the database as a whole. There are no files to back up.
 - One model provider per deployment.
 - The daily model budget is checked without a lock: several workers at once can pass it by the size of the requests in flight.
 - The webhook secret is shared and is rotated by changing the setting and restarting.
-- The service does not serve TLS.
+- The service serves TLS only if it is given a certificate (`AGENT_TLS_CERT_FILE`, `AGENT_TLS_KEY_FILE`).
+- With a runner: every runner sees every call for its tenant; a call waits at most its capability's timeout plus 20 seconds for a runner and is then withdrawn; the signing keys are read at start-up, so replacing one needs a restart of everything that holds either half.
+- A step that could not reach a runner ends as an error and the run goes to a person. It is not retried.
+- A write the runner took and never answered is not sent again. The target is read; if it does not show the result, the action is recorded as not known and the run goes to a person.
+- Nothing is ever deleted, except rows of the two queues.

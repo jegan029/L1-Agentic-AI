@@ -109,3 +109,11 @@ Two additions the decision did not foresee:
 - **One connection per connector per tenant.** `connections` is unique on tenant and connector. Two instances of the same system for one tenant need a connection name in the key; that is a migration, deferred until someone needs it.
 
 Defects found in the original adapters while writing the contract tests, and fixed: Dynatrace host health read only the first page of hosts and asked about problems on only the first 20, so a large group could be reported healthy with a problem on an unread host; a Dynatrace host name was placed inside a quoted selector unescaped; an IR360 queue or queue manager name was placed in a URL path unchecked; the Autosys status was taken from the last column of `autorep` output, which on real output is the exit code column.
+
+## After Phase 6
+
+- Entry points and a signed list of permitted connector versions, which the table above moved to Phase 6, were not built. Only the first-party list is loaded, in the control plane and in the runner, and that is now the position rather than a postponement: allowing third-party connectors is a decision that needs its own ADR.
+- Named mainframe navigation scripts were not built. There is still one script per connection.
+- The mainframe and browser connectors ship as previews, read only (decision D7). A test pins that a preview connector declares no write.
+- With a runner, a connector object is built in two places from the same connection: in the control plane, to check parameters and allow lists before a call is queued and never to make one, and in the runner, to make it ([ADR 0010](0010-runner-protocol.md)).
+- A connection test is made from wherever the calls will be made: the runner for operations connectors, the control plane for the ITSM connection and the SOP sources.

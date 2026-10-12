@@ -1,8 +1,8 @@
-# L1 Engineer Agent: architecture as built
+# L1 and L2 AI-Ops: architecture as built
 
-This describes the code as it stands after Phase 3 of the [delivery plan](docs/delivery-plan.md). Where the product is going is in [docs/target-architecture.md](docs/target-architecture.md); the reasons for the main choices are in [docs/adr/](docs/adr/).
+This describes the code as it stands after Phase 6 of the [delivery plan](docs/delivery-plan.md). Where the product is going is in [docs/target-architecture.md](docs/target-architecture.md); the reasons for the main choices are in [docs/adr/](docs/adr/).
 
-What has run against a real system: the ServiceNow connector with basic authentication, including paging, the claim step and hand-over to another group (one developer instance), the model client (one hosted provider), the database layer (PostgreSQL 16 in a container) and the Git source (local repositories). ServiceNow OAuth, and every operations connector, have only run against mocks and against fixtures written by hand from vendor documentation. Sign-in has only run against identity providers faked in the tests.
+What has run against a real system: the ServiceNow connector with basic authentication, including paging, the claim step and hand-over to another group (one developer instance), the model client (one hosted provider), the database layer (PostgreSQL 16 in a container) and the Git source (local repositories). ServiceNow OAuth, and every operations connector, have only run against mocks and against fixtures written by hand from vendor documentation. Sign-in has only run against identity providers faked in the tests. The runner has only talked to a control plane in the same process, on the same machine (the compose demo) or in one local Kubernetes cluster (kind), where the Helm chart was installed.
 
 ## 1. Shape
 
@@ -20,16 +20,16 @@ ServiceNow ◀──poll (New, one group)── poller ┤
                                          worker(s)
                          IncidentProcessor ─▶ SOPMatcher ─▶ SOPExecutor
                                              │                 │
-                                journal: SOP choice and        └─▶ adapters (read only)
-                                each step result, committed
-                                with its audit event
+                                journal: SOP choice and        └─▶ connectors, called in the worker,
+                                each step result, committed        or, with RUNNER_MODE=remote, queued
+                                with its audit event               for a runner (section 13)
                                              ▼
                          outcome ─▶ ServiceNow update ─▶ run record + audit event
                                              │
                     events table ─▶ server-sent events ─▶ React dashboard
 ```
 
-Processes: `l1-agent serve` runs the HTTP listener, the poller and, by default, workers in the same process. `l1-agent worker` runs workers alone, so they can be scaled and restarted separately. All state is in the database; a process can be killed at any point.
+Processes: `l1-agent serve` runs the HTTP listener, the poller and, by default, workers in the same process. `l1-agent worker` runs workers alone, so they can be scaled and restarted separately. `l1-agent runner run` is the runner: no database, no listener. All state is in the database; a process can be killed at any point.
 
 ## 2. One engine
 
@@ -106,7 +106,7 @@ Three families share one set of rules: ITSM (ServiceNow), knowledge (ServiceNow 
 - **One way in.** `Connector.invoke` checks that the capability is declared, that a step context was supplied, that the parameters fit the schema and that every allow-listed parameter has a non-empty list to be checked against, before any connector code runs. A write capability is refused unless the call carries a grant and the connector has been given a verifier to redeem it with (section 11). One write capability is declared: `autosys.job.force_start`.
 - **Credentials are references.** A connection holds `vault:`, `aws:`, `file:` or `env:` references (`connectors/sdk/secrets.py`). Values are read when a call needs them, cached for 30 seconds, and never written to the database, the environment or a log. When a call fails and the backend now holds a different value, the connector reads it and repeats the call once, so a rotation takes effect without a restart.
 - **HTTP.** `connectors/sdk/http.py` is used by the ServiceNow connectors: TLS verification on and https required outside demo mode, a timeout on every call, one re-read of the credential on `401`, and retries on `429`, `502`, `503` and `504` for reads only.
-- **Per tenant.** `connectors/hub.py` builds each tenant's operations connectors from its `connections` rows, falling back to the deployment's environment settings, and re-reads them every few seconds. One bad connection does not take the others down. The ServiceNow ITSM connection and the identity provider are still per deployment.
+- **Per tenant.** `connectors/hub.py` builds each tenant's operations connectors from its `connections` rows, falling back to the deployment's environment settings, and re-reads them every few seconds. One bad connection does not take the others down. The ServiceNow ITSM connection can also be a stored connection (`connectors/itsm/handle.py`): it wins over the environment's, is re-read every few seconds in every process, and a broken one does not fall back. With no ITSM connection the service starts and takes no incident. The identity provider is still per deployment.
 - **The seven operations connectors** are the original adapters behind manifests (`connectors/ops/` over `adapters/`). Their own HTTP and parsing code is unchanged except for the defects found while writing the contract tests: Dynatrace host checks now follow paging and ask about every host, not the first 20; host names cannot break out of a Dynatrace selector; queue names cannot change the IR360 request path; and the Autosys status is read from the status column of real `autorep` output.
 - **ServiceNow.** Basic or OAuth 2.0 authentication, paged lists, and a claim step: the agent assigns the ticket to itself before working it and leaves alone a ticket someone else holds. If the claim cannot be attempted at all, the job is retried later; nothing is guessed. Handing a claimed ticket to another group clears the assignment in the same update, which a stock instance requires. The end of a paged list is taken from `X-Total-Count`, because a page can come back short or empty when access controls hide rows.
 
@@ -190,29 +190,52 @@ ModelGateway.ask (ai/gateway.py)                 the only caller of a provider
 
 The model path (policy, redaction, budgets, the four advisor tasks) has run once against one hosted model through the OpenAI-compatible client; the Anthropic client has only run against fixtures written from its documentation. Redaction is pattern matching and does not find a name in running text or a secret with no recognisable shape.
 
-## 13. Other safeguards
+## 13. The runner ([ADR 0010](docs/adr/0010-runner-protocol.md))
+
+With `RUNNER_MODE=remote` the control plane makes no operations connector call. The hub hands the engine a `RemoteConnectorSet` (`runner/dispatch.py`), which looks like a `ConnectorSet`: the engine and the action pipeline do not know the difference. Its `invoke` checks the parameters against the manifest and the tenant's allow lists, signs the call, puts it in `runner_calls` and waits.
+
+```
+worker ── signed call ──▶ runner_calls ◀── claim (held open) ── runner ── Connector.invoke ──▶ target
+   ▲                           │                                  │
+   └──────── result ◀──────────┴────────── result ◀───────────────┘
+```
+
+- **The runner** (`runner/agent.py`) has no database and no listener. It asks for calls over outbound HTTPS, signs every request with its own key, and returns each result. A tenant administrator enrols its public key; revoking it takes effect on its next request.
+- **Three key pairs** (`runner/keys.py`), all Ed25519, each signature bound to a purpose. The dispatch key signs calls and is held by the API and the workers. The grant key signs grants for writes and is held by the workers only. The runner holds its own key and the public halves of the other two.
+- **What the runner checks**, in order: the control plane's signature, the tenant, the expiry and that the call is new; its own ceiling (`runner/ceiling.py`): the capability, the tier, and for a write its own kill switch and its own list of targets, and where a credential reference may point; then everything `Connector.invoke` checks, which for a write includes a grant it can verify and cannot make.
+- **Credentials** for operations connectors are resolved in the runner at the moment of the call and are never sent to the control plane.
+- **No answer.** A call nobody took is withdrawn and the step is an error. A write that a runner took and never answered raises `OutcomeUnknown`; the pipeline reads the target, as after a crash, and never sends the write again.
+- **Kill switches** are read from the database again when a runner asks for work, so a write queued before a switch was engaged is not handed out.
+
+The ITSM connection and the SOP sources are still called from the control plane. There is no mutual TLS; a control plane that had been taken over could still ask a runner for reads within the runner's ceiling. Both are in ADR 0010.
+
+**Set-up** (`service/onboarding.py`) computes a tenant's steps from what exists: role mappings, the ITSM connection, enrolled and connected runners, connections, published SOPs, the policy, runs. Nothing is stored, so a step cannot stay "done" after the thing it names is removed.
+
+**Packaging.** `Dockerfile` builds the control plane, the runner (the same code with another command), the dashboard (nginx) and the one-shot demo, from base images pinned by digest and Python packages pinned by hash. `deploy/helm/` is the chart: an install job (migrations, tenant, runner enrolment), the API, workers, the runner, the dashboard, network policies, and every container non-root on a read-only root filesystem. `deploy/compose/` is the same shape on one machine, as a demo.
+
+## 14. Other safeguards
 
 - **Model boundary.** Everything sent to a model is redacted, length-limited and delimited. Model output is never logged, never stored (only its digest), and only ever read as one of four schema-checked answers.
 - **Logs and secrets.** Operational logs are JSON with pattern-based redaction. Secrets fetched from Vault or AWS are passed to the settings object and are not written to the process environment.
 
-## 14. What this design does not have yet
+## 15. What this design does not have
 
-| Gap | Consequence today | Phase |
-|---|---|---|
-| ITSM and identity provider are per deployment | One process serves one tenant's ServiceNow and identity provider. Operations connectors are per tenant. | 6 |
-| Connectors still run through the original adapters | Read retries are not limited to the error classes a capability lists as retryable. Writes are never retried. | 6 |
-| Connectors are not loaded through entry points, and there is no signed list of permitted connector versions | Only the first-party list in code is loaded. | 6 |
-| The engine role is not restricted to the published view | The view is the only path the engine code uses; the application role can still read the version table. | 6 |
-| Confluence and SharePoint sources; the `lookup` parameter source | Knowledge comes from a ServiceNow knowledge base or Git. | 6 |
-| One model provider per deployment; no store of prompts and answers; redaction by pattern only | A tenant's list allows or refuses the deployment's provider. Only digests of model traffic are kept. Names in running text are sent. | 6 |
-| No screen for connections | Command line and API only. | 6 |
-| The browser connector uses a local Chrome | Marked preview and not in the default image. | 6 |
-| One write capability, verified only against a mock | The Autosys force start has not run against a scheduler. The Autosys REST API is not implemented. | needs a test environment |
-| ServiceNow change and approval calls are partly verified | Open, note, ask and close have run against one developer instance; reading a person's decision has not. An existing normal change on the ticket is not accepted; approvals are polled, with no signed webhook. | needs an instance |
-| A grant is checked in the process that minted it | Splitting the runner out needs an asymmetric key pair. | 6 |
-| Policy rules have no editing screen; no per-run stop | Rules are JSON through the API or CLI. A waiting run is stopped by the kill switch or by its request expiring. | 6 |
-| Runner not split out | Adapters run in the worker process, not behind the outbound-only runner protocol of ADR 0003. | 6 |
-| Audit export, retention, legal hold, evidence store | The chain stays in the database; checkpoints are stored by hand. | later phases |
-| Rate limit is per process | Behind several replicas the limit multiplies. | 6 |
-| A crash during the final ServiceNow update | The closing work notes can be posted twice. Not fixed in Phase 4 either. | 6 |
-| No model evaluation suite | Redaction and injection resistance are unit tested, not measured on a corpus. | 5 |
+| Gap | Consequence |
+|---|---|
+| The identity provider is per deployment | One release serves one tenant's identity provider. The ITSM connection and the connectors are per tenant. |
+| Connectors still run through the original adapters | Read retries are not limited to the error classes a capability lists as retryable. Writes are never retried. |
+| No plug-in mechanism for connectors | Only the first-party list in code is loaded, in the control plane and in the runner. |
+| The engine role is not restricted to the published view | The view is the only path the engine code uses; the application role can still read the version table. |
+| Confluence and SharePoint sources; the `lookup` parameter source | Knowledge comes from a ServiceNow knowledge base or Git. |
+| One model provider per deployment; no store of prompts and answers; redaction by pattern only | A tenant's list allows or refuses the deployment's provider. Only digests of model traffic are kept. Names in running text are sent. |
+| The browser connector uses a local Chrome | Marked preview and not in the image. |
+| One write capability, verified only against a mock | The Autosys force start has not run against a scheduler. The Autosys REST API is not implemented. |
+| ServiceNow change and approval calls are partly verified | Open, note, ask and close have run against one developer instance; reading a person's decision has not. An existing normal change on the ticket is not accepted; approvals are polled, with no signed webhook. |
+| No mutual TLS between runner and control plane; no key rotation | The runner checks the server's certificate and signs each request. Replacing a key means replacing a file and restarting. |
+| The ITSM connection and the SOP sources are called from the control plane | They are not behind the runner. |
+| Results travel to the control plane | Evidence is in the run record in the database. There is no store that keeps it at the customer's site with digests only. |
+| Policy rules and model policy rules have no editing screen; no per-run stop | Rules are JSON through the API or CLI. A waiting run is stopped by the kill switch or by its request expiring. |
+| Audit export, retention, legal hold | The chain stays in the database; checkpoints are stored by hand; nothing is ever deleted. |
+| Rate limit is per process and per client address | Behind several replicas the limit multiplies, and behind a proxy every caller shares one count. |
+| A crash during the final ServiceNow update | The closing work notes can be posted twice. |
+| No health route for a worker or a runner | A runner's health is whether the control plane has heard from it. |

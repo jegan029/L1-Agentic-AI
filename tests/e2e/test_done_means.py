@@ -299,7 +299,11 @@ async def test_from_an_empty_tenant_to_a_first_run_in_shadow(deployment, tmp_pat
             "PUT",
             "/api/connectors/splunk/connection",
             {
-                "config": {"base_url": "https://splunk.internal.example"},
+                "config": {
+                    "base_url": "https://splunk.internal.example",
+                    # Without an index on the allow list no search may be run.
+                    "allowed_indexes": ["batch_logs"],
+                },
                 "secrets": {"token": prefix + "splunk-token"},
             },
         )

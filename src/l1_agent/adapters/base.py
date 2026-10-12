@@ -16,6 +16,11 @@ class AdapterResult:
     raw_output: str = ""
     error: str = ""
     evidence_snippet: str = ""
+    # A failure that trying again cannot help: the request was refused, by a guard
+    # or by the target. The engine does not retry it and hands the run to a person.
+    escalate: bool = False
+    # What was asked, for the step's audit record. Never evidence and never a credential.
+    audit: Dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         if self.success:

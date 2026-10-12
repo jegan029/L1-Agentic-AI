@@ -551,7 +551,9 @@ class SOPExecutor:
 
         `name` is a legacy step type or a capability id.
         Returns (StepStatus, AdapterResult or None, tool name, error text).
-        ERROR means the engine could not make the call at all.
+        ERROR means the engine could not make the call at all. ESCALATED means
+        the connector refused the request (a guard, or access denied): it is not
+        tried again and the run goes to a person.
         """
         capability_id = STEP_CAPABILITIES.get(name, name)
         connector_id = default_registry().owner(capability_id)
@@ -573,6 +575,10 @@ class SOPExecutor:
 
         async def _run() -> AdapterResult:
             result = await run.connectors.invoke(capability_id, parameters, context)
+            if not result.success and result.escalate:
+                # Refused, not broken: returned as it is, so it is neither retried
+                # nor counted against the target by the circuit breaker.
+                return result
             if not result.success:
                 # Raise so retry_with_backoff can see the failure and retry.
                 raise _AdapterFailure(result)
@@ -594,6 +600,8 @@ class SOPExecutor:
             return StepStatus.ERROR, None, tool, str(exc)
         except Exception as exc:
             return StepStatus.FAIL, None, tool, f"All retries exhausted: {exc}"
+        if not adapter_result.success:
+            return StepStatus.ESCALATED, adapter_result, tool, adapter_result.error
         return StepStatus.SUCCESS, adapter_result, tool, ""
 
     async def _handle_adapter_step(self, step: SOPStep, run: Optional["_Run"]) -> StepResult:
@@ -616,6 +624,7 @@ class SOPExecutor:
             data=dict(adapter_result.data)
             if adapter_result and status == StepStatus.SUCCESS
             else {},
+            audit=dict(adapter_result.audit) if adapter_result else {},
         )
 
     async def _handle_action_step(
@@ -682,6 +691,18 @@ class SOPExecutor:
             )
             if status == StepStatus.ERROR:
                 return self._error(step, error, tool)
+            if status == StepStatus.ESCALATED:
+                # The check was refused. Waiting and asking again cannot change that.
+                return StepResult(
+                    step_id=step.step_id,
+                    step_type=step.step_type,
+                    status=StepStatus.ESCALATED,
+                    error_message=error,
+                    tool_called=tool,
+                    input_summary=f"assert {assertion}",
+                    output_summary=f"Not verified: {error}"[:200],
+                    audit=dict(adapter_result.audit) if adapter_result else {},
+                )
             if status != StepStatus.SUCCESS or adapter_result is None:
                 last_error = f"check failed: {error}"
                 continue

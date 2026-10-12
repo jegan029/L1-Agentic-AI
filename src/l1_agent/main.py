@@ -20,7 +20,7 @@ from src.l1_agent.auth.oidc import OidcClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
 from src.l1_agent.config.settings import ConfigError, Settings
 from src.l1_agent.connectors.catalog import connectors_for_adapters
-from src.l1_agent.connectors.hub import ConnectorHub, servicenow_secrets
+from src.l1_agent.connectors.hub import ConnectorHub, demo_connectors, servicenow_secrets
 from src.l1_agent.connectors.itsm.handle import ItsmHandle, check_servicenow_config
 from src.l1_agent.connectors.sdk.secrets import SecretResolver
 from src.l1_agent.db.engine import Database
@@ -171,7 +171,9 @@ class L1AgentService:
             self._resolver,
             # In demo mode the mocks stand in for the targets. With a runner they are the
             # runner's to hold (RUNNER_MOCK_CONNECTORS), and connections are entered as usual.
-            fixed=connectors_for_adapters(build_mock_adapters())
+            fixed=demo_connectors(
+                settings, self._resolver, connectors_for_adapters(build_mock_adapters())
+            )
             if demo and dispatcher is None
             else None,
             dispatcher=dispatcher,

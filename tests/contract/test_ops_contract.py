@@ -46,13 +46,15 @@ def no_wait(monkeypatch):
     async def instant(_seconds):
         return None
 
-    monkeypatch.setattr("src.l1_agent.adapters.splunk_adapter.asyncio.sleep", instant)
+    monkeypatch.setattr("src.l1_agent.adapters.splunk.rest_backend.asyncio.sleep", instant)
 
 
 class TestSplunk:
     def build(self, url, tmp_path, token="sp-one"):
         secrets, _ = secrets_in(tmp_path, token=token)
-        return SplunkConnector({"base_url": url}, secrets, demo_mode=True)
+        return SplunkConnector(
+            {"base_url": url, "allowed_indexes": ["app_logs"]}, secrets, demo_mode=True
+        )
 
     async def test_search_creates_a_job_waits_for_it_and_reads_the_results(self, tmp_path, no_wait):
         async with Replay.from_file("splunk/search_ok.json") as server:
@@ -84,19 +86,62 @@ class TestSplunk:
             server.assert_complete()  # one request: the credential had not changed
         assert not result.success and "401" in result.error
         assert "sp-one" not in result.error
+        assert result.escalate and result.audit["outcome"] == "access_denied"
 
     async def test_a_search_splunk_rejects_is_a_failed_check(self, tmp_path):
+        # A search the guard passes and Splunk still refuses.
         async with Replay.from_file("splunk/bad_search.json") as server:
             result = await self.build(server.url, tmp_path).invoke(
-                "splunk.search", {"query": "| foo"}, CTX
+                "splunk.search", {"query": "index=app_logs | eval x=("}, CTX
             )
+            server.assert_complete()
         assert not result.success and "400" in result.error
+        assert result.escalate and result.audit["outcome"] == "refused_by_splunk"
+
+    async def test_a_search_the_guard_refuses_never_reaches_splunk(self, tmp_path):
+        async with Replay([]) as server:
+            splunk = self.build(server.url, tmp_path)
+            for query in ("| foo", "index=_internal", "index=app_logs | delete"):
+                result = await splunk.invoke("splunk.search", {"query": query}, CTX)
+                assert not result.success and result.escalate
+                assert result.audit["outcome"] == "rejected"
+            server.assert_complete()
+            assert server.requests == []
+
+    async def test_a_search_that_outlives_the_timeout_is_cancelled(self, tmp_path, no_wait):
+        secrets, _ = secrets_in(tmp_path, token="sp-one")
+        splunk = None
+        async with Replay.from_file("splunk/search_timeout.json") as server:
+            splunk = SplunkConnector(
+                {
+                    "base_url": server.url,
+                    "allowed_indexes": ["app_logs"],
+                    "search_timeout_seconds": 1,
+                },
+                secrets,
+                demo_mode=True,
+            )
+            result = await splunk.invoke("splunk.search", {"query": "index=app_logs ERROR"}, CTX)
+            server.assert_complete()
+            await splunk.close()
+        assert not result.success and not result.escalate  # the engine may try again
+        assert result.audit["outcome"] == "unavailable"
+
+    async def test_a_server_error_may_be_tried_again(self, tmp_path):
+        async with Replay.from_file("splunk/server_error.json") as server:
+            result = await self.build(server.url, tmp_path).invoke(
+                "splunk.search", {"query": "index=app_logs ERROR"}, CTX
+            )
+            server.assert_complete()
+        assert not result.success and "503" in result.error and not result.escalate
 
     async def test_a_rotated_token_is_picked_up_without_a_restart(self, tmp_path, no_wait):
         """Phase 3 exit criterion 5, for a ported adapter."""
         secrets, resolver = secrets_in(tmp_path, token="sp-one")
         async with Replay.from_file("splunk/token_rotated.json") as server:
-            splunk = SplunkConnector({"base_url": server.url}, secrets, demo_mode=True)
+            splunk = SplunkConnector(
+                {"base_url": server.url, "allowed_indexes": ["app_logs"]}, secrets, demo_mode=True
+            )
             await splunk.secret("token")  # the connector has been running with sp-one
             (tmp_path / "token").write_text("sp-two", encoding="utf-8")  # rotated in the backend
             result = await splunk.invoke("splunk.search", {"query": "index=app_logs ERROR"}, CTX)

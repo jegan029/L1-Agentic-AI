@@ -26,6 +26,29 @@ def _action_settings(get) -> "ActionSettings":
     )
 
 
+# The adapters LIVE_ADAPTERS may name. Only Splunk has run against a real system.
+LIVE_ADAPTER_NAMES = ("splunk",)
+
+
+def _splunk_backend(value: str) -> str:
+    value = value.strip().lower()
+    if value not in ("", "mcp", "rest", "mock"):
+        raise ConfigError("SPLUNK_BACKEND must be mcp, rest or mock")
+    return value
+
+
+def _live_adapters(value: str, demo_mode: bool) -> tuple:
+    names = tuple(name.lower() for name in _csv(value))
+    if names and not demo_mode:
+        raise ConfigError(
+            "LIVE_ADAPTERS is for demo mode. Outside it every connector is live already"
+        )
+    unknown = [name for name in names if name not in LIVE_ADAPTER_NAMES]
+    if unknown:
+        raise ConfigError(f"LIVE_ADAPTERS may name: {', '.join(LIVE_ADAPTER_NAMES)}")
+    return names
+
+
 def _csv(val: str) -> List[str]:
     return [v.strip() for v in val.split(",") if v.strip()]
 
@@ -127,6 +150,17 @@ class SplunkSettings:
     token: str = ""
     verify_ssl: bool = True
     search_timeout_seconds: int = 120
+    # mcp (the Splunk MCP Server app), rest (the search API) or mock. Empty: rest when
+    # SPLUNK_BASE_URL is set, otherwise mcp when SPLUNK_MCP_URL is.
+    backend: str = ""
+    mcp_url: str = ""
+    mcp_search_tool: str = "splunk_run_query"
+    # The MCP token is never held here: it is read through the reference to SPLUNK_MCP_AUTH.
+    ca_bundle: str = ""
+    # What the guard allows. No index listed means no search may be run.
+    allowed_indexes: tuple = ()
+    max_lookback: str = "24h"
+    max_results: int = 100
 
 
 @dataclass(frozen=True)
@@ -252,6 +286,8 @@ class AgentSettings:
     circuit_breaker_failure_threshold: int = 5
     circuit_breaker_reset_seconds: int = 60
     demo_mode: bool = False
+    # Demo mode only: adapters that talk to the real system while the rest stay mocks.
+    live_adapters: tuple = ()
     # Demo mode starts with sample SOPs published and the tenant set to automatic.
     # False leaves the demo tenant empty, to walk through set-up from the beginning.
     demo_seed: bool = True
@@ -454,7 +490,16 @@ class Settings:
                 base_url=get("SPLUNK_BASE_URL", ""),
                 token=get("SPLUNK_TOKEN", ""),
                 verify_ssl=demo_only_off("SPLUNK_VERIFY_SSL"),
-                search_timeout_seconds=int(get("SPLUNK_SEARCH_TIMEOUT", "120")),
+                search_timeout_seconds=int(
+                    get("SPLUNK_TIMEOUT_SECONDS") or get("SPLUNK_SEARCH_TIMEOUT", "120")
+                ),
+                backend=_splunk_backend(get("SPLUNK_BACKEND", "")),
+                mcp_url=get("SPLUNK_MCP_URL", ""),
+                mcp_search_tool=get("SPLUNK_MCP_SEARCH_TOOL", "splunk_run_query"),
+                ca_bundle=get("SPLUNK_CA_BUNDLE", ""),
+                allowed_indexes=tuple(_csv(get("SPLUNK_ALLOWED_INDEXES", ""))),
+                max_lookback=get("SPLUNK_MAX_LOOKBACK", "24h"),
+                max_results=int(get("SPLUNK_MAX_RESULTS", "100")),
             ),
             ir360=IR360Settings(
                 base_url=get("IR360_BASE_URL", ""),
@@ -519,6 +564,7 @@ class Settings:
                 circuit_breaker_failure_threshold=int(get("AGENT_CB_FAILURE_THRESHOLD", "5")),
                 circuit_breaker_reset_seconds=int(get("AGENT_CB_RESET_SECONDS", "60")),
                 demo_mode=demo_mode,
+                live_adapters=_live_adapters(get("LIVE_ADAPTERS", ""), demo_mode),
                 demo_seed=get("AGENT_DEMO_SEED", "true").lower() == "true",
                 log_level=get("AGENT_LOG_LEVEL", "INFO"),
                 webhook_host=get("AGENT_WEBHOOK_HOST", "127.0.0.1"),

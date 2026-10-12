@@ -9,7 +9,8 @@
           "Authorization": "Bearer sp-one"
         },
         "form": {
-          "search": "search index=app_logs ERROR",
+          "search": "search index=app_logs ERROR | head 100",
+          "max_count": "100",
           "output_mode": "json",
           "earliest_time": "-1h",
           "latest_time": "now"

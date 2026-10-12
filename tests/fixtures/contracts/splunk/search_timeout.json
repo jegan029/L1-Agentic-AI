@@ -1,0 +1,61 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs",
+        "form": {
+          "search": "search index=app_logs ERROR | head 100"
+        }
+      },
+      "response": {
+        "status": 201,
+        "json": {
+          "sid": "1700000000.77"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/1700000000.77"
+      },
+      "response": {
+        "json": {
+          "entry": [
+            {
+              "name": "search",
+              "content": {
+                "isDone": false,
+                "dispatchState": "RUNNING"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs/1700000000.77/control",
+        "headers": {
+          "Authorization": "Bearer sp-one"
+        },
+        "form": {
+          "action": "cancel"
+        }
+      },
+      "response": {
+        "json": {
+          "messages": [
+            {
+              "type": "INFO",
+              "text": "Search job cancelled."
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

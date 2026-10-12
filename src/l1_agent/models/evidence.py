@@ -35,6 +35,9 @@ class StepResult:
     duration_ms: float = 0.0
     # Structured adapter output, used by DECISION and VERIFY expressions.
     data: Dict[str, Any] = field(default_factory=dict)
+    # What the connector reports it asked (for a search: backend, final query, time
+    # range, result count, duration, outcome). Never evidence and never a credential.
+    audit: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Everything, for the run journal. `from_dict` restores an equal result."""
@@ -59,6 +62,7 @@ class StepResult:
             "error_message": self.error_message,
             "timestamp": self.timestamp,
             "duration_ms": self.duration_ms,
+            "audit": dict(self.audit),
         }
 
 

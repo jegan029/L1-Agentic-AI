@@ -1,0 +1,22 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs"
+      },
+      "response": {
+        "status": 503,
+        "json": {
+          "messages": [
+            {
+              "type": "ERROR",
+              "text": "Search head is not ready."
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

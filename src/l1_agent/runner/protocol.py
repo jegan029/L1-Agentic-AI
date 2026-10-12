@@ -50,6 +50,8 @@ MAX_RAW_OUTPUT = 64 * 1024
 MAX_EVIDENCE = 16 * 1024
 MAX_DATA = 96 * 1024
 MAX_ERROR = 2000
+MAX_AUDIT_KEYS = 16
+MAX_AUDIT_VALUE = 4200  # the longest search the Splunk guard passes, with its limit appended
 
 
 def canonical(value: Any) -> str:
@@ -154,7 +156,22 @@ def result_to_wire(result: AdapterResult) -> Dict[str, Any]:
         "raw_output": str(result.raw_output or "")[:MAX_RAW_OUTPUT],
         "error": str(result.error or "")[:MAX_ERROR],
         "evidence_snippet": str(result.evidence_snippet or "")[:MAX_EVIDENCE],
+        "escalate": bool(result.escalate),
+        "audit": _audit_to_wire(result.audit),
     }
+
+
+def _audit_to_wire(audit: Any) -> Dict[str, Any]:
+    """A connector's audit record: a flat object of short scalars, and nothing else."""
+    kept: Dict[str, Any] = {}
+    for key, value in audit.items() if isinstance(audit, dict) else ():
+        if not isinstance(key, str) or len(kept) >= MAX_AUDIT_KEYS:
+            continue
+        if isinstance(value, str):
+            kept[key[:64]] = value[:MAX_AUDIT_VALUE]
+        elif isinstance(value, (bool, int, float)) or value is None:
+            kept[key[:64]] = value
+    return kept
 
 
 def result_from_wire(data: Any) -> AdapterResult:
@@ -168,6 +185,9 @@ def result_from_wire(data: Any) -> AdapterResult:
         raw_output=str(data.get("raw_output") or "")[:MAX_RAW_OUTPUT],
         error=str(data.get("error") or "")[:MAX_ERROR],
         evidence_snippet=str(data.get("evidence_snippet") or "")[:MAX_EVIDENCE],
+        # Only ever narrows what the engine does: no retry, and the run goes to a person.
+        escalate=data.get("escalate") is True and not data["success"],
+        audit=_audit_to_wire(data.get("audit")),
     )
 
 

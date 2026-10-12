@@ -32,6 +32,7 @@ _SECRET_MAPPINGS: List[Dict[str, str]] = [
     {"env_key": "SERVICENOW_PASSWORD", "vault_key": "servicenow/password"},
     {"env_key": "SERVICENOW_OAUTH_CLIENT_SECRET", "vault_key": "servicenow/oauth_client_secret"},
     {"env_key": "SPLUNK_TOKEN", "vault_key": "splunk/token"},
+    {"env_key": "SPLUNK_MCP_AUTH", "vault_key": "splunk/mcp_auth"},
     {"env_key": "IR360_API_KEY", "vault_key": "ir360/api_key"},
     {"env_key": "DYNATRACE_API_TOKEN", "vault_key": "dynatrace/api_token"},
     {"env_key": "LLM_API_KEY", "vault_key": "llm/api_key"},

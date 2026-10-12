@@ -75,6 +75,9 @@ def check_connection(
         )
         if problems:
             raise ConfigError("; ".join(problems))
+    checker = getattr(cls, "check_config", None)
+    if checker is not None:
+        checker(config)
     slots = {s.name for s in manifest.secrets}
     for slot, reference in secret_refs.items():
         if slot not in slots:
@@ -194,15 +197,26 @@ def environment_connections(settings: Settings) -> Dict[str, Connection]:
             password=_reference(s, "SERVICENOW_PASSWORD"),
             client_secret=_reference(s, "SERVICENOW_OAUTH_CLIENT_SECRET"),
         )
-    if s.splunk.base_url:
+    if s.splunk.backend != "mock" and (s.splunk.base_url or s.splunk.mcp_url):
+        optional = {
+            "backend": s.splunk.backend,
+            "base_url": s.splunk.base_url,
+            "mcp_url": s.splunk.mcp_url,
+            "mcp_search_tool": s.splunk.mcp_search_tool if s.splunk.mcp_url else "",
+            "ca_bundle": s.splunk.ca_bundle,
+        }
         found["splunk"] = made(
             "splunk",
             {
-                "base_url": s.splunk.base_url,
+                **{key: value for key, value in optional.items() if value},
                 "verify_ssl": s.splunk.verify_ssl,
                 "search_timeout_seconds": s.splunk.search_timeout_seconds,
+                "allowed_indexes": list(s.splunk.allowed_indexes),
+                "max_lookback": s.splunk.max_lookback,
+                "max_results": s.splunk.max_results,
             },
             token=_reference(s, "SPLUNK_TOKEN"),
+            mcp_token=_reference(s, "SPLUNK_MCP_AUTH") if s.splunk.mcp_url else "",
         )
     if s.dynatrace.base_url:
         found["dynatrace"] = made(
@@ -293,6 +307,41 @@ def servicenow_secrets(settings: Settings, resolver: SecretResolver) -> Optional
             refs["password"] = refs["password"] or _reference(settings, "SERVICENOW_PASSWORD")
     refs = {slot: ref for slot, ref in refs.items() if ref}
     return ConnectionSecrets(resolver, refs) if refs else None
+
+
+def demo_connectors(
+    settings: Settings,
+    resolver: SecretResolver,
+    mocks: ConnectorSet,
+    registry: Optional[Registry] = None,
+) -> ConnectorSet:
+    """Demo mode's connectors: the mocks, except the adapters LIVE_ADAPTERS names.
+
+    A live one is built from the environment exactly as it would be outside
+    demo mode. One that is named but not configured stops start-up: falling
+    back to its mock would show canned evidence as if it were real.
+    """
+    from src.l1_agent.connectors.catalog import ADAPTER_CONNECTORS
+
+    live = settings.agent.live_adapters
+    if not live:
+        return mocks
+    registry = registry or default_registry()
+    connectors = mocks.connectors()
+    environment = environment_connections(settings)
+    for name in live:
+        connector_id = ADAPTER_CONNECTORS.get(name, name)
+        connection = environment.get(connector_id)
+        cls = registry.connector_class(connector_id)
+        if connection is None or cls is None:
+            raise ConfigError(f"LIVE_ADAPTERS names '{name}', but it is not configured")
+        connectors[connector_id] = cls(
+            dict(connection.config),
+            ConnectionSecrets(resolver, connection.secret_refs),
+            demo_mode=True,
+        )
+        logger.warning("Demo mode with a live connector: %s talks to the real system", name)
+    return ConnectorSet(registry, connectors)
 
 
 # ── The hub ───────────────────────────────────────────────────────────
@@ -408,9 +457,11 @@ class ConnectorHub:
         items: List[Dict[str, Any]] = []
         for manifest in self._registry.manifests():
             connection = stored.get(manifest.id)
-            mock = self._fixed is not None and self._fixed.connector(manifest.id) is not None
-            if mock:
-                connection, configured, origin = None, True, "demo"
+            held = self._fixed.connector(manifest.id) if self._fixed is not None else None
+            if held is not None:
+                # A mock, or a live connector that demo mode was asked for (LIVE_ADAPTERS).
+                live = getattr(held, "_fixed", held) is None
+                connection, configured, origin = None, True, "environment" if live else "demo"
             else:
                 configured = connection is not None
                 origin = connection.origin if connection else ""

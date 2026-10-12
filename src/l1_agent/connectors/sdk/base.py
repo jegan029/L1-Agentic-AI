@@ -103,6 +103,10 @@ class Connector(ABC):
         # Set by the engine for a run. Without one, no write can be made.
         self.grant_verifier: Optional[GrantVerifier] = None
 
+    @classmethod
+    def check_config(cls, config: Mapping[str, Any]) -> None:
+        """Raise ConfigError for settings that fit the schema and still cannot work."""
+
     @property
     def id(self) -> str:
         return self.manifest.id

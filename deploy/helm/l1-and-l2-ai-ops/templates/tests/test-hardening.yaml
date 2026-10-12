@@ -1,0 +1,64 @@
+{{- $full := include "aiops.fullname" . -}}
+# `helm test <release>`: run inside the cluster, in a pod with the same image and the
+# same security settings as the API. It fails unless the container is running as a
+# non-root user, cannot write to its root filesystem, can write to /tmp, and the API
+# answers its liveness check.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $full }}-test-hardening
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+    {{- /* Labelled as the runner so the network policy lets it reach the API. */}}
+    app.kubernetes.io/component: runner
+  annotations:
+    helm.sh/hook: test
+    # Kept after it ends, so that its output can be read; replaced on the next run.
+    helm.sh/hook-delete-policy: before-hook-creation
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ $full }}
+  automountServiceAccountToken: false
+  securityContext:
+    {{- toYaml .Values.podSecurityContext | nindent 4 }}
+  containers:
+    - name: check
+      image: {{ include "aiops.image" . | quote }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      securityContext:
+        {{- toYaml .Values.containerSecurityContext | nindent 8 }}
+      command: ["python", "-c"]
+      args:
+        - |
+          import os, ssl, sys, urllib.request
+          problems = []
+          if os.geteuid() == 0:
+              problems.append("running as root")
+          try:
+              open("/app/written-by-test", "w").close()
+              problems.append("the root filesystem is writable")
+          except OSError:
+              pass
+          try:
+              open("/tmp/written-by-test", "w").close()
+          except OSError as exc:
+              problems.append(f"/tmp is not writable: {exc}")
+          url = os.environ["API_URL"] + "/health"
+          # The check is that the API answers. Its certificate is the runner's to verify.
+          context = ssl._create_unverified_context()
+          try:
+              status = urllib.request.urlopen(url, timeout=10, context=context).status
+              if status != 200:
+                  problems.append(f"{url} answered {status}")
+          except Exception as exc:
+              problems.append(f"{url} did not answer: {type(exc).__name__}")
+          print("\n".join(problems) or f"uid {os.geteuid()}, read-only root, API healthy")
+          sys.exit(1 if problems else 0)
+      env:
+        - name: API_URL
+          value: {{ printf "%s://%s-api:%v" (include "aiops.apiScheme" .) $full .Values.api.port | quote }}
+      volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    {{- include "aiops.tmpVolume" . | nindent 4 }}

@@ -33,7 +33,7 @@ from src.l1_agent.audit import log as audit
 from src.l1_agent.audit.log import Actor
 from src.l1_agent.config.settings import ActionSettings
 from src.l1_agent.connectors.itsm.base import ChangeRef, ChangeUnavailable
-from src.l1_agent.connectors.sdk.base import StepContext, WriteNotAuthorized
+from src.l1_agent.connectors.sdk.base import OutcomeUnknown, StepContext, WriteNotAuthorized
 from src.l1_agent.connectors.sdk.grant import Grant, call_digest
 from src.l1_agent.connectors.sdk.manifest import Capability, Kind, RiskTier
 from src.l1_agent.connectors.sdk.registry import ConnectorSet
@@ -101,13 +101,21 @@ class ActionService:
         settings: Optional[ActionSettings] = None,
         *,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        grant_key: Optional[bytes] = None,
     ) -> None:
         self._db = db
         self._itsm = itsm
         self._settings = settings or ActionSettings()
         self._sleep = sleep
-        self._authority = GrantAuthority()
+        # With a runner the key is this deployment's own, and the runner checks grants
+        # with its public half (ADR 0010). Without one it is random and stays here.
+        self._authority = GrantAuthority(private_key=grant_key)
         self._polled: Dict[uuid.UUID, float] = {}
+
+    @property
+    def grant_public_key(self) -> bytes:
+        """What a runner checks this pipeline's grants with. Not a secret."""
+        return self._authority.public_key
 
     # ── Kill switches ─────────────────────────────────────────────────
 
@@ -510,6 +518,18 @@ class ActionService:
 
         try:
             written = await call.connectors.invoke(capability.id, step.parameters, context, grant)
+        except OutcomeUnknown:
+            # A runner took the write and did not answer. It is not sent again. As after
+            # a crash at this point, the target is read to learn whether it was made.
+            metrics.increment("actions.outcome_unknown")
+            return await self._verify_and_finish(
+                call,
+                capability,
+                row,
+                "",
+                interrupted=True,
+                lost="The runner took the write and returned no result",
+            )
         except Exception as exc:
             written = AdapterResult(success=False, error=f"{type(exc).__name__}: {exc}")
         if not written.success:
@@ -583,6 +603,7 @@ class ActionService:
         row: Any,
         evidence: str,
         interrupted: bool = False,
+        lost: str = "The run was interrupted while the write was being made",
     ) -> StepResult:
         step, spec = call.step, capability.verify
         assertion = step.verify.get("assert") or spec.assertion
@@ -624,7 +645,7 @@ class ActionService:
                 ("executing",),
                 "failed",
                 "action.failed",
-                "The run was interrupted while the write was being made, and the target does "
+                f"{lost}, and the target does "
                 f"not show its result ({why}). Whether it happened is not known, so it was "
                 "not repeated",
                 unknown=True,

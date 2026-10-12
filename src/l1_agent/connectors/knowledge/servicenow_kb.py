@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from src.l1_agent.connectors.itsm.servicenow import ServiceNowConnector
 from src.l1_agent.connectors.knowledge.base import MAX_ARTICLE_CHARS, Article
+from src.l1_agent.connectors.sdk.base import CheckResult
 from src.l1_agent.connectors.sdk.manifest import Capability, Family, Kind, Manifest, RiskTier
 from src.l1_agent.connectors.sdk.schema import closed
 from src.l1_agent.models.incident import _display_value, _raw_value
@@ -91,6 +92,18 @@ class ServiceNowKnowledge:
             )
         ).get("result", {})
         return self._article(record) if record else None
+
+    async def test_connection(self) -> List[CheckResult]:
+        """Read one article id through the ITSM connection."""
+        name = "read the knowledge base table"
+        try:
+            await self._client._get(
+                f"/api/now/table/{self._client._settings.sop_table}",
+                {"sysparm_limit": "1", "sysparm_fields": "sys_id"},
+            )
+        except Exception as exc:
+            return [CheckResult(name, False, str(exc)[:300] or type(exc).__name__)]
+        return [CheckResult(name, True)]
 
     async def close(self) -> None:
         return None  # the ITSM connector owns the HTTP session

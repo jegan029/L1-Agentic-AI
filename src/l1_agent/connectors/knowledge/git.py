@@ -21,6 +21,7 @@ from typing import Dict, List, Optional, Tuple
 
 from src.l1_agent.config.settings import ConfigError
 from src.l1_agent.connectors.knowledge.base import MAX_ARTICLE_CHARS, Article
+from src.l1_agent.connectors.sdk.base import CheckResult
 from src.l1_agent.connectors.sdk.manifest import (
     Capability,
     Family,
@@ -30,7 +31,7 @@ from src.l1_agent.connectors.sdk.manifest import (
     SecretSlot,
 )
 from src.l1_agent.connectors.sdk.schema import closed
-from src.l1_agent.connectors.sdk.secrets import ConnectionSecrets
+from src.l1_agent.connectors.sdk.secrets import ConnectionSecrets, SecretError
 from src.l1_agent.utils.logging import get_logger
 
 logger = get_logger("git_knowledge")
@@ -221,6 +222,17 @@ class GitKnowledge:
         async with self._lock:
             head = await self._sync()
             return await self._article(head, article_id)
+
+    async def test_connection(self) -> List[CheckResult]:
+        """Fetch the branch. Nothing is read from it and nothing becomes a draft."""
+        try:
+            async with self._lock:
+                head = await self._sync()
+        except (GitError, SecretError) as exc:
+            return [CheckResult("fetch the branch", False, str(exc)[:300])]
+        except OSError as exc:  # the git command is missing, or the cache is not writable
+            return [CheckResult("fetch the branch", False, type(exc).__name__)]
+        return [CheckResult("fetch the branch", True, f"{self._ref} is at {head[:12]}")]
 
     async def close(self) -> None:
         return None

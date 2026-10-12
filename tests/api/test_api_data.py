@@ -14,6 +14,7 @@ from src.l1_agent.auth import store
 from src.l1_agent.connectors import hub as connections
 from src.l1_agent.demo import DEMO_INCIDENTS
 from src.l1_agent.models.incident import Incident
+from src.l1_agent.runner import store as runner_store
 from src.l1_agent.sop import store as sop_store
 from tests.api.support import (
     ADMIN,
@@ -21,6 +22,7 @@ from tests.api.support import (
     client,
     seed_action,
     seed_model,
+    seed_runner,
     session,
     token_headers,
 )
@@ -176,6 +178,8 @@ class TestTenantIsolationOverHttp:
         await connections.set_connection(
             ctx.db, b, ADMIN, "splunk", {"base_url": "https://b-splunk.example"}, {}
         )
+        self.b_runner = await seed_runner(ctx.db, b, "b-only-runner")
+        await seed_runner(ctx.db, ctx.tenant_id, "a-runner")
         return app, ctx, b, a_numbers, b_numbers
 
     async def test_every_read_route_returns_only_the_callers_tenant(self, two):
@@ -191,6 +195,7 @@ class TestTenantIsolationOverHttp:
             "b-splunk.example",
             "B_ONLY_JOB",
             "b-only-region",
+            "b-only-runner",
             str(b),
             DEMO_INCIDENTS[0]["short_description"],
         ]
@@ -237,7 +242,10 @@ class TestTenantIsolationOverHttp:
                 params={"group": "b-admins", "role": "tenant_admin"},
                 headers=h,
             )
+            runner = await http.delete(f"/api/runners/{self.b_runner}", headers=h)
         assert revoke.status_code == 404 and remove.status_code == 404
+        assert runner.status_code == 404
+        assert [r["revoked"] for r in await runner_store.list_runners(ctx.db, b)] == [False]
         assert (await store.list_api_tokens(ctx.db, b))[0]["revoked"] is False
         assert await store.list_role_mappings(ctx.db, b) == [
             {"group": "b-admins", "role": "tenant_admin"}

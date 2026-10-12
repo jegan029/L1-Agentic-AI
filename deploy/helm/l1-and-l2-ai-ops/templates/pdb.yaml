@@ -1,0 +1,21 @@
+{{- if .Values.podDisruptionBudget.enabled -}}
+{{- $full := include "aiops.fullname" . -}}
+{{- $components := dict "api" .Values.api.replicas "worker" .Values.worker.replicas -}}
+{{- range $component, $replicas := $components }}
+{{- if gt (int $replicas) 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $full }}-{{ $component }}
+  labels:
+    {{- include "aiops.labels" $ | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "aiops.selector" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $component }}
+{{- end }}
+{{- end }}
+{{- end }}

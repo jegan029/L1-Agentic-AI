@@ -1,48 +1,51 @@
-"""Minting and checking grants (ADR 0008).
+"""Minting and checking grants (ADR 0008, ADR 0010).
 
-The signing key is random and never leaves this object, so a grant can only
-come from the authority that will be asked to check it. `mint` is called from
-one place, `ActionService._authorise`, after the database has recorded that
-the action may execute; a test searches the source tree to keep it that way.
+A grant is signed with an Ed25519 private key that never leaves this object.
+By default the key is random, so a grant can only come from the authority
+that will be asked to check it. A deployment with a separate runner gives the
+authority a key of its own (`ACTIONS_GRANT_KEY`), and the runner checks grants
+with the public half: it can verify a grant and cannot make one.
+
+`mint` is called from one place, `ActionService._authorise`, after the
+database has recorded that the action may execute; a test searches the source
+tree to keep it that way.
 """
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import secrets
 import time
-from typing import Any, Callable, Set
+from typing import Any, Callable, Optional
 
-from src.l1_agent.connectors.sdk.base import WriteNotAuthorized
-from src.l1_agent.connectors.sdk.grant import Grant
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from src.l1_agent.connectors.sdk.grant import Grant, GrantCheck, grant_body
 
 GRANT_SECONDS = 60.0
 
 
 class GrantAuthority:
     def __init__(
-        self, ttl_seconds: float = GRANT_SECONDS, clock: Callable[[], float] = time.time
+        self,
+        ttl_seconds: float = GRANT_SECONDS,
+        clock: Callable[[], float] = time.time,
+        private_key: Optional[bytes] = None,
     ) -> None:
-        self._key = secrets.token_bytes(32)
+        if private_key is not None and len(private_key) != 32:
+            raise ValueError("A grant signing key is 32 bytes")
+        self._key = private_key or secrets.token_bytes(32)
+        self._signer = Ed25519PrivateKey.from_private_bytes(self._key)
         self._ttl = ttl_seconds
         self._clock = clock
-        self._redeemed: Set[str] = set()
+        self._check = GrantCheck(self.public_key, clock)
 
-    def _sign(self, grant: Grant) -> str:
-        body = "|".join(
-            [
-                grant.decision_id,
-                grant.tenant_id,
-                grant.run_id,
-                grant.step_id,
-                grant.capability_id,
-                grant.call_digest,
-                repr(grant.expires_at),
-                grant.nonce,
-            ]
+    @property
+    def public_key(self) -> bytes:
+        """What a runner needs to check this authority's grants. Not a secret."""
+        return self._signer.public_key().public_bytes(
+            serialization.Encoding.Raw, serialization.PublicFormat.Raw
         )
-        return hmac.new(self._key, body.encode("utf-8"), hashlib.sha256).hexdigest()
 
     def mint(
         self,
@@ -67,7 +70,8 @@ class GrantAuthority:
             nonce=secrets.token_hex(16),
             signature="",
         )
-        return Grant(**{**unsigned.__dict__, "signature": self._sign(unsigned)})
+        signature = self._signer.sign(grant_body(unsigned)).hex()
+        return Grant(**{**unsigned.__dict__, "signature": signature})
 
     def redeem(
         self,
@@ -80,21 +84,11 @@ class GrantAuthority:
         digest: str,
     ) -> None:
         """Accept a grant for exactly this call, once. Anything else raises."""
-        if not isinstance(grant, Grant):
-            raise WriteNotAuthorized("That is not a grant")
-        if not hmac.compare_digest(grant.signature, self._sign(grant)):
-            raise WriteNotAuthorized("The grant was not issued by the policy engine")
-        if self._clock() >= grant.expires_at:
-            raise WriteNotAuthorized("The grant has expired")
-        if (
-            grant.tenant_id != str(tenant_id)
-            or grant.run_id != str(run_id)
-            or grant.step_id != step_id
-            or grant.capability_id != capability_id
-        ):
-            raise WriteNotAuthorized("The grant is for a different step")
-        if not hmac.compare_digest(grant.call_digest, digest):
-            raise WriteNotAuthorized("The grant is for different parameters")
-        if grant.nonce in self._redeemed:
-            raise WriteNotAuthorized("The grant has already been used")
-        self._redeemed.add(grant.nonce)
+        self._check.redeem(
+            grant,
+            tenant_id=tenant_id,
+            run_id=run_id,
+            step_id=step_id,
+            capability_id=capability_id,
+            digest=digest,
+        )

@@ -1,0 +1,13 @@
+apiVersion: v2
+name: l1-and-l2-ai-ops
+description: >-
+  L1 and L2 AI-Ops for one tenant, in your own cluster: the control plane (API, workers,
+  dashboard) and a runner that makes the connector calls.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - itsm
+  - incident
+  - sop

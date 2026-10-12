@@ -22,6 +22,7 @@ from src.l1_agent.connectors.itsm.base import (
     ChangeUnavailable,
     ClaimResult,
 )
+from src.l1_agent.connectors.sdk.base import CheckResult
 from src.l1_agent.connectors.sdk.http import (
     Auth,
     BasicAuth,
@@ -31,7 +32,7 @@ from src.l1_agent.connectors.sdk.http import (
 )
 from src.l1_agent.connectors.sdk.manifest import Family, Manifest, SecretSlot
 from src.l1_agent.connectors.sdk.schema import closed
-from src.l1_agent.connectors.sdk.secrets import ConnectionSecrets, LiteralSecrets
+from src.l1_agent.connectors.sdk.secrets import ConnectionSecrets, LiteralSecrets, SecretError
 from src.l1_agent.models.incident import Incident, _raw_value
 from src.l1_agent.utils.logging import get_logger
 from src.l1_agent.utils.metrics import metrics
@@ -152,6 +153,26 @@ class ServiceNowConnector:
 
     async def close(self) -> None:
         await self._http.close()
+
+    async def test_connection(self) -> List[CheckResult]:
+        """Sign in and make the two reads intake depends on. Nothing is written."""
+        table = self._settings.incident_table
+        reads = [
+            ("read the incident table", f"/api/now/table/{table}", "sys_id"),
+            ("read users (needed to claim a ticket)", "/api/now/table/sys_user", "sys_id"),
+        ]
+        checks: List[CheckResult] = []
+        for name, path, fields in reads:
+            try:
+                await self._get(path, {"sysparm_limit": "1", "sysparm_fields": fields})
+                checks.append(CheckResult(name, True))
+            except ServiceNowError as exc:
+                checks.append(CheckResult(name, False, str(exc)[:300]))
+            except SecretError as exc:
+                return checks + [CheckResult("credentials", False, str(exc))]
+            except Exception as exc:  # unreachable host, TLS failure
+                return checks + [CheckResult("reach the instance", False, type(exc).__name__)]
+        return checks
 
     async def _request(
         self,

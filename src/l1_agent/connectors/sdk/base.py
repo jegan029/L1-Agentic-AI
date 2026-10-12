@@ -21,7 +21,7 @@ from typing import Any, ClassVar, Dict, List, Mapping, Optional
 
 from src.l1_agent.adapters.base import AdapterResult, BaseAdapter
 from src.l1_agent.config.settings import ConfigError
-from src.l1_agent.connectors.sdk.grant import GrantVerifier, call_digest
+from src.l1_agent.connectors.sdk.grant import GrantVerifier, WriteNotAuthorized, call_digest
 from src.l1_agent.connectors.sdk.manifest import Capability, Kind, Manifest, validate_parameters
 from src.l1_agent.connectors.sdk.secrets import ConnectionSecrets, SecretError, SecretResolver
 from src.l1_agent.utils.logging import get_logger
@@ -42,12 +42,16 @@ class StepContext:
     purpose: str = PURPOSE_RUN
 
 
-class WriteNotAuthorized(RuntimeError):
-    """A write capability was invoked without an action grant from the policy engine."""
-
-
 class Refused(ValueError):
     """The parameters break the capability's schema or an allow list. Nothing was called."""
+
+
+class OutcomeUnknown(RuntimeError):
+    """A write was handed to the runner and no result came back (ADR 0010).
+
+    It may have been made. The caller must not repeat it and must not treat
+    it as not made: it reads the target to find out.
+    """
 
 
 class HealthStatus(str, Enum):

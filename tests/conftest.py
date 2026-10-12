@@ -194,15 +194,18 @@ def make_service(
     actions=None,
     connector_settings: Optional[Dict[str, dict]] = None,
     advisors=None,
+    connectors=None,
 ) -> RunService:
     """A run service wired like the real one, with mock adapters and mock ServiceNow.
 
     `actions` is the action pipeline (an ActionService); without one, ACTION steps are
     refused. `connector_settings` gives a mock connector real connection settings, for
     example an allow list. `advisors` is the model gateway; without one no model is used.
+    `connectors` replaces the mocks with something that has `for_tenant`: a hub whose
+    calls go to a runner.
     """
     bus = DbEventBus(db)
-    fixed = _FixedConnectors(
+    fixed = connectors or _FixedConnectors(
         connectors_for_adapters(adapters or build_mock_adapters(), connector_settings)
     )
     processor = IncidentProcessor(

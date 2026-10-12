@@ -1,0 +1,5 @@
+{
+  "autosys": {
+    "force_start_jobs": ["NIGHTLY_*", "PAYROLL_*"]
+  }
+}

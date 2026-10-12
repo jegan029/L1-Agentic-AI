@@ -147,6 +147,30 @@ async def seed_model(db, tenant_id, number: str, region: str) -> None:
         )
 
 
+async def seed_runner(db, tenant_id, name: str) -> uuid.UUID:
+    """An enrolled runner for the tenant, and one call waiting in its queue."""
+    from datetime import timedelta
+
+    from src.l1_agent.db.engine import utcnow
+    from src.l1_agent.runner import keys
+    from src.l1_agent.runner import store as runner_store
+
+    runner_id = await runner_store.enrol(db, tenant_id, ADMIN, name, keys.generate()[1])
+    await runner_store.enqueue(
+        db,
+        tenant_id,
+        call_id=uuid.uuid4(),
+        kind="invoke",
+        connector_id="splunk",
+        capability_id="splunk.search",
+        is_write=False,
+        envelope=json.dumps({"marker": name}),
+        signature="00" * 64,
+        deadline=utcnow() + timedelta(hours=1),
+    )
+    return runner_id
+
+
 async def seed_action(db, tenant_id, number: str, job: str, **overrides: Any) -> uuid.UUID:
     """An action record for the run of incident `number`, as the policy engine would write it."""
     import sqlalchemy as sa

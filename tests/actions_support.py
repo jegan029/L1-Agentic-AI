@@ -139,12 +139,18 @@ async def make_world(
     settings: Optional[ActionSettings] = None,
     connector_settings: Optional[Dict[str, dict]] = None,
     author: Actor = AUTHOR,
+    tenant: Optional[uuid.UUID] = None,
+    connectors: Any = None,
+    grant_key: Optional[bytes] = None,
+    adapters: Optional[Dict[str, Any]] = None,
 ) -> World:
     """A tenant whose restart SOP was written by `author` and approved by someone else.
 
     By default nightly jobs are on the automatic list and payroll jobs are raised to T2.
+    `connectors` and `grant_key` wire the service to a runner (tests/runner_support.py);
+    `adapters` are then the mocks the runner holds, where a write is seen to land.
     """
-    tenant = await backend.new_tenant("act")
+    tenant = tenant or await backend.new_tenant("act")
     db = backend.db
     version_id = await sop_store.create_draft(db, tenant, author, restart_content())
     digest = await sop_store.submit(db, tenant, author, version_id)
@@ -161,14 +167,18 @@ async def make_world(
     await action_store.set_policy(db, tenant, ADMIN, autonomy=autonomy, rules=policy_rules)
 
     snow = MockServiceNowClient()
-    adapters = build_mock_adapters()
+    adapters = adapters or build_mock_adapters()
     sleeps: List[float] = []
 
     async def no_wait(seconds: float) -> None:
         sleeps.append(seconds)
 
     actions = ActionService(
-        db, snow, settings or ActionSettings(servicenow_poll_seconds=0), sleep=no_wait
+        db,
+        snow,
+        settings or ActionSettings(servicenow_poll_seconds=0),
+        sleep=no_wait,
+        grant_key=grant_key,
     )
     service = make_service(
         db,
@@ -177,6 +187,7 @@ async def make_world(
         sops_from_store=True,
         actions=actions,
         connector_settings=connector_settings,
+        connectors=connectors,
     )
     return World(backend, tenant, snow, adapters, actions, service, sop, sleeps)
 

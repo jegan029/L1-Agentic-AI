@@ -9,3 +9,4 @@ alembic>=1.13.0
 asyncpg>=0.29.0              # PostgreSQL
 aiosqlite>=0.20.0            # demo mode only
 pyjwt[crypto]>=2.8.0         # ID token verification
+cryptography>=42.0.0         # Ed25519: grants and the runner protocol (ADR 0010)

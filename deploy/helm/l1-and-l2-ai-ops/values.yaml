@@ -1,0 +1,183 @@
+# Values for one tenant in one namespace (ADR 0003, shape A).
+#
+# The chart never creates a secret value. Every credential and key is in a Secret you
+# create first and name here. docs/operator-guide.md has the commands, in order.
+
+# -- Control plane and runner image (one image, different commands).
+image:
+  repository: ""        # required, e.g. registry.example.com/l1-and-l2-ai-ops
+  tag: ""               # default: the chart's appVersion
+  digest: ""            # preferred over a tag, e.g. sha256:...
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# -- The tenant this deployment serves. Created by the install job if it does not exist.
+tenant:
+  slug: default
+  name: ""
+
+# -- PostgreSQL. A Secret with two connection strings (postgresql+asyncpg://...):
+#    the application role, which row level security applies to, and the migration role.
+database:
+  existingSecret: ""    # required
+  urlKey: url
+  migrationUrlKey: migrationUrl
+  appRole: l1_app
+
+# -- Credentials the control plane needs as values. One Secret; a key that is absent is
+#    left out. webhookSecret is required and must be at least 32 characters.
+secrets:
+  existingSecret: ""    # required
+  keys:
+    webhookSecret: webhookSecret
+    auditCheckpointKey: auditCheckpointKey
+    oidcClientSecret: oidcClientSecret
+    breakGlassPasswordHash: breakGlassPasswordHash
+  # Which of the optional keys above exist in the Secret.
+  present:
+    auditCheckpointKey: false
+    oidcClientSecret: false
+    breakGlassPasswordHash: false
+
+# -- Non-secret settings for the API and the workers, as environment variables.
+#    See CLAUDE.md "Configuration" and .env.example for the names. For example:
+#      OIDC_ISSUER: https://login.example.com
+#      OIDC_CLIENT_ID: l1-and-l2-ai-ops
+#      OIDC_REDIRECT_URI: https://aiops.example.com/auth/callback
+#      SECRETS_BACKEND: vault
+config: {}
+
+# -- More environment variables taken from Secrets, for the API and the workers:
+#      - name: SERVICENOW_PASSWORD
+#        secretName: servicenow
+#        key: password
+secretEnv: []
+
+controlPlane:
+  # remote: connector calls are made by the runner below (the default, and the shape the
+  # product is designed for). embedded: they are made in the worker; no runner is deployed.
+  runnerMode: remote
+  # Secret with `dispatch.key`: signs every call handed to a runner. API and workers.
+  dispatchKeySecret: ""
+  # Secret with `grant.key`: signs every grant for a write. Workers only: the API tier,
+  # which faces the network, never holds it. Empty: no write is ever accepted by a runner.
+  grantKeySecret: ""
+  # What this deployment allows at most, whatever the tenant's policy says.
+  maxTier: T2
+  maxAutonomy: automatic
+
+api:
+  replicas: 2
+  port: 8080
+  # A kubernetes.io/tls Secret (tls.crt, tls.key). With it the API serves HTTPS itself,
+  # and the in-cluster runner connects to it directly. Without it the API serves HTTP,
+  # TLS ends at the ingress, and runner.controlPlaneUrl must be an https URL.
+  tls:
+    secretName: ""
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  podAnnotations: {}
+
+worker:
+  replicas: 2
+  # Runs worked on at once in each worker pod.
+  concurrency: 5
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  podAnnotations: {}
+
+runner:
+  replicas: 1
+  # The name it is enrolled under, and its public key (from `l1-agent runner keygen`).
+  # With a public key set, the install job enrols it; the runner is then recognised by
+  # its key and needs no identity.
+  name: runner-1
+  publicKey: ""
+  # Secret with `runner.key`, the runner's private key.
+  keySecret: ""
+  # The control plane's public keys. dispatchPublicKey is required. Without
+  # grantPublicKey the runner makes no write, whatever maxTier says.
+  dispatchPublicKey: ""
+  grantPublicKey: ""
+  # Where the runner reaches the control plane. Default: the API service in this
+  # release, which needs api.tls.secretName. Otherwise the https URL of your ingress.
+  controlPlaneUrl: ""
+  # Secret with `ca.crt`, when the control plane's certificate is from a private CA.
+  caSecret: ""
+  # The runner's own ceiling. Nothing in the control plane can raise it.
+  maxTier: T0
+  capabilities: ["*"]
+  # Its own allow lists: connector -> allow list setting -> patterns. A write is made
+  # only to a target listed here.   autosys: {force_start_jobs: ["NIGHTLY_*"]}
+  targets: {}
+  # Connections it holds itself, which replace what the control plane sends:
+  #   autosys: {config: {sendevent_path: /opt/CA/bin/sendevent}, secret_refs: {}}
+  connections: {}
+  # Secret mounted at /run/secrets/connectors. A connection's credential reference may
+  # point only there (file:/run/secrets/connectors/<key>) or at the prefixes below.
+  connectorSecret: ""
+  extraSecretRefPrefixes: []      # e.g. ["vault:connectors/"]
+  # Non-secret settings, e.g. SECRETS_BACKEND, VAULT_ADDR.
+  config: {}
+  secretEnv: []
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 512Mi}
+  podAnnotations: {}
+
+ui:
+  enabled: true
+  replicas: 2
+  image:
+    repository: ""      # required when enabled, e.g. registry.example.com/l1-and-l2-ai-ops-ui
+    tag: ""
+    digest: ""
+    pullPolicy: IfNotPresent
+  # The dashboard's typeface is requested from Google Fonts unless the browser is told
+  # not to. false (the default) blocks the request; the browser's own font is used.
+  allowGoogleFonts: false
+  resources:
+    requests: {cpu: 20m, memory: 32Mi}
+    limits: {cpu: 200m, memory: 128Mi}
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls:
+    secretName: ""
+
+networkPolicy:
+  enabled: true
+  # Who may reach the API and the dashboard from outside the release: usually the
+  # ingress controller. A list of NetworkPolicy peers. Empty: nobody outside the release.
+  ingressFrom: []
+  #  - namespaceSelector:
+  #      matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+
+podDisruptionBudget:
+  enabled: true
+
+# -- Applied to every pod and container. Change with care: a chart test checks them.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  capabilities:
+    drop: ["ALL"]
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

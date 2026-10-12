@@ -542,6 +542,59 @@ model_calls = sa.Table(
     sa.Index("ix_model_calls_run", "tenant_id", "run_id"),
 )
 
+# ── The runner (ADR 0010) ─────────────────────────────────────────────
+
+# A runner a tenant administrator has enrolled: its name and its public key.
+# The private key never leaves the runner.
+runners = sa.Table(
+    "runners",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("name", sa.String(100), nullable=False),
+    sa.Column("public_key", sa.String(64), nullable=False),  # Ed25519, base64
+    sa.Column("enrolled_by", sa.String(300), nullable=False),
+    sa.Column("created_at", Timestamp, nullable=False),
+    sa.Column("revoked_at", Timestamp),
+    sa.Column("last_seen_at", Timestamp),
+    # What the runner says about itself when it asks for work: version and local ceiling.
+    sa.Column("reported", Json),
+    sa.UniqueConstraint("tenant_id", "name", name="uq_runners_name"),
+    # A runner may name itself by its key (ADR 0010), so a key belongs to one runner.
+    sa.UniqueConstraint("tenant_id", "public_key", name="uq_runners_key"),
+)
+
+RUNNER_CALL_STATUSES = ("queued", "claimed", "done", "cancelled")
+
+# One connector call waiting for, held by, or answered by a runner. A row is
+# removed when its answer has been read, so results are not kept here.
+runner_calls = sa.Table(
+    "runner_calls",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("kind", sa.String(20), nullable=False),  # invoke | dry_run | test
+    sa.Column("capability_id", sa.String(120), nullable=False, server_default=""),
+    sa.Column("connector_id", sa.String(64), nullable=False),
+    sa.Column("is_write", sa.Boolean(), nullable=False, server_default=sa.false()),
+    # The exact text the control plane signed, and its signature. No credential is in it.
+    sa.Column("envelope", sa.Text(), nullable=False),
+    sa.Column("signature", sa.String(128), nullable=False),
+    sa.Column("status", sa.String(20), nullable=False, server_default="queued"),
+    sa.Column("runner_id", sa.Uuid(), sa.ForeignKey("runners.id")),
+    sa.Column("created_at", Timestamp, nullable=False),
+    sa.Column("deadline", Timestamp, nullable=False),
+    sa.Column("claimed_at", Timestamp),
+    sa.Column("completed_at", Timestamp),
+    sa.Column("outcome", sa.String(20), nullable=False, server_default=""),
+    sa.Column("result", Json),
+    sa.CheckConstraint(
+        "status IN (" + ", ".join(f"'{s}'" for s in RUNNER_CALL_STATUSES) + ")",
+        name="ck_runner_calls_status",
+    ),
+    sa.Index("ix_runner_calls_claim", "tenant_id", "status", "created_at"),
+)
+
 GLOBAL_TABLES = ("tenants", "platform_flags")
 TENANT_TABLES = tuple(t for t in metadata.sorted_tables if t.name not in GLOBAL_TABLES)
 APPEND_ONLY_TABLES = ("audit_events",)

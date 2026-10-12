@@ -30,6 +30,7 @@ from src.l1_agent.api.access import (
     denied_metric,
     public,
     requires,
+    runner,
     webhook,
 )
 from src.l1_agent.api.middleware import (
@@ -47,6 +48,10 @@ from src.l1_agent.config.settings import ConfigError, Settings
 from src.l1_agent.connectors import hub as connections
 from src.l1_agent.db.engine import Database
 from src.l1_agent.models.incident import Incident
+from src.l1_agent.runner import protocol
+from src.l1_agent.runner import store as runner_store
+from src.l1_agent.runner.dispatch import hand_out
+from src.l1_agent.service import onboarding
 from src.l1_agent.service import runs as run_service
 from src.l1_agent.service.runs import RunService
 from src.l1_agent.sop import ingest
@@ -71,6 +76,8 @@ TOKEN_PERMISSIONS = frozenset(
     }
 )
 STREAM_POLL_SECONDS = 1.0
+CLAIM_POLL_SECONDS = 0.25
+MAX_REPORTED_CHARS = 8000
 STREAM_HEARTBEAT_SECONDS = 25.0
 
 
@@ -88,6 +95,8 @@ class AppContext:
     itsm: Optional[Any] = None  # the ITSM connector, which the ServiceNow KB source reads through
     actions: Optional[Any] = None  # ActionService: the kill switches it sees, for display
     model: Optional[Any] = None  # ModelGateway: the provider and the tenant's model policy
+    # RUNNER_MODE=remote: the public keys a runner is configured with ("dispatch", "grant").
+    runner_keys: Optional[Dict[str, str]] = None
 
 
 class TokenRequest(BaseModel):
@@ -143,6 +152,12 @@ class ConnectionRequest(BaseModel):
     # Slot name to a credential reference (vault:..., file:..., aws:..., env:...). Never a value.
     secrets: Dict[str, str] = Field(default_factory=dict)
     enabled: bool = True
+
+
+class RunnerRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    # The runner's public key (Ed25519, base64). The private key never leaves the runner.
+    public_key: str = Field(min_length=40, max_length=64)
 
 
 def summarize(records: List[dict], processing: int, uptime: float) -> Dict[str, Any]:
@@ -204,7 +219,7 @@ def summarize(records: List[dict], processing: int, uptime: float) -> Dict[str, 
 def create_app(ctx: AppContext) -> FastAPI:
     settings = ctx.settings
     app = FastAPI(
-        title="L1 Engineer Agent",
+        title="L1 and L2 AI-Ops",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,  # served below, behind a permission
@@ -233,6 +248,9 @@ def create_app(ctx: AppContext) -> FastAPI:
         incident = Incident.from_servicenow(payload)
         if not _INCIDENT_ID_RE.match(incident.number) or not _INCIDENT_ID_RE.match(incident.sys_id):
             return JSONResponse({"error": "Missing or invalid number or sys_id"}, status_code=400)
+        if hasattr(ctx.itsm, "current") and await ctx.itsm.current() is None:
+            # Nothing could be claimed or written back. The sender should try again later.
+            return JSONResponse({"error": "No ITSM connection is configured"}, status_code=503)
         result = await ctx.runs.ingest(ctx.tenant_id, incident, WEBHOOK_ACTOR)
         return JSONResponse(
             {
@@ -669,7 +687,13 @@ def create_app(ctx: AppContext) -> FastAPI:
     async def connectors(request: Request) -> dict:
         if ctx.hub is None:
             return {"items": []}
-        return {"items": await ctx.hub.describe(tenant(request))}
+        items = await ctx.hub.describe(tenant(request))
+        if ctx.itsm is not None and not hasattr(ctx.itsm, "current"):
+            # Demo mode: tickets go to the built-in stand-in, whatever is stored.
+            for item in items:
+                if item["family"] == "itsm":
+                    item.update(configured=True, enabled=True, origin="demo")
+        return {"items": items}
 
     @routes.put("/api/connectors/{connector_id}/connection", requires(Permission.CONNECTORS_MANAGE))
     async def set_connection(
@@ -690,6 +714,8 @@ def create_app(ctx: AppContext) -> FastAPI:
             return JSONResponse({"error": str(exc)}, status_code=400)
         if ctx.hub is not None:
             ctx.hub.forget(principal.tenant_id)
+        if hasattr(ctx.itsm, "current"):
+            await ctx.itsm.current(fresh=True)  # an ITSM connection is used from now on
         return JSONResponse({"status": "saved"})
 
     @routes.delete(
@@ -704,6 +730,8 @@ def create_app(ctx: AppContext) -> FastAPI:
             return JSONResponse({"error": "Not found"}, status_code=404)
         if ctx.hub is not None:
             ctx.hub.forget(principal.tenant_id)
+        if hasattr(ctx.itsm, "current"):
+            await ctx.itsm.current(fresh=True)
         return JSONResponse({"status": "removed"})
 
     @routes.post("/api/connectors/{connector_id}/test", requires(Permission.CONNECTORS_MANAGE))
@@ -712,7 +740,7 @@ def create_app(ctx: AppContext) -> FastAPI:
         if ctx.hub is None:
             return JSONResponse({"error": "Not found"}, status_code=404)
         try:
-            checks = await ctx.hub.test(principal.tenant_id, connector_id[:64])
+            checks = await ctx.hub.test(principal.tenant_id, connector_id[:64], ctx.itsm)
         except LookupError:
             return JSONResponse({"error": "Not found"}, status_code=404)
         async with ctx.db.tenant(principal.tenant_id) as conn:
@@ -729,6 +757,92 @@ def create_app(ctx: AppContext) -> FastAPI:
                 "checks": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in checks],
             }
         )
+
+    # ── The runner (ADR 0010) ─────────────────────────────────────────
+
+    async def signed_body(request: Request) -> Optional[dict]:
+        try:
+            body = json.loads(await request.body())
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return body if isinstance(body, dict) else None
+
+    @routes.post(protocol.CLAIM_PATH, runner())
+    async def runner_claim(request: Request) -> Response:
+        """A runner asks for calls. Held open, for a bounded time, while there are none."""
+        who: runner_store.RunnerIdentity = request.state.runner
+        body = await signed_body(request)
+        if body is None:
+            return JSONResponse({"error": "Expected a JSON object"}, status_code=400)
+        try:
+            limit = min(protocol.MAX_CLAIM, max(1, int(body.get("max", 1))))
+            wait = min(protocol.MAX_WAIT_SECONDS, max(0.0, float(body.get("wait_seconds", 0))))
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "max and wait_seconds are numbers"}, status_code=400)
+        reported = body.get("runner")
+        if not isinstance(reported, dict) or len(protocol.canonical(reported)) > MAX_REPORTED_CHARS:
+            reported = {}
+        await runner_store.seen(ctx.db, who, reported)
+        loop = asyncio.get_running_loop()
+        ends = loop.time() + wait
+        while True:
+            calls = await hand_out(ctx.db, who, limit)
+            if calls or loop.time() >= ends or await request.is_disconnected():
+                return JSONResponse({"calls": calls})
+            await asyncio.sleep(CLAIM_POLL_SECONDS)
+
+    @routes.post("/runner/v1/calls/{call_id}/result", runner())
+    async def runner_result(request: Request, call_id: uuid.UUID) -> Response:
+        who: runner_store.RunnerIdentity = request.state.runner
+        body = await signed_body(request)
+        outcome = body.get("outcome") if body else None
+        result = body.get("result") if body else None
+        if outcome not in protocol.OUTCOMES or not isinstance(result, dict):
+            return JSONResponse({"error": "Expected an outcome and a result"}, status_code=400)
+        accepted = await runner_store.record_result(
+            ctx.db, who.tenant_id, call_id, outcome, result, runner_id=who.id
+        )
+        if not accepted:
+            # Not this runner's call, already answered, or withdrawn.
+            return JSONResponse({"error": "The result was not accepted"}, status_code=409)
+        return JSONResponse({"status": "recorded"})
+
+    @routes.get("/api/runners", requires(Permission.SYSTEM_READ))
+    async def list_runners(request: Request) -> dict:
+        remote = bool(ctx.hub is not None and ctx.hub.remote)
+        return {
+            "mode": "remote" if remote else "embedded",
+            # Public keys: what a runner is configured with to check calls and grants.
+            "keys": dict(ctx.runner_keys or {}),
+            "items": await runner_store.list_runners(ctx.db, tenant(request)),
+        }
+
+    @routes.post("/api/runners", requires(Permission.CONNECTORS_MANAGE), status_code=201)
+    async def enrol_runner(request: Request, body: RunnerRequest) -> Response:
+        principal = current(request)
+        runner_id = await runner_store.enrol(
+            ctx.db, principal.tenant_id, principal.actor, body.name, body.public_key
+        )
+        return JSONResponse(
+            {
+                "id": str(runner_id),
+                "identity": protocol.identity(principal.tenant_id, runner_id),
+            },
+            status_code=201,
+        )
+
+    @routes.delete("/api/runners/{runner_id}", requires(Permission.CONNECTORS_MANAGE))
+    async def revoke_runner(request: Request, runner_id: uuid.UUID) -> Response:
+        principal = current(request)
+        if not await runner_store.revoke(ctx.db, principal.tenant_id, principal.actor, runner_id):
+            return JSONResponse({"error": "Not found"}, status_code=404)
+        return JSONResponse({"status": "revoked"})
+
+    # ── Set-up ────────────────────────────────────────────────────────
+
+    @routes.get("/api/onboarding", requires(Permission.SYSTEM_READ))
+    async def onboarding_status(request: Request) -> dict:
+        return await onboarding.status(ctx, tenant(request))
 
     # ── Actions, approvals and policy (ADR 0008) ──────────────────────
 
@@ -895,6 +1009,10 @@ def create_app(ctx: AppContext) -> FastAPI:
     @app.exception_handler(action_store.ActionError)
     async def on_action_error(request: Request, exc: action_store.ActionError) -> JSONResponse:
         return JSONResponse({"error": str(exc), "problems": exc.problems}, status_code=exc.status)
+
+    @app.exception_handler(runner_store.RunnerError)
+    async def on_runner_error(request: Request, exc: runner_store.RunnerError) -> JSONResponse:
+        return JSONResponse({"error": str(exc)}, status_code=400)
 
     @app.exception_handler(Denied)
     async def on_denied(request: Request, exc: Denied) -> JSONResponse:

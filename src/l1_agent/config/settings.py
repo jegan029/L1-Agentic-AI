@@ -30,6 +30,52 @@ def _csv(val: str) -> List[str]:
     return [v.strip() for v in val.split(",") if v.strip()]
 
 
+def _runner_settings(get, demo_mode: bool, demo_only_off) -> "RunnerSettings":
+    mode = get("RUNNER_MODE", "embedded").lower()
+    if mode not in ("embedded", "remote"):
+        raise ConfigError("RUNNER_MODE must be embedded or remote")
+    max_tier = get("RUNNER_MAX_TIER", "T0").upper()
+    if max_tier not in ("T0", "T1", "T2"):
+        raise ConfigError("RUNNER_MAX_TIER must be T0, T1 or T2")
+
+    def public_key(name: str) -> str:
+        """A public key given directly, or in a file named by <NAME>_FILE."""
+        path = get(f"{name}_FILE", "")
+        if not path:
+            return get(name, "").strip()
+        try:
+            with open(path, encoding="ascii") as handle:
+                return handle.read().strip()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ConfigError(f"{name}_FILE could not be read: {type(exc).__name__}") from None
+
+    mock = get("RUNNER_MOCK_CONNECTORS", "false").lower() == "true"
+    if mock and not demo_mode:
+        raise ConfigError("RUNNER_MOCK_CONNECTORS=true is only allowed when AGENT_DEMO_MODE=true")
+    return RunnerSettings(
+        mode=mode,
+        dispatch_key=get("RUNNER_DISPATCH_KEY", ""),
+        grant_key=get("ACTIONS_GRANT_KEY", ""),
+        control_plane_url=get("RUNNER_CONTROL_PLANE_URL", "").rstrip("/"),
+        identity=get("RUNNER_ID", "").strip(),
+        private_key=get("RUNNER_PRIVATE_KEY", ""),
+        dispatch_public_key=public_key("RUNNER_DISPATCH_PUBLIC_KEY"),
+        grant_public_key=public_key("RUNNER_GRANT_PUBLIC_KEY"),
+        max_tier=max_tier,
+        capabilities=tuple(_csv(get("RUNNER_CAPABILITIES", "*"))),
+        targets_file=get("RUNNER_TARGETS_FILE", ""),
+        connections_file=get("RUNNER_CONNECTIONS_FILE", ""),
+        secret_ref_prefixes=tuple(_csv(get("RUNNER_SECRET_REF_PREFIXES", ""))),
+        kill_switch_file=get("RUNNER_KILL_SWITCH_FILE", ""),
+        concurrency=max(1, int(get("RUNNER_CONCURRENCY", "4"))),
+        mock_connectors=mock,
+        verify_ssl=demo_only_off("RUNNER_VERIFY_SSL"),
+        ca_file=get("RUNNER_CA_FILE", ""),
+        client_cert_file=get("RUNNER_CLIENT_CERT_FILE", ""),
+        client_key_file=get("RUNNER_CLIENT_KEY_FILE", ""),
+    )
+
+
 @dataclass(frozen=True)
 class ServiceNowSettings:
     base_url: str = ""
@@ -206,6 +252,9 @@ class AgentSettings:
     circuit_breaker_failure_threshold: int = 5
     circuit_breaker_reset_seconds: int = 60
     demo_mode: bool = False
+    # Demo mode starts with sample SOPs published and the tenant set to automatic.
+    # False leaves the demo tenant empty, to walk through set-up from the beginning.
+    demo_seed: bool = True
     log_level: str = "INFO"
     webhook_host: str = "127.0.0.1"
     webhook_port: int = 8080
@@ -215,6 +264,10 @@ class AgentSettings:
     cors_allowed_origins: tuple = ()
     # Tenant-supplied L2 routing file; empty uses the packaged example.
     l2_routing_path: str = ""
+    # A certificate and key for the listener itself. Without them it serves plain HTTP
+    # and TLS is expected to end in front of it (an ingress or a mesh).
+    tls_cert_file: str = ""
+    tls_key_file: str = ""
 
 
 @dataclass(frozen=True)
@@ -272,6 +325,44 @@ class ActionSettings:
 
 
 @dataclass(frozen=True)
+class RunnerSettings:
+    """The runner split (ADR 0010).
+
+    The first three are the control plane's. The rest configure the runner
+    process (`l1-agent runner run`) and are read nowhere else.
+    """
+
+    # "embedded": connector calls are made in the worker. "remote": by a runner.
+    mode: str = "embedded"
+    # Private keys, as PEM. In a deployment give RUNNER_DISPATCH_KEY_REF and
+    # ACTIONS_GRANT_KEY_REF instead, and give the grant key to workers only.
+    dispatch_key: str = ""
+    grant_key: str = ""
+
+    control_plane_url: str = ""
+    # RUNNER_ID, as shown when the runner was enrolled. Empty: the runner names itself
+    # by its key, which is enough where the control plane serves one tenant.
+    identity: str = ""
+    private_key: str = ""  # or RUNNER_PRIVATE_KEY_REF
+    dispatch_public_key: str = ""
+    grant_public_key: str = ""  # empty: this runner makes no writes
+    max_tier: str = "T0"
+    capabilities: tuple = ("*",)
+    targets_file: str = ""
+    connections_file: str = ""
+    secret_ref_prefixes: tuple = ()
+    kill_switch_file: str = ""
+    concurrency: int = 4
+    # Mock connectors in place of real ones. Demo mode only.
+    mock_connectors: bool = False
+    verify_ssl: bool = True
+    ca_file: str = ""  # a private CA for the control plane's certificate
+    # A client certificate, for an ingress that requires mutual TLS.
+    client_cert_file: str = ""
+    client_key_file: str = ""
+
+
+@dataclass(frozen=True)
 class Settings:
     servicenow: ServiceNowSettings = field(default_factory=ServiceNowSettings)
     splunk: SplunkSettings = field(default_factory=SplunkSettings)
@@ -290,6 +381,7 @@ class Settings:
     worker: WorkerSettings = field(default_factory=WorkerSettings)
     knowledge: KnowledgeSettings = field(default_factory=KnowledgeSettings)
     actions: ActionSettings = field(default_factory=ActionSettings)
+    runner: RunnerSettings = field(default_factory=RunnerSettings)
     # Credential references given as <NAME>_REF, for example
     # SPLUNK_TOKEN_REF=file:/run/secrets/splunk-token. They take the place of <NAME>.
     secret_refs: Mapping[str, str] = field(default_factory=dict)
@@ -378,6 +470,7 @@ class Settings:
                 force_start_jobs=tuple(_csv(get("AUTOSYS_FORCE_START_JOBS", ""))),
             ),
             actions=_action_settings(get),
+            runner=_runner_settings(get, demo_mode, demo_only_off),
             windows_share=WindowsShareSettings(
                 allowed_unc_prefixes=_csv(get("WINDOWS_SHARE_ALLOWED_PREFIXES", "")),
                 smb_username=get("SMB_USERNAME", ""),
@@ -426,6 +519,7 @@ class Settings:
                 circuit_breaker_failure_threshold=int(get("AGENT_CB_FAILURE_THRESHOLD", "5")),
                 circuit_breaker_reset_seconds=int(get("AGENT_CB_RESET_SECONDS", "60")),
                 demo_mode=demo_mode,
+                demo_seed=get("AGENT_DEMO_SEED", "true").lower() == "true",
                 log_level=get("AGENT_LOG_LEVEL", "INFO"),
                 webhook_host=get("AGENT_WEBHOOK_HOST", "127.0.0.1"),
                 webhook_port=int(get("AGENT_WEBHOOK_PORT", "8080")),
@@ -433,6 +527,8 @@ class Settings:
                 webhook_max_skew_seconds=int(get("AGENT_WEBHOOK_MAX_SKEW_SECONDS", "300")),
                 cors_allowed_origins=tuple(_csv(get("AGENT_CORS_ORIGINS", ""))),
                 l2_routing_path=get("L2_ROUTING_PATH", ""),
+                tls_cert_file=get("AGENT_TLS_CERT_FILE", ""),
+                tls_key_file=get("AGENT_TLS_KEY_FILE", ""),
             ),
             secrets=SecretsSettings(
                 backend=get("SECRETS_BACKEND", "env"),

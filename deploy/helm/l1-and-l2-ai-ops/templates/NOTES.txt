@@ -1,0 +1,25 @@
+L1 and L2 AI-Ops is installed for tenant "{{ .Values.tenant.slug }}".
+
+The install job applied the schema migrations and made sure the tenant exists
+{{- if and (include "aiops.remote" .) .Values.runner.publicKey }}, and enrolled runner "{{ .Values.runner.name }}"{{ end }}.
+
+Next:
+
+  1. Check the pods run as a non-root user on a read-only filesystem and that the API answers:
+       helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}
+
+  2. See what is left to set up (ServiceNow, connectors, a published SOP, the autonomy level):
+       kubectl exec -n {{ .Release.Namespace }} deploy/{{ include "aiops.fullname" . }}-api -- python -m src.l1_agent.cli onboarding
+     or open the dashboard and go to Set-up.
+
+{{- if include "aiops.remote" . }}
+
+  3. The runner is capped at tier {{ .Values.runner.maxTier }}{{ if not .Values.runner.grantPublicKey }} and has no grant key, so it makes no write{{ end }}.
+     {{- if eq .Values.runner.maxTier "T0" }}
+     It reads only. To let it make changes, raise runner.maxTier, set runner.grantPublicKey
+     and list the targets it may change under runner.targets.
+     {{- end }}
+{{- end }}
+
+A new tenant is in shadow: it records what it would do and changes nothing.
+docs/operator-guide.md describes each step, the keys, upgrades and backups.

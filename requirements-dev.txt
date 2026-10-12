@@ -7,3 +7,4 @@ pytest-cov>=4.1.0
 pytest-timeout>=2.2.0
 hypothesis>=6.98.0
 ruff>=0.3.0
+pyyaml>=6.0                  # tests/deploy read the rendered Helm chart

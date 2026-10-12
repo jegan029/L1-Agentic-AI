@@ -1,5 +1,7 @@
-# Only src/, the sample SOPs under data/ and the requirements files belong in the image.
+# What the images need: src/, the sample SOPs under data/, requirements.lock,
+# the dashboard's sources under frontend/ and the nginx template under deploy/nginx/.
 .git
+.github
 .env
 .env.*
 !.env.example
@@ -11,9 +13,15 @@
 .hypothesis
 .coverage
 coverage.xml
-frontend
+frontend/node_modules
+frontend/dist
+frontend/.env
+frontend/.env.*
 tests
 evals
 docs
+tools
+deploy/helm
+deploy/compose
 data/*.jsonl
 data/*.db*

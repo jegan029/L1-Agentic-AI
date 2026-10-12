@@ -222,6 +222,11 @@ class ConnectionSecrets:
     def slots(self) -> Tuple[str, ...]:
         return tuple(sorted(self._references))
 
+    @property
+    def references(self) -> Dict[str, str]:
+        """Slot name to reference. Where each credential is kept; never a value."""
+        return dict(self._references)
+
     def has(self, slot: str) -> bool:
         return slot in self._references
 

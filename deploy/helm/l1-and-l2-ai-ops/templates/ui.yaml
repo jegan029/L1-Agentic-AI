@@ -1,0 +1,83 @@
+{{- if .Values.ui.enabled -}}
+{{- $full := include "aiops.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-ui
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+spec:
+  replicas: {{ .Values.ui.replicas }}
+  selector:
+    matchLabels:
+      {{- include "aiops.selector" . | nindent 6 }}
+      app.kubernetes.io/component: ui
+  template:
+    metadata:
+      labels:
+        {{- include "aiops.selector" . | nindent 8 }}
+        app.kubernetes.io/component: ui
+    spec:
+      serviceAccountName: {{ $full }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- /* The nginx image's own unprivileged user. */}}
+        {{- toYaml (merge (dict "runAsUser" 101 "runAsGroup" 101 "fsGroup" 101) .Values.podSecurityContext) | nindent 8 }}
+      {{- include "aiops.scheduling" . | nindent 6 }}
+      containers:
+        - name: ui
+          image: {{ include "aiops.uiImage" . | quote }}
+          imagePullPolicy: {{ .Values.ui.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: API_UPSTREAM
+              value: {{ printf "%s://%s-api:%v" (include "aiops.apiScheme" .) $full .Values.api.port | quote }}
+            - name: UI_STYLE_SRC
+              value: {{ ternary "https://fonts.googleapis.com" "" .Values.ui.allowGoogleFonts | quote }}
+            - name: UI_FONT_SRC
+              value: {{ ternary "https://fonts.gstatic.com" "" .Values.ui.allowGoogleFonts | quote }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+          resources:
+            {{- toYaml .Values.ui.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            # The image renders its configuration here when it starts.
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d
+      volumes:
+        {{- include "aiops.tmpVolume" . | nindent 8 }}
+        - name: nginx-conf
+          emptyDir:
+            sizeLimit: 1Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-ui
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "aiops.selector" . | nindent 4 }}
+    app.kubernetes.io/component: ui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+{{- end }}

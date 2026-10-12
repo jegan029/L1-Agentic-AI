@@ -1,0 +1,122 @@
+{{- if include "aiops.remote" . -}}
+{{- $full := include "aiops.fullname" . -}}
+{{- $prefixes := concat (list "file:/run/secrets/connectors/") .Values.runner.extraSecretRefPrefixes -}}
+# The runner makes the connector calls. It has no database credentials, listens on no
+# port, and reaches the control plane over one outbound TLS connection.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-runner
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: runner
+spec:
+  replicas: {{ .Values.runner.replicas }}
+  selector:
+    matchLabels:
+      {{- include "aiops.selector" . | nindent 6 }}
+      app.kubernetes.io/component: runner
+  template:
+    metadata:
+      labels:
+        {{- include "aiops.selector" . | nindent 8 }}
+        app.kubernetes.io/component: runner
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.runner.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $full }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- include "aiops.scheduling" . | nindent 6 }}
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: runner
+          image: {{ include "aiops.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["runner", "run"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: RUNNER_CONTROL_PLANE_URL
+              value: {{ include "aiops.controlPlaneUrl" . | quote }}
+            - name: RUNNER_PRIVATE_KEY_REF
+              value: "file:/run/secrets/runner/runner.key"
+            - name: RUNNER_DISPATCH_PUBLIC_KEY
+              value: {{ required "runner.dispatchPublicKey is required: whose calls the runner accepts" .Values.runner.dispatchPublicKey | quote }}
+            - name: RUNNER_GRANT_PUBLIC_KEY
+              value: {{ .Values.runner.grantPublicKey | quote }}
+            - name: RUNNER_MAX_TIER
+              value: {{ .Values.runner.maxTier | quote }}
+            - name: RUNNER_CAPABILITIES
+              value: {{ join "," .Values.runner.capabilities | quote }}
+            - name: RUNNER_TARGETS_FILE
+              value: /etc/runner/targets.json
+            - name: RUNNER_CONNECTIONS_FILE
+              value: /etc/runner/connections.json
+            - name: RUNNER_SECRET_REF_PREFIXES
+              value: {{ join "," $prefixes | quote }}
+            # A file: reference is read only from these directories.
+            - name: SECRETS_FILE_ROOTS
+              value: "/run/secrets/connectors:/run/secrets/runner"
+            {{- if .Values.runner.caSecret }}
+            - name: RUNNER_CA_FILE
+              value: /run/ca/ca.crt
+            {{- end }}
+            {{- range $name, $value := .Values.runner.config }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range .Values.runner.secretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .secretName }}
+                  key: {{ .key }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.runner.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: limits
+              mountPath: /etc/runner
+              readOnly: true
+            - name: runner-key
+              mountPath: /run/secrets/runner
+              readOnly: true
+            {{- if .Values.runner.connectorSecret }}
+            - name: connector-secrets
+              mountPath: /run/secrets/connectors
+              readOnly: true
+            {{- end }}
+            {{- if .Values.runner.caSecret }}
+            - name: ca
+              mountPath: /run/ca
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- include "aiops.tmpVolume" . | nindent 8 }}
+        - name: limits
+          configMap:
+            name: {{ $full }}-runner
+        - name: runner-key
+          secret:
+            secretName: {{ required "runner.keySecret is required: the Secret holding runner.key" .Values.runner.keySecret }}
+            defaultMode: 0440
+        {{- if .Values.runner.connectorSecret }}
+        - name: connector-secrets
+          secret:
+            secretName: {{ .Values.runner.connectorSecret }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if .Values.runner.caSecret }}
+        - name: ca
+          secret:
+            secretName: {{ .Values.runner.caSecret }}
+            defaultMode: 0444
+        {{- end }}
+{{- end }}

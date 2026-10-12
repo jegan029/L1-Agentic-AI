@@ -291,7 +291,13 @@ class TestSourceTree:
         assert calls_of("authorise_execution") == {"actions/service.py": {"_authorise"}}
 
     def test_only_the_engine_attaches_a_verifier_and_only_the_sdk_stores_one(self):
-        assert calls_of("authorise_writes") == {"engine/executor.py": {"execute_sop"}}
+        # Two places, one per deployment shape (ADR 0010). In the worker the engine attaches
+        # the action pipeline. In a runner, which has no pipeline, the runner attaches a
+        # verifier that holds the policy engine's public key and cannot mint.
+        assert calls_of("authorise_writes") == {
+            "engine/executor.py": {"execute_sop"},
+            "runner/agent.py": {"_connector"},
+        }
         assert assignments_of("grant_verifier") == {
             "connectors/sdk/base.py",
             "connectors/sdk/registry.py",

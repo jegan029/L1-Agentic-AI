@@ -344,6 +344,33 @@ def demo_connectors(
     return ConnectorSet(registry, connectors)
 
 
+async def check_live_connectors(settings: Settings, connectors: ConnectorSet) -> Dict[str, str]:
+    """Ask each of demo mode's live connectors whether it is usable, at start-up.
+
+    Returns {adapter name: reason} for those that are not, and logs each one.
+    For Splunk over MCP this is where the search tool is confirmed to exist.
+    It reports and does not stop start-up: the target may simply not be up yet.
+    """
+    from src.l1_agent.connectors.catalog import ADAPTER_CONNECTORS
+
+    unhealthy: Dict[str, str] = {}
+    for name in settings.agent.live_adapters:
+        connector = connectors.connector(ADAPTER_CONNECTORS.get(name, name))
+        if connector is None:
+            continue
+        try:
+            health = await connector.health()
+            ok, reason = health.status.value == "healthy", health.reason
+        except Exception as exc:
+            ok, reason = False, type(exc).__name__
+        if ok:
+            logger.info("Live connector %s is healthy", name)
+        else:
+            unhealthy[name] = reason
+            logger.error("Live connector %s is UNHEALTHY: %s", name, reason)
+    return unhealthy
+
+
 # ── The hub ───────────────────────────────────────────────────────────
 
 

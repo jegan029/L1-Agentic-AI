@@ -21,6 +21,8 @@ from src.l1_agent.main import L1AgentService
 from tests.api.support import client, token_headers
 from tests.contract.replay import Replay, load
 
+# What the service asks Splunk at start-up, before any incident: is it there?
+HEALTH_ONLY = load("splunk/e2e_autosys.json")["exchanges"][:1]
 AUTOSYS_INCIDENT = next(i for i in DEMO_INCIDENTS if i["number"] == "INC0009003")
 SEARCH_STEP = "step-4"
 
@@ -135,14 +137,16 @@ class TestAutosysIncidentWithSplunkLive:
         self, tmp_path, token
     ):
         # The SOP searches batch_logs. Here only app_logs is allowed.
-        async with Replay([]) as splunk:
+        async with Replay(HEALTH_ONLY) as splunk:
             record, notes = await run_incident(
                 hybrid_settings(
                     tmp_path, SplunkSettings(base_url=splunk.url, allowed_indexes=("app_logs",))
                 ),
                 AUTOSYS_INCIDENT,
             )
-            assert splunk.requests == []
+            splunk.assert_complete()
+            # The start-up health check, and no search.
+            assert [r["path"] for r in splunk.requests] == ["/services/server/info"]
         search = step(record, SEARCH_STEP)
         assert search["status"] == "escalated"
         assert search["audit"]["outcome"] == "rejected" and search["audit"]["spl"] == ""

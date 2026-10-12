@@ -114,6 +114,21 @@ l1-agent connection list
 
 A tenant with no stored connection for a connector uses the deployment's environment settings (`SPLUNK_BASE_URL` and so on), so an install configured through environment variables keeps working. There, `<NAME>_REF` gives a reference in place of the value, for example `SPLUNK_TOKEN_REF=file:/run/secrets/splunk-token`; with `SECRETS_BACKEND=vault` or `aws` the references are derived for you.
 
+**Splunk.** The connector has two backends and one guard in front of both. `backend` is `mcp` (the Splunk MCP Server app, at `<splunk>:8089/services/mcp`, credential `mcp_token`) or `rest` (the search API on port 8089, credential `token`). Output and behaviour are the same with either.
+
+```json
+{"backend": "mcp", "mcp_url": "https://splunk.internal.example:8089/services/mcp",
+ "allowed_indexes": ["batch_logs", "app_logs"], "max_lookback": "24h", "max_results": 100}
+```
+
+- **A Splunk connection needs `allowed_indexes`.** One saved before this setting existed has none, and every search through it is refused until the list is added. An empty list denies; a wildcard is not accepted.
+- **What a search may be.** It begins with `search` or `index=`, names only listed indexes, and after a pipe uses only `search`, `where`, `eval`, `stats`, `table`, `fields`, `sort`, `head`, `tail`, `rex`, `dedup`, `timechart`, `top` and `rare`. No subsearch, no macro, and no `earliest=` or `latest=` in the text: give `time_range` on the step. A longer range is clamped to `max_lookback`, and `| head <max_results>` is always added. In an SOP, a `${name}` in a search stands inside double quotes.
+- **A refused search ends the run as `ESCALATED`**, with the reason, without being retried and without following the step's `on_failure`. So does `401` or `403` from Splunk. A timeout or a `5xx` is retried and then is a failed check. The guard is pattern matching, not an SPL parser: the search user's Splunk role is what limits access, so give that role only the indexes listed here.
+- **The record of each search** (`audit` on the step, and the log line `Splunk search backend=…`) has the backend, the final search, the time range, the result count, the duration and the outcome. It never has event text.
+- **A private certificate:** set `ca_bundle` (`SPLUNK_CA_BUNDLE`) and leave verification on. `verify_ssl: false` is refused outside demo mode.
+- **Check it:** `python scripts/splunk_check.py` builds the connector as the service does and prints a pass or fail summary. `--backend rest` or `--backend mcp` checks the other with the same settings.
+- **Demo mode with real Splunk:** `LIVE_ADAPTERS=splunk` with `AGENT_DEMO_MODE=true` keeps every other connector a mock. If Splunk is not configured, the service does not start rather than fall back to canned events. `python scripts/seed_splunk.py --all` sends a lab the events the sample SOPs search for (it needs `SPLUNK_HEC_TOKEN`).
+
 **Rotating a credential.** Change it in the secrets backend. Nothing is restarted. Values are cached for 30 seconds; and when a call fails and the backend holds a different value from the one that was used, the connector reads the new value and repeats the call once. For ServiceNow the same happens on a `401`. A credential given as a plain value in the environment (no reference) is read once at start-up and does not follow a rotation.
 
 Changed connection settings are picked up within about 15 seconds. Every change is in the audit log as `connection.updated`, with the references but never a value.

@@ -3,6 +3,30 @@
   "exchanges": [
     {
       "request": {
+        "method": "GET",
+        "path": "/services/server/info",
+        "query": {
+          "output_mode": "json"
+        },
+        "headers": {
+          "Authorization": "Bearer sp-hybrid"
+        }
+      },
+      "response": {
+        "json": {
+          "entry": [
+            {
+              "name": "server-info",
+              "content": {
+                "version": "10.0.0"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
         "method": "POST",
         "path": "/services/search/jobs",
         "headers": {

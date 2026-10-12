@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from src.l1_agent.adapters.base import AdapterResult
@@ -16,9 +18,13 @@ from src.l1_agent.config.settings import (
     SplunkSettings,
 )
 from src.l1_agent.connectors.catalog import connectors_for_adapters
-from src.l1_agent.connectors.hub import demo_connectors, environment_connections
+from src.l1_agent.connectors.hub import (
+    check_live_connectors,
+    demo_connectors,
+    environment_connections,
+)
 from src.l1_agent.connectors.ops.splunk import SplunkConnector
-from src.l1_agent.connectors.sdk.base import Refused, StepContext
+from src.l1_agent.connectors.sdk.base import Health, HealthStatus, Refused, StepContext
 from src.l1_agent.connectors.sdk.secrets import ConnectionSecrets, EnvBackend, SecretResolver
 from src.l1_agent.demo import build_mock_adapters
 from src.l1_agent.runner import protocol
@@ -265,6 +271,42 @@ class TestDemoModeWithSplunkLive:
                 SecretResolver({}),
                 self.mocks(),
             )
+
+
+class TestStartUpHealth:
+    def hybrid(self):
+        settings = Settings(
+            agent=AgentSettings(demo_mode=True, live_adapters=("splunk",)),
+            splunk=SplunkSettings(mcp_url=MCP_URL, allowed_indexes=("app_logs",)),
+        )
+        mocks = connectors_for_adapters(build_mock_adapters())
+        return settings, demo_connectors(settings, SecretResolver({}), mocks)
+
+    async def test_an_unusable_live_connector_is_reported_and_start_up_goes_on(self, caplog):
+        settings, connectors = self.hybrid()  # no token was given
+        with caplog.at_level(logging.ERROR):
+            unhealthy = await check_live_connectors(settings, connectors)
+        assert "mcp_token" in unhealthy["splunk"]
+        assert any("Live connector splunk is UNHEALTHY" in r.getMessage() for r in caplog.records)
+
+    async def test_a_missing_search_tool_is_reported_at_start_up(self):
+        settings, connectors = self.hybrid()
+        splunk = connectors.connector("splunk")
+
+        async def health():
+            return Health(HealthStatus.UNAVAILABLE, "the MCP server does not offer the search tool")
+
+        splunk.health = health
+        assert "search tool" in (await check_live_connectors(settings, connectors))["splunk"]
+
+    async def test_a_healthy_one_reports_nothing(self):
+        settings, connectors = self.hybrid()
+
+        async def health():
+            return Health(HealthStatus.HEALTHY)
+
+        connectors.connector("splunk").health = health
+        assert await check_live_connectors(settings, connectors) == {}
 
 
 class TestOverTheRunnerProtocol:

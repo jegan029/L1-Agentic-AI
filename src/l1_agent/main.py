@@ -20,7 +20,12 @@ from src.l1_agent.auth.oidc import OidcClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
 from src.l1_agent.config.settings import ConfigError, Settings
 from src.l1_agent.connectors.catalog import connectors_for_adapters
-from src.l1_agent.connectors.hub import ConnectorHub, demo_connectors, servicenow_secrets
+from src.l1_agent.connectors.hub import (
+    ConnectorHub,
+    check_live_connectors,
+    demo_connectors,
+    servicenow_secrets,
+)
 from src.l1_agent.connectors.itsm.handle import ItsmHandle, check_servicenow_config
 from src.l1_agent.connectors.sdk.secrets import SecretResolver
 from src.l1_agent.db.engine import Database
@@ -165,19 +170,18 @@ class L1AgentService:
                     await self._itsm.reason(),
                 )
         dispatcher, grant_key, runner_keys = await self._runner_side(db)
-        self._hub = ConnectorHub(
-            db,
-            settings,
-            self._resolver,
-            # In demo mode the mocks stand in for the targets. With a runner they are the
-            # runner's to hold (RUNNER_MOCK_CONNECTORS), and connections are entered as usual.
-            fixed=demo_connectors(
+        # In demo mode the mocks stand in for the targets, except those LIVE_ADAPTERS names.
+        # With a runner they are the runner's to hold (RUNNER_MOCK_CONNECTORS), and
+        # connections are entered as usual.
+        fixed = None
+        if demo and dispatcher is None:
+            fixed = demo_connectors(
                 settings, self._resolver, connectors_for_adapters(build_mock_adapters())
             )
-            if demo and dispatcher is None
-            else None,
-            dispatcher=dispatcher,
-        )
+            await check_live_connectors(settings, fixed)
+        elif settings.agent.live_adapters:
+            raise ConfigError("LIVE_ADAPTERS cannot be used with RUNNER_MODE=remote")
+        self._hub = ConnectorHub(db, settings, self._resolver, fixed=fixed, dispatcher=dispatcher)
         # Every write goes through this: policy, approvals, change record, kill switch.
         actions = ActionService(db, self._itsm, settings.actions, grant_key=grant_key)
         # Every model request goes through this: model policy, redaction, budgets, audit.

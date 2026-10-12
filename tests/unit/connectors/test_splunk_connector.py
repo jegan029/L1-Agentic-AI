@@ -284,7 +284,7 @@ class TestStartUpHealth:
 
     async def test_an_unusable_live_connector_is_reported_and_start_up_goes_on(self, caplog):
         settings, connectors = self.hybrid()  # no token was given
-        with caplog.at_level(logging.ERROR):
+        with caplog.at_level(logging.ERROR, logger="l1_agent"):
             unhealthy = await check_live_connectors(settings, connectors)
         assert "mcp_token" in unhealthy["splunk"]
         assert any("Live connector splunk is UNHEALTHY" in r.getMessage() for r in caplog.records)

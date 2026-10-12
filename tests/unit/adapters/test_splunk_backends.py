@@ -216,7 +216,7 @@ class TestAdapter:
             assert result.audit["spl"] == "search index=app_logs ERROR | head 100"
 
     async def test_the_log_has_the_search_and_never_the_events(self, caplog):
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.INFO, logger="l1_agent"):
             await SplunkSearchAdapter(FakeBackend(), GUARD).execute(
                 {"query": "index=app_logs ERROR"}
             )
@@ -428,7 +428,7 @@ class TestMcpBackend:
         assert not hasattr(SplunkSearchAdapter(backend, GUARD), "list_tool_names")
 
     def test_tls_off_is_warned_about_when_the_backend_is_built(self, caplog):
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.WARNING, logger="l1_agent"):
             mcp_backend(FakeMcp(), verify_ssl=False)
             RestBackend("https://splunk.example:8089", TOKEN, verify_ssl=False)
         messages = [r.getMessage() for r in caplog.records]

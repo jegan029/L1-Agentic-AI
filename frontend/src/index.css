@@ -659,3 +659,19 @@ dialog.drawer::backdrop { background: rgba(2, 11, 91, 0.3); }
 .card__body > .field + .muted, .card__body > .muted + .actions { margin-top: 10px; }
 .card__body details { margin-top: 10px; font-size: 13px; }
 @media (max-width: 560px) { .request__facts > div { grid-template-columns: 1fr; gap: 0; } }
+
+/* ── Set-up: the checklist and the connector forms ─────────────────── */
+.setup-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; counter-reset: setup; }
+.setup-step { display: grid; grid-template-columns: 84px 1fr; gap: 14px; align-items: start; }
+.setup-step .badge { justify-self: start; }
+.setup-step__title { margin: 0; font-weight: 600; font-size: 14px; }
+.setup-step__detail { margin: 2px 0 0; font-size: 13px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.setup-step .muted { margin: 4px 0 0; font-size: 13px; color: var(--text-muted); }
+.card__title .muted { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--text-muted); }
+.setup-form { display: grid; gap: 12px; margin-top: 12px; max-width: 640px; }
+.setup-form .field { width: 100%; }
+.setup-form__list { height: auto; min-height: 72px; padding: 8px 12px; resize: vertical; }
+.setup-form__group { border: 1px solid var(--border-subtle); border-radius: 6px; padding: 12px 14px; margin: 0; display: grid; gap: 12px; }
+.setup-form__group legend { padding: 0 6px; }
+.setup-form input[type="checkbox"] { width: 18px; height: 18px; }
+@media (max-width: 560px) { .setup-step { grid-template-columns: 1fr; gap: 6px; } }

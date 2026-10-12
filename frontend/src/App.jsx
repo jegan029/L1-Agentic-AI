@@ -11,6 +11,7 @@ import SopLibrary from './components/SopLibrary'
 import Actions from './components/Actions'
 import SopPerformance from './components/SopPerformance'
 import ActivityFeed from './components/ActivityFeed'
+import Setup from './components/Setup'
 import SignIn from './components/SignIn'
 
 const PAGE_TITLES = Object.fromEntries(NAV_ITEMS.map(i => [i.key, i.label]))
@@ -60,6 +61,7 @@ function Shell() {
         {page === 'library' && <SopLibrary version={version} />}
         {page === 'sops' && <SopPerformance />}
         {page === 'activity' && <ActivityFeed />}
+        {page === 'setup' && <Setup />}
       </main>
 
       <footer className="footer">

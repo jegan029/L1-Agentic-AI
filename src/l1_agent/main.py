@@ -12,13 +12,13 @@ from fastapi import FastAPI
 
 from src.l1_agent.actions.service import ActionService
 from src.l1_agent.ai.gateway import ModelGateway
-from src.l1_agent.ai.providers import Provider, build_provider
+from src.l1_agent.ai.providers import DETERMINISTIC, Provider, build_provider
 from src.l1_agent.api.app import AppContext, create_app
 from src.l1_agent.api.security import demo_open, validate_security_config, webhook_open
 from src.l1_agent.audit.log import Actor
 from src.l1_agent.auth.oidc import OidcClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
-from src.l1_agent.config.settings import ConfigError, Settings
+from src.l1_agent.config.settings import LIVE_MODEL, ConfigError, Settings
 from src.l1_agent.connectors.catalog import connectors_for_adapters
 from src.l1_agent.connectors.hub import (
     ConnectorHub,
@@ -155,7 +155,7 @@ class L1AgentService:
             # Demo mode starts with the sample SOPs published and one waiting for review.
             await seed_demo_sops(db, tenant_id)
             await seed_demo_policy(db, tenant_id)
-            await seed_demo_model_policy(db, tenant_id)
+            await seed_demo_model_policy(db, tenant_id, self._live_model_provider())
             logger.info("Demo mode: mock connectors and the sample SOPs")
 
         self._itsm = self._snow_client
@@ -222,6 +222,23 @@ class L1AgentService:
             runner_keys=runner_keys,
         )
         return self._ctx
+
+    def _live_model_provider(self) -> str:
+        """The hosted provider the demo tenant may use, when LIVE_ADAPTERS names `model`."""
+        if LIVE_MODEL not in self._settings.agent.live_adapters:
+            return ""
+        if self._provider is None or self._provider.id == DETERMINISTIC:
+            # Carrying on with the stand-in would pass its answers off as the model's.
+            raise ConfigError(
+                "LIVE_ADAPTERS names 'model', but no hosted model is configured "
+                "(LLM_ENABLED, LLM_ENDPOINT, LLM_MODEL, LLM_API_KEY)"
+            )
+        logger.warning(
+            "Demo mode with the hosted model: ticket text is sent to %s (%s) after redaction",
+            self._provider.id,
+            self._provider.model,
+        )
+        return self._provider.id
 
     async def _runner_side(self, db: Database):
         """With RUNNER_MODE=remote: what signs calls and grants for the runner (ADR 0010).

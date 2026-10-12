@@ -21,7 +21,7 @@ import sqlalchemy as sa
 
 from src.l1_agent.audit import log as audit
 from src.l1_agent.audit.log import Actor
-from src.l1_agent.config.settings import ConfigError, Settings
+from src.l1_agent.config.settings import LIVE_MODEL, ConfigError, Settings
 from src.l1_agent.connectors.catalog import default_registry
 from src.l1_agent.connectors.knowledge.base import KnowledgeSource
 from src.l1_agent.connectors.knowledge.git import GitKnowledge
@@ -323,7 +323,8 @@ def demo_connectors(
     """
     from src.l1_agent.connectors.catalog import ADAPTER_CONNECTORS
 
-    live = settings.agent.live_adapters
+    # `model` is not a connector: it is the demo tenant's model policy (demo.py).
+    live = [name for name in settings.agent.live_adapters if name != LIVE_MODEL]
     if not live:
         return mocks
     registry = registry or default_registry()
@@ -355,6 +356,8 @@ async def check_live_connectors(settings: Settings, connectors: ConnectorSet) ->
 
     unhealthy: Dict[str, str] = {}
     for name in settings.agent.live_adapters:
+        if name == LIVE_MODEL:
+            continue
         connector = connectors.connector(ADAPTER_CONNECTORS.get(name, name))
         if connector is None:
             continue

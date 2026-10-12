@@ -238,7 +238,7 @@ class TestDemoModeWithSplunkLive:
         env.setenv("AGENT_DEMO_MODE", "true")
         assert Settings.from_env().agent.live_adapters == ("splunk",)
         env.setenv("LIVE_ADAPTERS", "splunk,autosys")
-        with pytest.raises(ConfigError, match="LIVE_ADAPTERS may name: splunk"):
+        with pytest.raises(ConfigError, match="LIVE_ADAPTERS may name: splunk, model"):
             Settings.from_env()
 
     def test_without_it_demo_mode_is_all_mocks(self):

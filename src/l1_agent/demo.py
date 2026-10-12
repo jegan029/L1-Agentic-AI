@@ -247,8 +247,12 @@ async def seed_demo_policy(db, tenant_id) -> None:
     )
 
 
-async def seed_demo_model_policy(db, tenant_id) -> None:
+async def seed_demo_model_policy(db, tenant_id, provider: str = "") -> None:
     """Let the demo tenant use the deterministic stand-in for a model, for every task.
+
+    `provider` names a hosted provider to allow instead. It is given only when
+    the operator asked for it with LIVE_ADAPTERS=model: a key in the environment
+    is not enough for ticket text to leave for a hosted model.
 
     A tenant that already has a model policy is left alone. Outside demo mode a
     tenant uses no model until its administrator sets a policy (ADR 0009).
@@ -274,7 +278,7 @@ async def seed_demo_model_policy(db, tenant_id) -> None:
         tenant_id,
         Actor.system("demo-setup"),
         enabled=True,
-        rules={"providers": [DETERMINISTIC], "tasks": list(TASKS)},
+        rules={"providers": [provider or DETERMINISTIC], "tasks": list(TASKS)},
     )
 
 

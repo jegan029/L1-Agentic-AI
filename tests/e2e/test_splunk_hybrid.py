@@ -15,7 +15,13 @@ from typing import Any, Dict, Tuple
 
 import pytest
 
-from src.l1_agent.config.settings import AgentSettings, LLMSettings, Settings, SplunkSettings
+from src.l1_agent.config.settings import (
+    AgentSettings,
+    ConfigError,
+    LLMSettings,
+    Settings,
+    SplunkSettings,
+)
 from src.l1_agent.demo import DEMO_INCIDENTS
 from src.l1_agent.main import L1AgentService
 from tests.api.support import client, token_headers
@@ -163,3 +169,39 @@ class TestAutosysIncidentWithSplunkLive:
         search = step(record, SEARCH_STEP)
         assert search["tool_called"] == "MockSplunk" and search["audit"] == {}
         assert record["outcome"] == "escalated"
+
+
+class TestDemoModeWithTheHostedModel:
+    """`LIVE_ADAPTERS=model`: the demo tenant may use the configured model, and only then."""
+
+    HOSTED = LLMSettings(
+        enabled=True, endpoint="https://models.example/v1", model="some-model", api_key="k"
+    )
+
+    def settings(self, tmp_path, live, llm) -> Settings:
+        base = hybrid_settings(tmp_path, SplunkSettings())
+        return replace(base, agent=replace(base.agent, live_adapters=live), llm=llm)
+
+    async def providers_allowed(self, settings) -> tuple:
+        from src.l1_agent.ai import policy as model_policy
+
+        service = L1AgentService(settings)
+        try:
+            ctx = await service.setup()
+            return (await model_policy.get_model_policy(ctx.db, ctx.tenant_id)).providers
+        finally:
+            await service.close()
+
+    async def test_a_key_alone_does_not_send_tickets_to_a_hosted_model(self, tmp_path):
+        assert await self.providers_allowed(self.settings(tmp_path, (), self.HOSTED)) == (
+            "deterministic",
+        )
+
+    async def test_naming_the_model_allows_the_configured_provider(self, tmp_path):
+        allowed = await self.providers_allowed(self.settings(tmp_path, ("model",), self.HOSTED))
+        assert allowed == ("openai_compatible",)
+
+    @pytest.mark.parametrize("llm", [LLMSettings(enabled=False), LLMSettings(enabled=True)])
+    async def test_naming_the_model_without_one_configured_stops_start_up(self, tmp_path, llm):
+        with pytest.raises(ConfigError, match="LIVE_ADAPTERS names 'model'"):
+            await self.providers_allowed(self.settings(tmp_path, ("model",), llm))

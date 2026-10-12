@@ -243,3 +243,28 @@ def make_service(
 def demo_settings() -> Settings:
     """Settings configured for demo/test mode."""
     return Settings.from_env()
+
+
+# ── A developer's .env is not part of the tests ───────────────────────
+
+LIVE_MARKERS = ("live_servicenow", "live_llm", "splunk_live")
+_LOCAL_ENV_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env")
+
+
+@pytest.fixture(autouse=True)
+def _no_local_env_file(request, monkeypatch):
+    """Keep the settings in a developer's `.env` out of every test that is not a live test.
+
+    `.env` says how one machine runs the service (demo mode, which connectors are
+    real). `Settings.from_env` reads it, and the live test modules load it when
+    they are collected, so without this a test's result depends on that file. CI
+    has no `.env`; this makes a developer's run the same.
+    """
+    if any(request.node.get_closest_marker(marker) for marker in LIVE_MARKERS):
+        return
+    from dotenv import dotenv_values
+
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *args, **kwargs: False)
+    if os.path.isfile(_LOCAL_ENV_FILE):
+        for name in dotenv_values(_LOCAL_ENV_FILE):
+            monkeypatch.delenv(name, raising=False)

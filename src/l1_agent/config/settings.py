@@ -26,8 +26,10 @@ def _action_settings(get) -> "ActionSettings":
     )
 
 
-# The adapters LIVE_ADAPTERS may name. Only Splunk has run against a real system.
-LIVE_ADAPTER_NAMES = ("splunk",)
+# What LIVE_ADAPTERS may name: the connectors that have run against a real system, and
+# `model`, which lets the demo tenant use the hosted model instead of the stand-in.
+LIVE_MODEL = "model"
+LIVE_ADAPTER_NAMES = ("splunk", LIVE_MODEL)
 
 
 def _splunk_backend(value: str) -> str:

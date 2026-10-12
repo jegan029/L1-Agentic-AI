@@ -29,6 +29,8 @@ from src.l1_agent.audit import log as audit
 from src.l1_agent.auth import store
 from src.l1_agent.auth.permissions import Permission, Role, permissions_for
 from src.l1_agent.auth.store import Principal
+from src.l1_agent.runner import keys, protocol
+from src.l1_agent.runner import store as runner_store
 from src.l1_agent.utils.logging import get_logger
 from src.l1_agent.utils.metrics import metrics
 
@@ -41,6 +43,7 @@ SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 class AccessKind(Enum):
     PUBLIC = "public"  # no credentials; must say why
     WEBHOOK = "webhook"  # HMAC signature
+    RUNNER = "runner"  # a request signed by an enrolled runner's key (ADR 0010)
     AUTHENTICATED = "authenticated"  # any signed-in principal
     PERMISSION = "permission"  # a principal holding one named permission
 
@@ -60,6 +63,10 @@ def public(reason: str) -> Access:
 
 def webhook() -> Access:
     return Access(AccessKind.WEBHOOK)
+
+
+def runner() -> Access:
+    return Access(AccessKind.RUNNER)
 
 
 def authenticated() -> Access:
@@ -193,6 +200,51 @@ async def verify_webhook(request: Request, ctx: Any) -> None:
         raise Denied(401, "unauthorized", "replay")
 
 
+async def verify_runner(request: Request, ctx: Any) -> runner_store.RunnerIdentity:
+    """The enrolled runner that signed this request, or Denied.
+
+    A runner is found by the identity it was given at enrolment, which names
+    its tenant, or by its key among the runners of the tenant this deployment
+    serves. Either way the request must carry that runner's signature. A
+    revoked runner is refused from its next request.
+    """
+    presented = request.headers.get(protocol.ID_HEADER, "")
+    timestamp = request.headers.get(protocol.TIMESTAMP_HEADER, "")
+    signature = request.headers.get(protocol.SIGNATURE_HEADER, "")
+    if not presented or not timestamp or not signature:
+        raise Denied(401, "unauthorized", "missing_signature")
+    try:
+        sent_at = int(timestamp)
+    except ValueError:
+        raise Denied(401, "unauthorized", "bad_timestamp")
+    if abs(time.time() - sent_at) > protocol.MAX_SKEW_SECONDS:
+        raise Denied(401, "unauthorized", "stale_timestamp")
+    if presented.startswith(protocol.KEY_IDENTITY):
+        # Named by its key: looked up among the runners of the tenant this deployment serves.
+        found = await runner_store.find_by_key(
+            ctx.db, ctx.tenant_id, presented[len(protocol.KEY_IDENTITY) :]
+        )
+    else:
+        parsed = protocol.parse_identity(presented)
+        if parsed is None or parsed[0] != ctx.tenant_id:
+            raise Denied(401, "unauthorized", "bad_credentials")
+        found = await runner_store.find(ctx.db, parsed[0], parsed[1])
+    if found is None:
+        raise Denied(401, "unauthorized", "bad_credentials")
+    tenant_id = found.tenant_id
+    message = protocol.request_message(
+        request.method, request.url.path, timestamp, await request.body()
+    )
+    if not keys.verify(found.public_key, protocol.REQUEST_DOMAIN, message, signature):
+        raise Denied(401, "unauthorized", "bad_signature")
+    fresh = await store.use_webhook_signature(
+        ctx.db, tenant_id, signature, 2 * protocol.MAX_SKEW_SECONDS
+    )
+    if not fresh:
+        raise Denied(401, "unauthorized", "replay")
+    return found
+
+
 async def authorize(request: Request) -> None:
     """Runs before every handler. No declaration, no access."""
     ctx = request.app.state.ctx
@@ -203,6 +255,9 @@ async def authorize(request: Request) -> None:
         return
     if access.kind == AccessKind.WEBHOOK:
         await verify_webhook(request, ctx)
+        return
+    if access.kind == AccessKind.RUNNER:
+        request.state.runner = await verify_runner(request, ctx)
         return
 
     principal = await authenticate(request, ctx)

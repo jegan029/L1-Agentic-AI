@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "l1-virtual-engineer-agent"
+name = "l1-and-l2-ai-ops"
 version = "1.0.0"
-description = "L1 Virtual Engineer Agent - Automated incident triage and resolution using SOPs"
+description = "L1 and L2 AI-Ops: incident triage and remediation by executing published SOPs"
 requires-python = ">=3.11"
 
 dependencies = [
@@ -19,6 +19,7 @@ dependencies = [
     "asyncpg>=0.29.0",
     "aiosqlite>=0.20.0",
     "pyjwt[crypto]>=2.8.0",
+    "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,7 @@ dev = [
     "pytest-timeout>=2.2.0",
     "hypothesis>=6.98.0",
     "ruff>=0.3.0",
+    "pyyaml>=6.0",
 ]
 saml = [
     "python3-saml>=1.16.0",

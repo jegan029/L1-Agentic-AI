@@ -1,0 +1,67 @@
+{
+  "note": "Hand-written from the Anthropic Messages API documentation (tool use with a forced tool choice); not captured from the live API.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/v1/messages",
+        "headers": {
+          "x-api-key": "key-one",
+          "anthropic-version": "2023-06-01"
+        },
+        "json": {
+          "model": "claude-test-model",
+          "max_tokens": 400,
+          "system": "You choose.",
+          "messages": [
+            {
+              "role": "user",
+              "content": "Which one?"
+            }
+          ],
+          "tools": [
+            {
+              "name": "select_sop",
+              "description": "Report the choice.",
+              "input_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "sop_id": {
+                    "type": "string",
+                    "enum": [
+                      "SOP-1",
+                      "NONE"
+                    ]
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "maxLength": 600
+                  }
+                },
+                "required": [
+                  "sop_id",
+                  "rationale"
+                ]
+              }
+            }
+          ],
+          "tool_choice": {
+            "type": "tool",
+            "name": "select_sop"
+          }
+        }
+      },
+      "response": {
+        "status": 529,
+        "json": {
+          "type": "error",
+          "error": {
+            "type": "overloaded_error",
+            "message": "Overloaded. Prompt was: Which one?"
+          }
+        }
+      }
+    }
+  ]
+}

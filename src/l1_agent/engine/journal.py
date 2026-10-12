@@ -27,6 +27,14 @@ class StoredMatch:
     sop_hash: str = ""
 
 
+class RunSuspended(Exception):
+    """The run cannot go on until a person decides (an approval). It has no outcome yet.
+
+    The worker parks the job. An approval, a rejection or the expiry of the
+    request puts it back on the queue, and the run resumes from its journal.
+    """
+
+
 class EventPublisher(Protocol):
     """Where the engine reports progress. The service's implementation writes to the database."""
 

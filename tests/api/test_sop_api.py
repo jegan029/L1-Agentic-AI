@@ -193,7 +193,7 @@ class TestReviewFlow:
                 cookies=approver,
                 headers=h,
             )
-        assert sorted(v["status"] for v in items) == ["in_review"] + ["published"] * 3
+        assert sorted(v["status"] for v in items) == ["in_review"] + ["published"] * 4
         assert waiting[0]["sop_id"] == "SOP-LOG-001" and review["problems"] == []
         assert [c["capability"] for c in review["capabilities"]] == ["splunk.search"] * 2
         assert review["diff"]["first_version"] is True

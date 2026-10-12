@@ -4,30 +4,40 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import httpx
 import uvicorn
 from fastapi import FastAPI
 
-from src.l1_agent.ai.analyzer import AIAnalyzer
-from src.l1_agent.ai.llm_client import LLMClient
-from src.l1_agent.ai.mock_llm import MockLLMClient
+from src.l1_agent.actions.service import ActionService
+from src.l1_agent.ai.gateway import ModelGateway
+from src.l1_agent.ai.providers import Provider, build_provider
 from src.l1_agent.api.app import AppContext, create_app
 from src.l1_agent.api.security import demo_open, validate_security_config, webhook_open
 from src.l1_agent.audit.log import Actor
 from src.l1_agent.auth.oidc import OidcClient
 from src.l1_agent.clients.servicenow_client import ServiceNowClient
-from src.l1_agent.config.settings import ConfigError, ServiceNowSettings, Settings
+from src.l1_agent.config.settings import ConfigError, Settings
 from src.l1_agent.connectors.catalog import connectors_for_adapters
 from src.l1_agent.connectors.hub import ConnectorHub, servicenow_secrets
+from src.l1_agent.connectors.itsm.handle import ItsmHandle, check_servicenow_config
 from src.l1_agent.connectors.sdk.secrets import SecretResolver
 from src.l1_agent.db.engine import Database
-from src.l1_agent.demo import MockServiceNowClient, build_mock_adapters, seed_demo_sops
+from src.l1_agent.demo import (
+    MockServiceNowClient,
+    build_mock_adapters,
+    seed_demo_model_policy,
+    seed_demo_policy,
+    seed_demo_sops,
+)
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.incident_processor import IncidentProcessor
 from src.l1_agent.engine.sop_matcher import SOPMatcher
 from src.l1_agent.escalation.l2_router import L2Router
+from src.l1_agent.runner import protocol
+from src.l1_agent.runner.dispatch import RunnerDispatcher
+from src.l1_agent.runner.keys import Signer, private_seed, public_of, public_text
 from src.l1_agent.service.runs import DbEventBus, RunService
 from src.l1_agent.sop import ingest
 from src.l1_agent.utils.logging import get_logger, setup_logging
@@ -37,37 +47,6 @@ from src.l1_agent.utils.secrets import SecretsProvider
 logger = get_logger("main")
 
 POLLER = Actor.system("poller")
-
-
-def check_servicenow_config(snow: ServiceNowSettings, references: tuple = ()) -> None:
-    """Refuse a real ServiceNow connection that is incomplete or unscoped.
-
-    Without an assignment group the poller would pick up every new incident on
-    the instance, write work notes to it and reassign it. `references` names
-    the credentials that are supplied as references instead of values.
-    """
-    required = [
-        ("SERVICENOW_BASE_URL", snow.base_url),
-        ("SERVICENOW_ASSIGNMENT_GROUP", snow.assignment_group),
-    ]
-    if snow.auth == "oauth":
-        required += [
-            ("SERVICENOW_OAUTH_CLIENT_ID", snow.oauth_client_id),
-            (
-                "SERVICENOW_OAUTH_CLIENT_SECRET",
-                snow.oauth_client_secret or "client_secret" in references,
-            ),
-        ]
-    else:
-        required += [
-            ("SERVICENOW_USERNAME", snow.username),
-            ("SERVICENOW_PASSWORD", snow.password or "password" in references),
-        ]
-    missing = [name for name, value in required if not value]
-    if missing:
-        raise ConfigError("ServiceNow connection needs: " + ", ".join(missing))
-    if not snow.base_url.lower().startswith("https://"):
-        raise ConfigError("SERVICENOW_BASE_URL must start with https://")
 
 
 class L1AgentService:
@@ -82,27 +61,32 @@ class L1AgentService:
         # Credentials given as references are read when needed, so a rotation takes effect.
         self._resolver = SecretResolver.from_settings(settings.secrets)
         self._live_servicenow = not settings.agent.demo_mode or settings.servicenow.live_in_demo
-        if self._live_servicenow:
+        snow = settings.servicenow
+        if not self._live_servicenow:
+            self._snow_client: Any = MockServiceNowClient()
+        elif snow.base_url or snow.username or snow.assignment_group or snow.oauth_client_id:
             itsm_secrets = servicenow_secrets(settings, self._resolver)
-            check_servicenow_config(settings.servicenow, itsm_secrets.slots if itsm_secrets else ())
+            check_servicenow_config(snow, itsm_secrets.slots if itsm_secrets else ())
             self._snow_client = ServiceNowClient(
-                settings.servicenow, itsm_secrets, demo_mode=settings.agent.demo_mode
+                snow, itsm_secrets, demo_mode=settings.agent.demo_mode
             )
         else:
-            self._snow_client = MockServiceNowClient()
+            # Nothing in the environment. The connection may have been entered for the
+            # tenant instead (connectors/itsm/handle.py); until it is, no incident is taken.
+            self._snow_client = None
+        # What the engine talks to. Set in `setup`, once the tenant is known.
+        self._itsm: Any = self._snow_client
         self._hub: Optional[ConnectorHub] = None
 
-        # The model only advises on SOP ranking; it never executes anything.
-        self._llm_client: Optional[LLMClient] = None
-        if settings.llm.enabled:
-            if settings.agent.demo_mode and not settings.llm.api_key:
-                self._llm_client = MockLLMClient()
-                logger.info("Model advice enabled (demo: deterministic mock)")
-            elif settings.llm.endpoint and settings.llm.api_key:
-                self._llm_client = LLMClient(settings.llm)
-                logger.info("Model advice enabled (model=%s)", settings.llm.model)
-            else:
-                logger.warning("LLM_ENABLED is true but no endpoint or key is set; model disabled")
+        # The model provider this deployment has, if any (ADR 0009). It only advises,
+        # and whether a tenant uses it at all is that tenant's model policy.
+        key_ref = settings.secret_refs.get("LLM_API_KEY", "")
+
+        async def api_key() -> str:
+            return await self._resolver.get(key_ref)
+
+        self._provider: Optional[Provider] = build_provider(settings, api_key if key_ref else None)
+        self._model: Optional[ModelGateway] = None
 
         self._db: Optional[Database] = None
         self._http: Optional[httpx.AsyncClient] = None
@@ -111,12 +95,14 @@ class L1AgentService:
 
     # ── Engine ────────────────────────────────────────────────────────
 
-    def _build_processor(self, db: Database, hub: ConnectorHub) -> IncidentProcessor:
+    def _build_processor(
+        self, db: Database, hub: ConnectorHub, actions: ActionService, model: ModelGateway
+    ) -> IncidentProcessor:
         settings = self._settings
         agent = settings.agent
         events = DbEventBus(db)
         return IncidentProcessor(
-            snow_client=self._snow_client,  # type: ignore[arg-type]
+            snow_client=self._itsm,  # type: ignore[arg-type]
             sop_matcher=SOPMatcher(agent.sop_confidence_threshold),
             sop_parser=None,
             executor=SOPExecutor(
@@ -128,10 +114,10 @@ class L1AgentService:
                 retry_max_attempts=agent.retry_max_attempts,
                 retry_base_delay=agent.retry_base_delay_seconds,
                 event_bus=events,
+                actions=actions,
             ),
             confidence_threshold=agent.sop_confidence_threshold,
-            llm_client=self._llm_client,
-            ai_analyzer=AIAnalyzer(self._llm_client) if self._llm_client else None,
+            advisors=model if model.provider is not None else None,
             event_bus=events,
             l2_router=L2Router(Path(agent.l2_routing_path))
             if agent.l2_routing_path
@@ -160,20 +146,48 @@ class L1AgentService:
         else:
             await db.create_schema_for_demo()
             tenant_id = await db.ensure_tenant(settings.database.tenant_slug, "Demo tenant")
-        if demo:
+        if demo and settings.agent.demo_seed:
             # Demo mode starts with the sample SOPs published and one waiting for review.
             await seed_demo_sops(db, tenant_id)
+            await seed_demo_policy(db, tenant_id)
+            await seed_demo_model_policy(db, tenant_id)
             logger.info("Demo mode: mock connectors and the sample SOPs")
 
+        self._itsm = self._snow_client
+        if self._live_servicenow:
+            self._itsm = ItsmHandle(
+                db, tenant_id, settings, self._resolver, lambda: self._snow_client
+            )
+            if await self._itsm.current() is None:
+                logger.warning(
+                    "No usable ServiceNow connection (%s): no incident is taken until one is "
+                    "entered in the connector set-up screen or given in the environment",
+                    await self._itsm.reason(),
+                )
+        dispatcher, grant_key, runner_keys = await self._runner_side(db)
         self._hub = ConnectorHub(
             db,
             settings,
             self._resolver,
-            fixed=connectors_for_adapters(build_mock_adapters()) if demo else None,
+            # In demo mode the mocks stand in for the targets. With a runner they are the
+            # runner's to hold (RUNNER_MOCK_CONNECTORS), and connections are entered as usual.
+            fixed=connectors_for_adapters(build_mock_adapters())
+            if demo and dispatcher is None
+            else None,
+            dispatcher=dispatcher,
         )
+        # Every write goes through this: policy, approvals, change record, kill switch.
+        actions = ActionService(db, self._itsm, settings.actions, grant_key=grant_key)
+        # Every model request goes through this: model policy, redaction, budgets, audit.
+        self._model = ModelGateway(db, self._provider, timeout_seconds=settings.llm.timeout_seconds)
+        if self._provider is not None:
+            logger.info(
+                "Model provider configured: %s (%s)", self._provider.id, self._provider.model
+            )
         runs = RunService(
             db,
-            self._build_processor(db, self._hub),
+            self._build_processor(db, self._hub, actions, self._model),
+            actions=actions,
             visibility_timeout_seconds=settings.worker.visibility_timeout_seconds,
             max_attempts=settings.worker.max_attempts,
             sops_from_store=True,
@@ -196,17 +210,58 @@ class L1AgentService:
             demo_open=demo_open(settings),
             webhook_open=webhook_open(settings),
             hub=self._hub,
-            itsm=self._snow_client,
+            itsm=self._itsm,
+            actions=actions,
+            model=self._model,
+            runner_keys=runner_keys,
         )
         return self._ctx
+
+    async def _runner_side(self, db: Database):
+        """With RUNNER_MODE=remote: what signs calls and grants for the runner (ADR 0010).
+
+        Returns (dispatcher, grant key, the public keys a runner is configured with).
+        """
+        settings = self._settings
+        if settings.runner.mode != "remote":
+            return None, None, {}
+
+        async def pem(name: str, value: str) -> str:
+            reference = settings.secret_refs.get(name, "")
+            return await self._resolver.get(reference) if reference else value
+
+        dispatch_pem = await pem("RUNNER_DISPATCH_KEY", settings.runner.dispatch_key)
+        if not dispatch_pem:
+            raise ConfigError(
+                "RUNNER_MODE=remote needs RUNNER_DISPATCH_KEY_REF: the key calls to the runner "
+                "are signed with. Make one with `l1-agent runner keygen`."
+            )
+        signer = Signer(private_seed(dispatch_pem), protocol.CALL_DOMAIN)
+        public = {"dispatch": public_text(signer.public_key), "grant": ""}
+        grant_pem = await pem("ACTIONS_GRANT_KEY", settings.runner.grant_key)
+        grant_key = private_seed(grant_pem) if grant_pem else None
+        if grant_key is None:
+            # Workers hold the grant key. A process without it (the API tier) mints nothing
+            # a runner would accept.
+            logger.warning(
+                "RUNNER_MODE=remote without ACTIONS_GRANT_KEY_REF: no write this process "
+                "authorises will be accepted by a runner"
+            )
+        else:
+            public["grant"] = public_text(public_of(grant_key))
+        logger.info("Connector calls are made by a runner (RUNNER_MODE=remote)")
+        return RunnerDispatcher(db, signer), grant_key, public
 
     async def create_app(self) -> FastAPI:
         return create_app(await self.setup())
 
     async def close(self) -> None:
-        await self._snow_client.close()
-        if self._llm_client is not None:
-            await self._llm_client.close()
+        if isinstance(self._itsm, ItsmHandle):
+            await self._itsm.close()  # the stored connection and the environment's
+        elif self._snow_client is not None:
+            await self._snow_client.close()
+        if self._provider is not None:
+            await self._provider.close()
         if self._http is not None:
             await self._http.aclose()
         if self._hub is not None:
@@ -222,7 +277,14 @@ class L1AgentService:
         logger.info("Starting poll loop (interval=%ds)", interval)
         while not self._stop.is_set():
             try:
-                for incident in await self._snow_client.get_new_incidents():
+                source = self._snow_client
+                if isinstance(self._itsm, ItsmHandle):
+                    source = await self._itsm.current()
+                if source is None:
+                    incidents = []  # no ITSM connection yet
+                else:
+                    incidents = await source.get_new_incidents()
+                for incident in incidents:
                     result = await ctx.runs.ingest(ctx.tenant_id, incident, POLLER)
                     if result.accepted:
                         logger.info("Polled incident %s queued", incident.number)
@@ -240,7 +302,13 @@ class L1AgentService:
         while not self._stop.is_set():
             try:
                 sources = await ctx.hub.knowledge_sources(ctx.tenant_id, ctx.itsm)
-                for result in await ingest.sync_all(ctx.db, ctx.tenant_id, sources):
+                for result in await ingest.sync_all(
+                    ctx.db,
+                    ctx.tenant_id,
+                    sources,
+                    drafter=ingest.model_drafter(ctx.model, ctx.tenant_id, ctx.hub.registry),
+                    registry=ctx.hub.registry,
+                ):
                     if result.drafts or result.errors:
                         logger.info("Knowledge sync: %s", result.to_dict())
             except Exception as exc:
@@ -283,6 +351,8 @@ class L1AgentService:
                 log_config=None,
                 access_log=False,
                 server_header=False,
+                ssl_certfile=settings.agent.tls_cert_file or None,
+                ssl_keyfile=settings.agent.tls_key_file or None,
             )
         )
         try:

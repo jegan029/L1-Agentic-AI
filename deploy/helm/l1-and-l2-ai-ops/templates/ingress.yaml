@@ -1,0 +1,49 @@
+{{- if .Values.ingress.enabled -}}
+{{- $full := include "aiops.fullname" . -}}
+# One host for the dashboard and the API, so the session cookie is same-origin.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  tls:
+    - hosts:
+        - {{ required "ingress.host is required" .Values.ingress.host | quote }}
+      secretName: {{ required "ingress.tls.secretName is required: the dashboard and the API are served over TLS only" .Values.ingress.tls.secretName }}
+  rules:
+    - host: {{ .Values.ingress.host | quote }}
+      http:
+        paths:
+          {{- if .Values.ui.enabled }}
+          # The dashboard serves the page and passes /api, /auth, /webhook and /runner
+          # through to the API, so there is one backend and one origin.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-ui
+                port:
+                  name: http
+          {{- else }}
+          # No dashboard: the API only. If api.tls.secretName is set the backend speaks
+          # HTTPS, which your ingress controller must be told in its own way.
+          {{- range (list "/api" "/auth" "/webhook" "/runner") }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $full }}-api
+                port:
+                  name: http
+          {{- end }}
+          {{- end }}
+{{- end }}

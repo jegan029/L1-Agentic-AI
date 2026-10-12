@@ -56,8 +56,9 @@ class AllowListBinding:
     """A parameter that names a target, and the connection setting that lists what is allowed.
 
     `match` is how the SDK compares before the connector runs: `exact` for a
-    whole-value match, `custom` when the connector does the detailed comparison
-    itself (a path prefix, a URL host). Either way an empty list denies.
+    whole-value match, `pattern` for shell-style patterns (`PAY_*`), `custom`
+    when the connector does the detailed comparison itself (a path prefix, a
+    URL host). In every case an empty list denies.
     """
 
     parameter: str
@@ -65,10 +66,36 @@ class AllowListBinding:
     match: str = "custom"
 
 
+ALLOW_LIST_MATCHES = ("exact", "pattern", "custom")
+
+
 @dataclass(frozen=True)
-class Verify:
+class PreCheck:
+    """A read made before a write, and what must be true of its result for the write to go on.
+
+    The read is given those of the write's parameters that it declares, plus `parameters`.
+    """
+
     capability: str
     assertion: str
+    parameters: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class Verify:
+    """The read that shows a write worked.
+
+    `assertion` true means verified. `failed` true means it has failed and
+    there is no point waiting longer. Otherwise the read is repeated, up to
+    `retries` more times, `wait_seconds` apart; still undecided is a failure.
+    """
+
+    capability: str
+    assertion: str
+    parameters: Mapping[str, Any] = field(default_factory=dict)
+    failed: str = ""
+    retries: int = 0
+    wait_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -86,7 +113,7 @@ class Capability:
     supports_dry_run: bool = False
     idempotent: bool = True
     retryable_errors: Tuple[str, ...] = ()
-    pre_checks: Tuple[str, ...] = ()
+    pre_checks: Tuple[PreCheck, ...] = ()
     verify: Optional[Verify] = None
     rollback: str = ""  # a capability id, or "none: <reason>"
     timeout_seconds: int = 60
@@ -108,9 +135,17 @@ class Capability:
             "supports_dry_run": self.supports_dry_run,
             "idempotent": self.idempotent,
             "retryable_errors": list(self.retryable_errors),
-            "pre_checks": list(self.pre_checks),
+            "pre_checks": [
+                {"capability": c.capability, "assertion": c.assertion} for c in self.pre_checks
+            ],
             "verify": (
-                {"capability": self.verify.capability, "assertion": self.verify.assertion}
+                {
+                    "capability": self.verify.capability,
+                    "assertion": self.verify.assertion,
+                    "failed": self.verify.failed,
+                    "retries": self.verify.retries,
+                    "wait_seconds": self.verify.wait_seconds,
+                }
                 if self.verify
                 else None
             ),
@@ -192,8 +227,10 @@ def lint_capability(cap: Capability, known: Optional[frozenset] = None) -> List[
                 problems.append(
                     f"{label}: allow list binding names unknown parameter '{binding.parameter}'"
                 )
-            if binding.match not in ("exact", "custom"):
-                problems.append(f"{label}: allow list match must be 'exact' or 'custom'")
+            if binding.match not in ALLOW_LIST_MATCHES:
+                problems.append(
+                    f"{label}: allow list match must be one of {list(ALLOW_LIST_MATCHES)}"
+                )
         for name in cap.target_parameters:
             if name not in properties:
                 problems.append(f"{label}: target parameter '{name}' is not declared")
@@ -214,8 +251,13 @@ def lint_capability(cap: Capability, known: Optional[frozenset] = None) -> List[
         problems.append(f"{label}: a write capability must list the scopes it needs")
     if cap.verify is None or not cap.verify.capability or not cap.verify.assertion:
         problems.append(f"{label}: a write capability needs a verify operation and assertion")
-    elif known is not None and cap.verify.capability not in known:
-        problems.append(f"{label}: verify names unknown capability '{cap.verify.capability}'")
+    else:
+        if known is not None and cap.verify.capability not in known:
+            problems.append(f"{label}: verify names unknown capability '{cap.verify.capability}'")
+        for text in filter(None, (cap.verify.assertion, cap.verify.failed)):
+            problems += _assertion_problems(f"{label}: verify", text)
+        if not 0 <= cap.verify.retries <= 60 or not 0 <= cap.verify.wait_seconds <= 300:
+            problems.append(f"{label}: verify waits at most 60 times, 300 seconds apart")
     if not cap.rollback:
         problems.append(f"{label}: declare a rollback capability or 'none: <reason>'")
     elif not cap.rollback.startswith("none:") and known is not None and cap.rollback not in known:
@@ -227,9 +269,28 @@ def lint_capability(cap: Capability, known: Optional[frozenset] = None) -> List[
         if name not in bound:
             problems.append(f"{label}: target parameter '{name}' has no allow list binding")
     for check in cap.pre_checks:
-        if known is not None and check not in known:
-            problems.append(f"{label}: pre-check names unknown capability '{check}'")
+        if not isinstance(check, PreCheck):
+            problems.append(f"{label}: a pre-check is a capability with an assertion")
+            continue
+        if known is not None and check.capability not in known:
+            problems.append(f"{label}: pre-check names unknown capability '{check.capability}'")
+        problems += _assertion_problems(f"{label}: pre-check", check.assertion)
     return problems
+
+
+def _assertion_problems(label: str, text: str) -> List[str]:
+    """An assertion in a manifest must parse and may only look at the read's result."""
+    from src.l1_agent.engine import expressions
+
+    if not text:
+        return [f"{label} needs an assertion"]
+    try:
+        names = expressions.root_names(text)
+    except expressions.ExpressionError as exc:
+        return [f"{label} assertion does not parse: {exc}"]
+    return [
+        f"{label} assertion uses unknown name '{n}'" for n in names if n not in ("result", "params")
+    ]
 
 
 def lint(manifest: Manifest, known: Optional[frozenset] = None) -> List[str]:
@@ -277,7 +338,7 @@ def validate_parameters(
     """Check parameters against a capability's closed schema.
 
     Supports the subset of JSON Schema that manifests use: type, enum,
-    required, maxLength, minimum and maximum. `subject` names the step type
+    required, maxLength, pattern (the whole value must match), minimum and maximum. `subject` names the step type
     or capability in messages. `allow_placeholders` is for static validation
     of an SOP, where a value may still be an unrendered ``${name}``.
     """
@@ -307,6 +368,12 @@ def validate_parameters(
             problems.append(f"parameter '{key}' must be one of {list(spec['enum'])}")
         elif isinstance(value, str) and len(value) > spec.get("maxLength", 10_000):
             problems.append(f"parameter '{key}' is too long")
+        elif (
+            isinstance(value, str)
+            and "pattern" in spec
+            and not re.fullmatch(spec["pattern"], value)
+        ):
+            problems.append(f"parameter '{key}' has characters that are not allowed")
         elif isinstance(value, (int, float)) and not isinstance(value, bool):
             if "minimum" in spec and value < spec["minimum"]:
                 problems.append(f"parameter '{key}' is below the minimum")

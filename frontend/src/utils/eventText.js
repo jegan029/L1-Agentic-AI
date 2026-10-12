@@ -20,6 +20,8 @@ export function eventText(evt) {
       const mail = evt.email_sent === false ? ' (notification email not sent)' : ''
       return `${n} escalated to ${evt.l2_team_name || 'L2'}: ${escalationReasonText(evt.reason)}${mail}`
     }
+    case 'awaiting_approval':
+      return `${n} is waiting for an approval`
     default:
       return `${n}: ${evt.type}`
   }

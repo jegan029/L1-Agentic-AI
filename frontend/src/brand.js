@@ -4,9 +4,9 @@
 const env = import.meta.env
 
 export const brand = {
-  product: env.VITE_BRAND_PRODUCT || 'L1 Engineer Agent',
+  product: env.VITE_BRAND_PRODUCT || 'L1 and L2 AI-Ops',
   org: env.VITE_BRAND_ORG || '',
   orgBanner: env.VITE_BRAND_BANNER || '',
   logo: env.VITE_BRAND_LOGO || '',
-  footer: env.VITE_BRAND_FOOTER || 'L1 Engineer Agent',
+  footer: env.VITE_BRAND_FOOTER || 'L1 and L2 AI-Ops',
 }

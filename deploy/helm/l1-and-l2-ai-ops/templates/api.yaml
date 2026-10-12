@@ -1,0 +1,110 @@
+{{- $full := include "aiops.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-api
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      {{- include "aiops.selector" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        {{- include "aiops.selector" . | nindent 8 }}
+        app.kubernetes.io/component: api
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.api.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $full }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- include "aiops.scheduling" . | nindent 6 }}
+      containers:
+        - name: api
+          image: {{ include "aiops.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.port }}
+          envFrom:
+            - configMapRef:
+                name: {{ $full }}-control-plane
+          env:
+            {{- include "aiops.controlPlaneEnv" . | nindent 12 }}
+            {{- if .Values.api.tls.secretName }}
+            - name: AGENT_TLS_CERT_FILE
+              value: /run/tls/tls.crt
+            - name: AGENT_TLS_KEY_FILE
+              value: /run/tls/tls.key
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: {{ include "aiops.apiScheme" . | upper }}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+              scheme: {{ include "aiops.apiScheme" . | upper }}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if include "aiops.remote" . }}
+            - name: dispatch-key
+              mountPath: /run/secrets/dispatch
+              readOnly: true
+            {{- end }}
+            {{- if .Values.api.tls.secretName }}
+            - name: tls
+              mountPath: /run/tls
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- include "aiops.tmpVolume" . | nindent 8 }}
+        {{- if include "aiops.remote" . }}
+        - name: dispatch-key
+          secret:
+            secretName: {{ required "controlPlane.dispatchKeySecret is required when runnerMode is remote" .Values.controlPlane.dispatchKeySecret }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if .Values.api.tls.secretName }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.api.tls.secretName }}
+            defaultMode: 0440
+        {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-api
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "aiops.selector" . | nindent 4 }}
+    app.kubernetes.io/component: api
+  ports:
+    - name: http
+      port: {{ .Values.api.port }}
+      targetPort: http

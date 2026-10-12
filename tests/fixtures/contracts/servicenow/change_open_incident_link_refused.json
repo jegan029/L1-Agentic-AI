@@ -1,0 +1,94 @@
+{
+  "note": "Hand-written from the ServiceNow Change Management API and Table API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/change_request",
+        "query": {
+          "sysparm_query": "correlation_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sysparm_fields": "sys_id,number",
+          "sysparm_limit": "1"
+        }
+      },
+      "response": {
+        "json": {
+          "result": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/api/now/table/std_change_record_producer",
+        "query": {
+          "sysparm_query": "name=L1 Agent - Autosys job restart^active=true",
+          "sysparm_fields": "sys_id",
+          "sysparm_limit": "1"
+        }
+      },
+      "response": {
+        "json": {
+          "result": [
+            {
+              "sys_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "path": "/api/sn_chg_rest/change/standard/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "json": {
+          "short_description": "L1 Agent: autosys.job.force_start for INC0000001",
+          "description": "Action: autosys.job.force_start",
+          "correlation_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      },
+      "response": {
+        "status": 200,
+        "json": {
+          "result": {
+            "sys_id": {
+              "value": "cccccccccccccccccccccccccccccccc",
+              "display_value": "cccccccccccccccccccccccccccccccc"
+            },
+            "number": {
+              "value": "CHG0030001",
+              "display_value": "CHG0030001"
+            },
+            "state": {
+              "value": "-5",
+              "display_value": "New"
+            },
+            "type": {
+              "value": "standard",
+              "display_value": "Standard"
+            }
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "PATCH",
+        "path": "/api/now/table/incident/00000000000000000000000000000001",
+        "json": {
+          "rfc": "cccccccccccccccccccccccccccccccc"
+        }
+      },
+      "response": {
+        "status": 403,
+        "json": {
+          "error": {
+            "message": "Operation Failed",
+            "detail": "ACL Exception Update Failed"
+          },
+          "status": "failure"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+CAUAJM_E_10281 Job: NIGHTLY_X is not defined or you do not have permission to send events to it.
+CAUAJM_E_50198 Error sending event.

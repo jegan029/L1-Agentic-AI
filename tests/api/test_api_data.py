@@ -14,8 +14,18 @@ from src.l1_agent.auth import store
 from src.l1_agent.connectors import hub as connections
 from src.l1_agent.demo import DEMO_INCIDENTS
 from src.l1_agent.models.incident import Incident
+from src.l1_agent.runner import store as runner_store
 from src.l1_agent.sop import store as sop_store
-from tests.api.support import ADMIN, build, client, session, token_headers
+from tests.api.support import (
+    ADMIN,
+    build,
+    client,
+    seed_action,
+    seed_model,
+    seed_runner,
+    session,
+    token_headers,
+)
 
 INTAKE = Actor.system("test-intake")
 ALL_READ = ("incidents.read", "system.read", "metrics.read", "audit.read")
@@ -152,8 +162,13 @@ class TestTenantIsolationOverHttp:
         # An SOP version and a connection in each tenant. The run numbers index them, so
         # the walk below asks tenant A for tenant B's version by its id.
         self.versions = {}
+        self.actions = {}
         for tenant_id, numbers, label in ((ctx.tenant_id, a_numbers, "a"), (b, b_numbers, "b")):
             for number in numbers:
+                self.actions[number] = await seed_action(
+                    ctx.db, tenant_id, number, f"{label.upper()}_ONLY_JOB"
+                )
+                await seed_model(ctx.db, tenant_id, number, f"{label}-only-region")
                 self.versions[number] = await sop_store.create_draft(
                     ctx.db,
                     tenant_id,
@@ -163,6 +178,8 @@ class TestTenantIsolationOverHttp:
         await connections.set_connection(
             ctx.db, b, ADMIN, "splunk", {"base_url": "https://b-splunk.example"}, {}
         )
+        self.b_runner = await seed_runner(ctx.db, b, "b-only-runner")
+        await seed_runner(ctx.db, ctx.tenant_id, "a-runner")
         return app, ctx, b, a_numbers, b_numbers
 
     async def test_every_read_route_returns_only_the_callers_tenant(self, two):
@@ -176,6 +193,9 @@ class TestTenantIsolationOverHttp:
             "b-token",
             "b-only-sop",
             "b-splunk.example",
+            "B_ONLY_JOB",
+            "b-only-region",
+            "b-only-runner",
             str(b),
             DEMO_INCIDENTS[0]["short_description"],
         ]
@@ -191,6 +211,7 @@ class TestTenantIsolationOverHttp:
                 for number in [*b_numbers, a_numbers[0]]:
                     path = route.path.replace("{incident_number}", number)
                     path = path.replace("{version_id}", str(self.versions[number]))
+                    path = path.replace("{action_id}", str(self.actions[number]))
                     resp = await http.get(path, params={"limit": 500, "per_page": 100})
                     if "{" in route.path and number in b_numbers:
                         assert resp.status_code == 404, path
@@ -221,7 +242,10 @@ class TestTenantIsolationOverHttp:
                 params={"group": "b-admins", "role": "tenant_admin"},
                 headers=h,
             )
+            runner = await http.delete(f"/api/runners/{self.b_runner}", headers=h)
         assert revoke.status_code == 404 and remove.status_code == 404
+        assert runner.status_code == 404
+        assert [r["revoked"] for r in await runner_store.list_runners(ctx.db, b)] == [False]
         assert (await store.list_api_tokens(ctx.db, b))[0]["revoked"] is False
         assert await store.list_role_mappings(ctx.db, b) == [
             {"group": "b-admins", "role": "tenant_admin"}

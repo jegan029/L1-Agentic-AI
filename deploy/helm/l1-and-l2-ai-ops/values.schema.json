@@ -1,0 +1,113 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["image", "tenant", "database", "secrets", "controlPlane", "runner"],
+  "properties": {
+    "image": {
+      "type": "object",
+      "required": ["repository"],
+      "properties": {
+        "repository": {"type": "string"},
+        "tag": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^(sha256:[0-9a-f]{64})?$"},
+        "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "tenant": {
+      "type": "object",
+      "required": ["slug"],
+      "properties": {
+        "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+        "name": {"type": "string"}
+      }
+    },
+    "database": {
+      "type": "object",
+      "required": ["existingSecret"],
+      "properties": {
+        "existingSecret": {"type": "string"},
+        "urlKey": {"type": "string", "minLength": 1},
+        "migrationUrlKey": {"type": "string", "minLength": 1},
+        "appRole": {"type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$"}
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "required": ["existingSecret"],
+      "properties": {"existingSecret": {"type": "string"}}
+    },
+    "config": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+    "secretEnv": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "secretName", "key"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]*$"},
+          "secretName": {"type": "string", "minLength": 1},
+          "key": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "controlPlane": {
+      "type": "object",
+      "properties": {
+        "runnerMode": {"enum": ["remote", "embedded"]},
+        "dispatchKeySecret": {"type": "string"},
+        "grantKeySecret": {"type": "string"},
+        "maxTier": {"enum": ["T0", "T1", "T2"]},
+        "maxAutonomy": {"enum": ["shadow", "recommend", "approval", "automatic"]}
+      }
+    },
+    "api": {
+      "type": "object",
+      "properties": {
+        "replicas": {"type": "integer", "minimum": 1},
+        "port": {"type": "integer", "minimum": 1024, "maximum": 65535}
+      }
+    },
+    "worker": {
+      "type": "object",
+      "properties": {
+        "replicas": {"type": "integer", "minimum": 1},
+        "concurrency": {"type": "integer", "minimum": 1}
+      }
+    },
+    "runner": {
+      "type": "object",
+      "properties": {
+        "replicas": {"type": "integer", "minimum": 0},
+        "name": {"type": "string", "minLength": 1, "maxLength": 100},
+        "publicKey": {"type": "string", "pattern": "^([A-Za-z0-9+/]{43}=)?$"},
+        "dispatchPublicKey": {"type": "string", "pattern": "^([A-Za-z0-9+/]{43}=)?$"},
+        "grantPublicKey": {"type": "string", "pattern": "^([A-Za-z0-9+/]{43}=)?$"},
+        "controlPlaneUrl": {"type": "string", "pattern": "^(https://.+)?$"},
+        "maxTier": {"enum": ["T0", "T1", "T2"]},
+        "capabilities": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "targets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "connections": {"type": "object"},
+        "extraSecretRefPrefixes": {"type": "array", "items": {"type": "string", "pattern": "^(vault|aws|file):.+"}}
+      }
+    },
+    "podSecurityContext": {
+      "type": "object",
+      "required": ["runAsNonRoot"],
+      "properties": {"runAsNonRoot": {"const": true}}
+    },
+    "containerSecurityContext": {
+      "type": "object",
+      "required": ["readOnlyRootFilesystem", "allowPrivilegeEscalation"],
+      "properties": {
+        "readOnlyRootFilesystem": {"const": true},
+        "allowPrivilegeEscalation": {"const": false}
+      }
+    }
+  }
+}

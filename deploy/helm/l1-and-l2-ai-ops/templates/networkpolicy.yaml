@@ -1,0 +1,64 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{- $full := include "aiops.fullname" . -}}
+# Nothing connects to a pod of this release unless a rule below says it may.
+# Workers and the runner have no rule: they accept no connection at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-default-deny-ingress
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "aiops.selector" . | nindent 6 }}
+  policyTypes: ["Ingress"]
+---
+# The API: from the dashboard and the runner of this release, and from outside the
+# release only from the peers named in networkPolicy.ingressFrom.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-api
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "aiops.selector" . | nindent 6 }}
+      app.kubernetes.io/component: api
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - port: {{ .Values.api.port }}
+      from:
+        {{- range (list "ui" "runner") }}
+        - podSelector:
+            matchLabels:
+              {{- include "aiops.selector" $ | nindent 14 }}
+              app.kubernetes.io/component: {{ . }}
+        {{- end }}
+        {{- with .Values.networkPolicy.ingressFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+{{- if and .Values.ui.enabled .Values.networkPolicy.ingressFrom }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $full }}-ui
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "aiops.selector" . | nindent 6 }}
+      app.kubernetes.io/component: ui
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - port: 8080
+      from:
+        {{- toYaml .Values.networkPolicy.ingressFrom | nindent 8 }}
+{{- end }}
+{{- end }}

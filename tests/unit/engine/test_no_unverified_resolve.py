@@ -19,7 +19,11 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from src.l1_agent.adapters.base import AdapterResult, BaseAdapter
-from src.l1_agent.adapters.mock_adapters import MockDynatraceAdapter, MockSplunkAdapter
+from src.l1_agent.adapters.mock_adapters import (
+    MockAutosysAdapter,
+    MockDynatraceAdapter,
+    MockSplunkAdapter,
+)
 from src.l1_agent.engine.executor import SOPExecutor
 from src.l1_agent.engine.sop_parser import SOPParser
 from src.l1_agent.engine.state_machine import (
@@ -103,6 +107,30 @@ class TestTransitionTable:
             (RunState.VERIFIED, RunEvent.NOTE_DONE),
         }
 
+    def test_an_action_never_leaves_the_run_verified(self):
+        """Every state an ACTION step passes through leads on to EXECUTING or to an end."""
+        action_states = {
+            RunState.POLICY_CHECK,
+            RunState.AWAITING_APPROVAL,
+            RunState.ACTING,
+            RunState.ROLLING_BACK,
+        }
+        leaving = {dst for (src, _), dst in TRANSITIONS.items() if src in action_states}
+        assert leaving == action_states - {RunState.POLICY_CHECK} | {
+            RunState.EXECUTING,
+            RunState.ESCALATED,
+            RunState.NEEDS_HUMAN,
+            RunState.ABORTED,
+        }
+        # A failed action is always rolled back or handed over; it never just continues.
+        assert TRANSITIONS[(RunState.ACTING, RunEvent.ACTION_FAILED)] == RunState.ROLLING_BACK
+        assert [d for (s, _), d in TRANSITIONS.items() if s == RunState.ROLLING_BACK] == [
+            RunState.ESCALATED,
+            RunState.NEEDS_HUMAN,
+            RunState.NEEDS_HUMAN,
+            RunState.ABORTED,
+        ]
+
     def test_unknown_pair_fails_closed(self):
         for state in RunState:
             if state in TERMINAL_STATES:
@@ -132,6 +160,13 @@ class TestMutationGuard:
             {(RunState.BINDING, RunEvent.PARAMS_BOUND): RunState.VERIFIED},
             {(RunState.VERIFYING, RunEvent.VERIFY_FAILED): RunState.VERIFIED},
             {(RunState.VERIFIED, RunEvent.STEP_DONE): RunState.VERIFIED},
+            # An action that worked is not a verification of the incident.
+            {(RunState.ACTING, RunEvent.ACTION_VERIFIED): RunState.VERIFIED},
+            {(RunState.POLICY_CHECK, RunEvent.POLICY_SHADOW): RunState.VERIFIED},
+            {(RunState.ACTING, RunEvent.ACTION_NOT_DONE): RunState.VERIFIED},
+            {(RunState.AWAITING_APPROVAL, RunEvent.APPROVAL_GRANTED): RunState.RESOLVED},
+            {(RunState.ROLLING_BACK, RunEvent.ROLLBACK_DONE): RunState.RESOLVED},
+            {(RunState.VERIFIED, RunEvent.ACTION_STARTED): RunState.VERIFIED},
         ],
     )
     def test_search_detects_a_shortcut(self, extra):
@@ -217,7 +252,16 @@ _target = st.sampled_from(STEP_IDS + ["", "", "missing"])
 def random_step(draw, step_id: str) -> dict:
     step_type = draw(
         st.sampled_from(
-            ["NOTE", "SPLUNK_SEARCH", "DECISION", "VERIFY", "RESOLVE", "ESCALATE", "BOGUS"]
+            [
+                "NOTE",
+                "SPLUNK_SEARCH",
+                "DECISION",
+                "VERIFY",
+                "RESOLVE",
+                "ESCALATE",
+                "ACTION",
+                "BOGUS",
+            ]
         )
     )
     step = {
@@ -229,6 +273,11 @@ def random_step(draw, step_id: str) -> dict:
     }
     if step_type == "SPLUNK_SEARCH":
         step["parameters"] = {"query": "index=main"}
+    elif step_type == "ACTION":
+        step["capability"] = draw(
+            st.sampled_from(["autosys.job.force_start", "autosys.job.status", "nope.nope"])
+        )
+        step["parameters"] = {"job_name": "NIGHTLY_X"}
     elif step_type == "DECISION":
         step["parameters"] = {
             "rule": draw(
@@ -254,7 +303,12 @@ def random_step(draw, step_id: str) -> dict:
 def random_sop(draw) -> SOP:
     count = draw(st.integers(min_value=0, max_value=len(STEP_IDS)))
     steps = [draw(random_step(STEP_IDS[i])) for i in range(count)]
-    return SOP(sop_id="SOP-RND", title="random", steps=[SOPStep.from_dict(s) for s in steps])
+    return SOP(
+        sop_id="SOP-RND",
+        title="random",
+        steps=[SOPStep.from_dict(s) for s in steps],
+        change_template=draw(st.sampled_from(["Standard restart", "Standard restart", ""])),
+    )
 
 
 def _verify_passed_before_resolve(summary: ExecutionSummary) -> bool:
@@ -281,13 +335,19 @@ class TestRandomGraphs:
     )
     @pytest.mark.asyncio
     async def test_resolved_always_has_a_passed_verification(self, sop, script):
+        scheduler = MockAutosysAdapter()
         executor = SOPExecutor(
-            adapters={"splunk": ScriptedAdapter(script)}, retry_max_attempts=1, retry_base_delay=0
+            adapters={"splunk": ScriptedAdapter(script), "autosys": scheduler},
+            retry_max_attempts=1,
+            retry_base_delay=0,
         )
         incident = Incident(sys_id="x", number="INC1", short_description="anything")
         valid = validate_sop(sop) == []
 
         summary = await executor.execute_sop(incident, sop)
+
+        # An engine with no action pipeline never writes, whatever the SOP says.
+        assert scheduler.force_starts == []
 
         assert summary.outcome is not None, "every run ends in a terminal outcome"
         if not valid:

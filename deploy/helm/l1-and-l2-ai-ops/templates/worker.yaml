@@ -1,0 +1,81 @@
+{{- $full := include "aiops.fullname" . -}}
+# Workers take runs from the queue. They hold the key that signs grants for writes;
+# they listen on no port and nothing connects to them.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-worker
+  labels:
+    {{- include "aiops.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "aiops.selector" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "aiops.selector" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.worker.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ $full }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- include "aiops.scheduling" . | nindent 6 }}
+      # A run in progress is given time to reach its next recorded step.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: worker
+          image: {{ include "aiops.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["worker"]
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ $full }}-control-plane
+          env:
+            {{- include "aiops.controlPlaneEnv" . | nindent 12 }}
+            - name: AGENT_MAX_CONCURRENT_INCIDENTS
+              value: {{ .Values.worker.concurrency | quote }}
+            {{- if and (include "aiops.remote" .) .Values.controlPlane.grantKeySecret }}
+            - name: ACTIONS_GRANT_KEY_REF
+              value: "file:/run/secrets/grant/grant.key"
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- if include "aiops.remote" . }}
+            - name: dispatch-key
+              mountPath: /run/secrets/dispatch
+              readOnly: true
+            {{- if .Values.controlPlane.grantKeySecret }}
+            - name: grant-key
+              mountPath: /run/secrets/grant
+              readOnly: true
+            {{- end }}
+            {{- end }}
+      volumes:
+        {{- include "aiops.tmpVolume" . | nindent 8 }}
+        {{- if include "aiops.remote" . }}
+        - name: dispatch-key
+          secret:
+            secretName: {{ required "controlPlane.dispatchKeySecret is required when runnerMode is remote" .Values.controlPlane.dispatchKeySecret }}
+            defaultMode: 0440
+        {{- if .Values.controlPlane.grantKeySecret }}
+        - name: grant-key
+          secret:
+            secretName: {{ .Values.controlPlane.grantKeySecret }}
+            defaultMode: 0440
+        {{- end }}
+        {{- end }}

@@ -94,7 +94,10 @@ function List() {
                   <tr key={v.id}>
                     <td data-label="SOP"><a className="row-link mono" href={versionHref(v.id)}>{v.sop_id}</a></td>
                     <td data-label="Title" className="c-title clip" title={v.title}>{v.title || '—'}</td>
-                    <td data-label="State"><SopStatus status={v.status} /></td>
+                    <td data-label="State">
+                      <SopStatus status={v.status} />
+                      {v.origin === 'model_drafted' && <>{' '}<span className="badge badge--neutral">Model-drafted</span></>}
+                    </td>
                     <td data-label="Version" className="num">{v.version ?? '—'}</td>
                     <td data-label="Author">{who(v.author)}</td>
                     <td data-label="Approver">{who(v.approver)}</td>

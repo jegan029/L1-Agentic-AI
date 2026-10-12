@@ -37,6 +37,7 @@ from src.l1_agent.connectors.sdk.secrets import (
 )
 from src.l1_agent.db.engine import Database, utcnow
 from src.l1_agent.db.models import connections
+from src.l1_agent.runner.dispatch import RemoteConnectorSet
 from src.l1_agent.utils.logging import get_logger
 from src.l1_agent.utils.secrets import _SECRET_MAPPINGS
 
@@ -181,6 +182,18 @@ def environment_connections(settings: Settings) -> Dict[str, Connection]:
 
     found: Dict[str, Connection] = {}
     s = settings
+    if s.servicenow.base_url:
+        found["servicenow"] = made(
+            "servicenow",
+            {
+                "base_url": s.servicenow.base_url,
+                "auth": s.servicenow.auth,
+                "username": s.servicenow.username,
+                "assignment_group": s.servicenow.assignment_group,
+            },
+            password=_reference(s, "SERVICENOW_PASSWORD"),
+            client_secret=_reference(s, "SERVICENOW_OAUTH_CLIENT_SECRET"),
+        )
     if s.splunk.base_url:
         found["splunk"] = made(
             "splunk",
@@ -214,7 +227,12 @@ def environment_connections(settings: Settings) -> Dict[str, Connection]:
         )
     found["autosys"] = made(
         "autosys",
-        {"cli_path": s.autosys.cli_path, "allowed_commands": list(s.autosys.allowed_commands)},
+        {
+            "cli_path": s.autosys.cli_path,
+            "allowed_commands": list(s.autosys.allowed_commands),
+            "sendevent_path": s.autosys.sendevent_path,
+            "force_start_jobs": list(s.autosys.force_start_jobs),
+        },
     )
     if s.windows_share.allowed_unc_prefixes:
         found["fileshare"] = made(
@@ -299,11 +317,14 @@ class ConnectorHub:
         fixed: Optional[ConnectorSet] = None,
         registry: Optional[Registry] = None,
         refresh_seconds: float = REFRESH_SECONDS,
+        dispatcher: Any = None,
     ) -> None:
         self._db = db
         self._settings = settings
         self._resolver = resolver
         self._fixed = fixed  # demo mode: the mocks, for every tenant
+        # RUNNER_MODE=remote: calls are made by a runner, not in this process (ADR 0010).
+        self._dispatcher = dispatcher
         self._registry = registry or default_registry()
         self._refresh = refresh_seconds
         self._cache: Dict[uuid.UUID, _Cached] = {}
@@ -363,22 +384,33 @@ class ConnectorHub:
         if cached:
             cached.checked_at = 0.0
 
-    async def for_tenant(self, tenant_id: Optional[uuid.UUID]) -> ConnectorSet:
-        if self._fixed is not None:
+    @property
+    def remote(self) -> bool:
+        return self._dispatcher is not None
+
+    async def for_tenant(self, tenant_id: Optional[uuid.UUID]) -> Any:
+        """The tenant's connectors: a ConnectorSet, or its stand-in that calls a runner."""
+        if self._dispatcher is None and self._fixed is not None:
             return self._fixed
         if tenant_id is None:
             raise ConfigError("Connectors are per tenant; no tenant was given")
-        return (await self._state(tenant_id)).connectors
+        local = self._fixed or (await self._state(tenant_id)).connectors
+        if self._dispatcher is None:
+            return local
+        return RemoteConnectorSet(local, self._dispatcher, tenant_id)
 
     async def describe(self, tenant_id: uuid.UUID) -> List[Dict[str, Any]]:
         """Every registered connector with this tenant's connection state. No credentials."""
         state = None if self._fixed is not None else await self._state(tenant_id)
+        # With fixed connectors (demo mode) the operations connectors are the mocks. The
+        # ITSM connection and the SOP sources are still the tenant's own, if it stored any.
+        stored = state.connections if state else await stored_connections(self._db, tenant_id)
         items: List[Dict[str, Any]] = []
         for manifest in self._registry.manifests():
-            connection = state.connections.get(manifest.id) if state else None
-            if self._fixed is not None:
-                configured = self._fixed.connector(manifest.id) is not None
-                origin = "demo" if configured else ""
+            connection = stored.get(manifest.id)
+            mock = self._fixed is not None and self._fixed.connector(manifest.id) is not None
+            if mock:
+                connection, configured, origin = None, True, "demo"
             else:
                 configured = connection is not None
                 origin = connection.origin if connection else ""
@@ -389,33 +421,59 @@ class ConnectorHub:
                     "enabled": bool(connection.enabled) if connection else configured,
                     "origin": origin,
                     "error": state.errors.get(manifest.id, "") if state else "",
+                    # The stored settings. `config` above is the schema they must fit.
+                    "settings": dict(connection.config) if connection else {},
                     "credentials": dict(connection.secret_refs) if connection else {},
+                    # Where its calls are made from: the runner, or this deployment itself.
+                    "runs_on": (
+                        "runner"
+                        if self.remote and manifest.family is Family.OPERATIONS
+                        else "control_plane"
+                    ),
                 }
             )
         return items
 
-    async def test(self, tenant_id: uuid.UUID, connector_id: str) -> List[CheckResult]:
+    async def test(
+        self, tenant_id: uuid.UUID, connector_id: str, itsm: Any = None
+    ) -> List[CheckResult]:
         """Run a connector's connection test and report each step."""
-        if self._registry.connector_class(connector_id) is None:
+        cls = self._registry.connector_class(connector_id)
+        if cls is None:
             raise LookupError(connector_id)
+        if cls.manifest.family is Family.ITSM:
+            # The ITSM connection is made from the control plane, not by a runner.
+            tester = getattr(itsm, "test", None)
+            if tester is None:
+                return [CheckResult("connection", itsm is not None, "the built-in stand-in")]
+            return await tester()
+        if cls.manifest.family is Family.KNOWLEDGE:
+            return await self._test_knowledge(tenant_id, connector_id, itsm)
         connectors = await self.for_tenant(tenant_id)
         connector = connectors.connector(connector_id)
         if connector is None:
             state = self._cache.get(tenant_id)
             reason = (state.errors.get(connector_id) if state else "") or "not configured"
             return [CheckResult("connection", False, reason)]
+        if isinstance(connectors, RemoteConnectorSet):
+            # The target is reachable from the runner, not from here.
+            return await connectors.test(connector_id)
         return await connector.test_connection()
 
     async def knowledge_sources(self, tenant_id: uuid.UUID, itsm: Any) -> List[KnowledgeSource]:
         """The SOP sources this tenant has configured."""
         if self._fixed is not None:
-            return []
-        found = (await self._state(tenant_id)).connections
+            # Demo mode has no connections from the environment; a stored one still counts.
+            found = await stored_connections(self._db, tenant_id)
+        else:
+            found = (await self._state(tenant_id)).connections
         sources: List[KnowledgeSource] = []
         kb = found.get("servicenow_kb")
-        if kb and kb.enabled and hasattr(itsm, "_get_all"):
+        # The knowledge base is read through the ITSM connection that is in use now.
+        client = await itsm.current() if hasattr(itsm, "current") else itsm
+        if kb and kb.enabled and hasattr(client, "_get_all"):
             sources.append(
-                ServiceNowKnowledge(itsm, kb.config.get("query", "workflow_state=published"))
+                ServiceNowKnowledge(client, kb.config.get("query", "workflow_state=published"))
             )
         git = found.get("git_knowledge")
         if git and git.enabled:
@@ -430,6 +488,24 @@ class ConnectorHub:
                 )
             )
         return sources
+
+    async def _test_knowledge(
+        self, tenant_id: uuid.UUID, connector_id: str, itsm: Any
+    ) -> List[CheckResult]:
+        try:
+            sources = await self.knowledge_sources(tenant_id, itsm)
+        except (ConfigError, SecretError, ValueError) as exc:
+            return [CheckResult("connection", False, str(exc))]
+        source = next(
+            (s for s in sources if type(s).manifest.id == connector_id),
+            None,  # type: ignore[attr-defined]
+        )
+        if source is None:
+            return [CheckResult("connection", False, "not configured")]
+        try:
+            return await source.test_connection()  # type: ignore[attr-defined]
+        finally:
+            await source.close()
 
     async def close(self) -> None:
         for cached in self._cache.values():

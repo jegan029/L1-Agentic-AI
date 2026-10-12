@@ -1,0 +1,24 @@
+# The least a real install has to set. Used by `helm lint`, by tests/deploy and by the
+# kind job in CI. Every name here is of a Secret that the operator creates first; the
+# public keys are placeholders of the right shape (thirty-two zero bytes); they are no key.
+image:
+  repository: registry.example.com/l1-and-l2-ai-ops
+ui:
+  image:
+    repository: registry.example.com/l1-and-l2-ai-ops-ui
+database:
+  existingSecret: aiops-database
+secrets:
+  existingSecret: aiops-secrets
+controlPlane:
+  dispatchKeySecret: aiops-dispatch-key
+  grantKeySecret: aiops-grant-key
+api:
+  tls:
+    secretName: aiops-api-tls
+runner:
+  keySecret: aiops-runner-key
+  caSecret: aiops-api-tls
+  publicKey: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  dispatchPublicKey: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  grantPublicKey: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=

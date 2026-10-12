@@ -1,0 +1,59 @@
+# The dashboard, and a pass-through to the API so that both share one origin.
+# Rendered at container start: ${API_UPSTREAM}, ${UI_STYLE_SRC} and ${UI_FONT_SRC}
+# come from the environment. Everything else with a dollar sign is nginx's own.
+
+server {
+    listen 8080;
+    server_name _;
+    server_tokens off;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # The page loads its own scripts and styles and talks to its own origin, and nothing
+    # else. The dashboard's font is requested from a third party unless that is switched
+    # off: with UI_STYLE_SRC and UI_FONT_SRC empty the request is blocked here and the
+    # browser's own sans-serif font is used.
+    add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' ${UI_STYLE_SRC}; font-src 'self' ${UI_FONT_SRC}; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header Cross-Origin-Resource-Policy "same-origin" always;
+
+    location = /healthz {
+        access_log off;
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    # Hashed file names: safe to cache for a long time.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        try_files $uri =404;
+    }
+
+    location / {
+        add_header Cache-Control "no-store" always;
+        add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' ${UI_STYLE_SRC}; font-src 'self' ${UI_FONT_SRC}; img-src 'self' data:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "no-referrer" always;
+        try_files $uri /index.html;
+    }
+
+    # The API sets its own security headers. Bodies are limited there too.
+    location ~ ^/(api|auth|webhook|runner)/ {
+        proxy_pass ${API_UPSTREAM};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Connection "";
+        client_max_body_size 256k;
+        # The live feed is a long response and a runner's request is held open while
+        # there is no work: neither may be buffered or cut short.
+        proxy_buffering off;
+        proxy_read_timeout 120s;
+    }
+}

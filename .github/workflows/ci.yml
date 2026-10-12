@@ -10,28 +10,33 @@ permissions:
 
 env:
   PYTHON_VERSION: "3.11"
+  # The version the lock files were written with. Another version may format them differently.
+  UV_VERSION: "0.11.15"
+
+# Every action is pinned to a commit. The comment beside it is the tag that commit had
+# when it was pinned; to move a pin, look the tag's commit up again and review the change.
 
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
       - name: Install ruff
-        run: pip install ruff
+        run: pip install --require-hashes -r requirements-dev.lock
 
       - name: Check formatting
-        run: ruff format --check src/ tests/
+        run: ruff format --check src/ tests/ evals/ tools/
 
       - name: Check lint rules
-        run: ruff check src/ tests/
+        run: ruff check src/ tests/ evals/ tools/
 
   tests:
     name: Tests
@@ -51,47 +56,86 @@ jobs:
           --health-retries 20
     env:
       # Tenant isolation, queue locking and the audit guard are only real on PostgreSQL.
-      # With these set, a test that cannot reach the database fails; it is never skipped.
+      # With these set, a test that cannot reach what it needs fails; it is never skipped.
       L1_TEST_PG_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
       L1_REQUIRE_POSTGRES: "1"
       L1_REQUIRE_SAML: "1"
+      L1_REQUIRE_HELM: "1"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Set up Helm (the chart is rendered and checked by tests/deploy)
+        uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.16.4
+
+      - name: Install dependencies, each at a pinned version with a checked hash
+        run: pip install --require-hashes -r requirements-dev.lock
+
+      - name: Run all tests with coverage (SQLite and PostgreSQL)
+        run: |
+          # Without this the step's result is tee's, and a failed test passes the job.
+          set -o pipefail
+          pytest tests/ -v --timeout=180 --junitxml=test-results.xml \
+            --cov=src/l1_agent --cov-report=term-missing --cov-report=xml:coverage.xml \
+            --cov-fail-under=75 | tee result.txt
+          if grep -E "tests/(db|api|contract|evals|runner|e2e|deploy)/.*SKIPPED" result.txt; then
+            echo "A database, sign-in, connector, evaluation, runner, end-to-end or chart test was skipped" >&2
+            exit 1
+          fi
+
+      # Phase 6 exit criterion 2. A row of the controls matrix that says "implemented"
+      # must name files that exist and tests that ran just now and passed.
+      - name: The controls matrix points at code that exists and tests that passed
+        run: python -m tools.controls_matrix --junit test-results.xml --strict
+
+      - name: Run the demo end to end
+        run: python -m src.l1_agent.demo
+
+      - name: Upload test results and coverage
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            test-results.xml
+            coverage.xml
+
+  # Model use (ADR 0009): golden incidents, the injection corpus and the redaction
+  # corpus, against stand-in models that obey injected text, give the worst valid
+  # answer, return garbage, or fail. No real provider is called and nothing is spent.
+  evals:
+    name: Model evaluation suite
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+        run: pip install --require-hashes -r requirements-dev.lock
 
-      - name: Run all tests with coverage (SQLite and PostgreSQL)
-        run: |
-          pytest tests/ -v --timeout=180 --cov=src/l1_agent --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=75 | tee result.txt
-          if grep -E "tests/(db|api|contract)/.*SKIPPED" result.txt; then
-            echo "A database, sign-in or connector contract test was skipped" >&2
-            exit 1
-          fi
-
-      - name: Run the demo end to end
-        run: python -m src.l1_agent.demo
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: coverage
-          path: coverage.xml
+      - name: Run the evaluation suite
+        run: python -m evals.run
 
   frontend:
     name: Frontend build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -103,47 +147,252 @@ jobs:
           npm ci
           npm run build
 
-  docker-build:
-    name: Docker Build
+  # Dependencies: pinned with hashes, the pins match what the requirements ask for, and
+  # none of them has a known vulnerability.
+  deps:
+    name: Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+
+      - name: Every Python dependency in the lock files carries a hash
+        run: |
+          for lock in requirements.lock requirements-dev.lock; do
+            pins=$(grep -cE '^[A-Za-z0-9_.-]+==' "$lock")
+            hashed=$(grep -cE '^[A-Za-z0-9_.-]+==.* \\$' "$lock")
+            echo "$lock: $pins pinned, $hashed followed by hashes"
+            [ "$pins" -gt 0 ] && [ "$pins" = "$hashed" ] || { echo "$lock has an entry without a hash" >&2; exit 1; }
+          done
+          grep -q -- "--require-hashes" Dockerfile || { echo "The image is not built with --require-hashes" >&2; exit 1; }
+
+      - name: The lock files are what the requirements files resolve to
+        run: |
+          pip install "uv==${UV_VERSION}"
+          uv pip compile requirements.txt requirements-connectors.txt requirements-saml.txt \
+            --universal --python-version 3.11 --generate-hashes --no-header -q -o requirements.lock
+          uv pip compile requirements-dev.txt \
+            --universal --python-version 3.11 --generate-hashes --no-header -q -o requirements-dev.lock
+          git diff --exit-code -- requirements.lock requirements-dev.lock || {
+            echo "A requirements file changed without its lock file. Run the two commands above and commit the result." >&2
+            exit 1
+          }
+
+      - name: No known vulnerability in what the image installs (blocking)
+        run: |
+          pip install pip-audit
+          pip-audit --require-hashes --disable-pip -r requirements.lock
+
+      - name: No known high-severity vulnerability in what the dashboard ships (blocking)
+        working-directory: frontend
+        run: |
+          npm ci --ignore-scripts
+          npm audit --omit=dev --audit-level=high
+
+  images:
+    name: Images
     runs-on: ubuntu-latest
     needs: tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Build production image
-        run: docker build -t l1-agent:ci-${{ github.sha }} .
-
-      - name: Build demo image
-        run: docker build --target demo -t l1-agent-demo:ci-${{ github.sha }} .
-
-      - name: Production image refuses to start without credentials
+      - name: Base images are pinned by digest
         run: |
-          if docker run --rm l1-agent:ci-${{ github.sha }}; then
+          count=$(grep -cE '^ARG [A-Z_]+_IMAGE=.+@sha256:[0-9a-f]{64}$' Dockerfile)
+          from=$(grep -cE '^FROM ' Dockerfile)
+          unpinned=$(grep -E '^FROM ' Dockerfile | grep -vcE '^FROM (\$\{[A-Z_]+_IMAGE\}|base|ui-build)( |$)' || true)
+          echo "$count base images pinned by digest; $from FROM lines; $unpinned not from a pinned image"
+          [ "$count" -ge 3 ] && [ "$unpinned" = "0" ]
+
+      - name: Build the control plane, the runner, the dashboard and the demo
+        run: |
+          docker build -t aiops:ci .
+          docker build --target runner -t aiops-runner:ci .
+          docker build --target ui -t aiops-ui:ci .
+          docker build --target demo -t aiops-demo:ci .
+
+      - name: Control plane refuses to start without credentials
+        run: |
+          if docker run --rm aiops:ci; then
             echo "Service started without a database and AGENT_WEBHOOK_SECRET" >&2
             exit 1
           fi
 
-      - name: Production image refuses demo mode on a public address without credentials
+      - name: Control plane refuses demo mode on a public address without credentials
         run: |
-          if docker run --rm -e AGENT_DEMO_MODE=true l1-agent:ci-${{ github.sha }}; then
+          if docker run --rm -e AGENT_DEMO_MODE=true aiops:ci; then
             echo "Demo mode started unauthenticated on 0.0.0.0" >&2
             exit 1
           fi
 
+      - name: Runner refuses to start without an address and keys
+        run: |
+          if docker run --rm aiops-runner:ci; then
+            echo "The runner started with nothing configured" >&2
+            exit 1
+          fi
+
       - name: Demo image runs
-        run: docker run --rm l1-agent-demo:ci-${{ github.sha }}
+        run: docker run --rm aiops-demo:ci
+
+      - name: Control plane runs as a non-root user on a read-only root filesystem
+        run: |
+          docker run -d --name ro --read-only --tmpfs /tmp --cap-drop ALL \
+            --security-opt no-new-privileges \
+            -e AGENT_DEMO_MODE=true -e AGENT_WEBHOOK_HOST=127.0.0.1 aiops:ci
+          probe='import urllib.request,sys; sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=3).status == 200 else 1)'
+          for i in $(seq 1 30); do
+            if docker exec ro python -c "$probe" 2>/dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          docker logs ro | tail -20
+          [ "${ok:-}" = "1" ] || { echo "The API did not answer on a read-only filesystem" >&2; exit 1; }
+          [ "$(docker exec ro id -u)" != "0" ] || { echo "Running as root" >&2; exit 1; }
+          if docker exec ro sh -c 'touch /app/x' 2>/dev/null; then echo "/app is writable" >&2; exit 1; fi
+          docker rm -f ro
+
+      - name: Dashboard runs read-only, sends its security headers and makes no third-party request by default
+        run: |
+          docker run -d --name ui --read-only --tmpfs /tmp --tmpfs /etc/nginx/conf.d:uid=101,gid=101 \
+            --cap-drop ALL --security-opt no-new-privileges -p 127.0.0.1:18080:8080 aiops-ui:ci
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/healthz >/dev/null 2>&1; then ok=1; break; fi
+            sleep 1
+          done
+          [ "${ok:-}" = "1" ] || { docker logs ui; exit 1; }
+          headers=$(curl -fsSI http://127.0.0.1:18080/)
+          echo "$headers"
+          echo "$headers" | grep -qi "content-security-policy: default-src 'none'"
+          echo "$headers" | grep -qi "x-frame-options: DENY"
+          if echo "$headers" | grep -qi "fonts.g"; then echo "A third-party origin is allowed by default" >&2; exit 1; fi
+          [ "$(docker exec ui id -u)" != "0" ]
+          docker rm -f ui
+
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build the images
+        run: |
+          docker build -t aiops:ci .
+          docker build --target ui -t aiops-ui:ci .
+
+      - name: Bill of materials of the control plane and runner image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: aiops:ci
+          format: cyclonedx-json
+          output-file: sbom-control-plane.cdx.json
+          upload-artifact: false
+
+      - name: Bill of materials of the dashboard image
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: aiops-ui:ci
+          format: cyclonedx-json
+          output-file: sbom-dashboard.cdx.json
+          upload-artifact: false
+
+      - name: The bills of materials list what the lock file installs
+        run: |
+          python - <<'PY'
+          import json, re, sys
+          sbom = json.load(open("sbom-control-plane.cdx.json"))
+          have = {c["name"].lower().replace("_", "-") for c in sbom.get("components", [])}
+          want = {m.group(1).lower().replace("_", "-") for m in re.finditer(r"^([A-Za-z0-9_.-]+)==", open("requirements.lock").read(), re.M)}
+          # Packages that are only installed on another platform are not in a Linux image.
+          missing = sorted(n for n in want - have if n not in {"colorama", "pywin32", "tzdata"})
+          print(f"{len(sbom.get('components', []))} components; {len(want)} pinned packages; missing: {missing}")
+          sys.exit(1 if len(missing) > 5 else 0)
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom
+          path: sbom-*.cdx.json
+
+  image-scan:
+    name: Image scan
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build the images
+        run: |
+          docker build -t aiops:ci .
+          docker build --target ui -t aiops-ui:ci .
+
+      # Blocking. A finding that has a fix fails the build; the fix is usually a newer
+      # base image digest or a newer pin in the lock file.
+      - name: Scan the control plane and runner image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: aiops:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Scan the dashboard image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: aiops-ui:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+
+  # The chart, installed for real: a kind cluster, a PostgreSQL, the install job, every
+  # pod ready, `helm test`, the runner connected over TLS, a restore drill, an upgrade.
+  chart-install:
+    name: Chart install
+    runs-on: ubuntu-latest
+    needs: tests
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies (the command line makes the keys)
+        run: pip install --require-hashes -r requirements.lock
+
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4
+        with:
+          version: v3.16.4
+
+      - name: Start a kind cluster
+        uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1
+        with:
+          cluster_name: l1-install-test
+
+      - name: Install the chart and check it
+        run: bash tools/ci/kind_install.sh
 
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: lint
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -151,13 +400,13 @@ jobs:
       - name: Static analysis (blocking)
         run: |
           pip install "bandit[toml]"
-          bandit -r src/ \
+          bandit -r src/ tools/ \
             -x src/l1_agent/adapters/mock_adapters.py \
             --severity-level medium \
             --confidence-level medium
 
       - name: Secret scan
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -165,7 +414,7 @@ jobs:
     name: Hygiene
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # The list of terms that must never appear (customer names and the like) is
       # held in a repository secret so that the list itself is not in the code.

@@ -1,0 +1,176 @@
+# L1 and L2 AI-Ops on one machine, for a look at the whole shape. DEMO ONLY.
+#
+#   docker compose -f deploy/compose/docker-compose.yml up --build
+#   open http://127.0.0.1:8088            the dashboard (every visitor is the demo user)
+#   docker compose -f deploy/compose/docker-compose.yml run --rm incidents
+#                                          sends the sample incidents
+#
+# What is real here: the control plane and the runner are separate processes, every
+# connector call crosses the runner protocol, the database is PostgreSQL with row level
+# security, and the keys are generated when the stack first starts.
+#
+# What is not: the connectors are mocks, ServiceNow is an in-memory stand-in, nobody
+# signs in, and the passwords are in this file. The API listens on loopback inside one
+# shared network namespace, which is the only reason demo mode will start at all; the
+# only port published to the host is the dashboard's, on 127.0.0.1.
+
+x-image: &image
+  build:
+    context: ../..
+  image: l1-and-l2-ai-ops:compose
+
+x-control-plane: &control-plane
+  AGENT_DEMO_MODE: "true"
+  # Loopback, in the network namespace the dashboard and the runner share with the API.
+  AGENT_WEBHOOK_HOST: 127.0.0.1
+  AGENT_WEBHOOK_PORT: "8081"
+  LLM_ENABLED: "false"
+  TENANT_SLUG: demo
+  DATABASE_URL: postgresql+asyncpg://aiops_demo:demo-app-password@postgres:5432/aiops
+  RUNNER_MODE: remote
+  RUNNER_DISPATCH_KEY_REF: file:/keys/dispatch.key
+  ACTIONS_GRANT_KEY_REF: file:/keys/grant.key
+  # Where the mock targets "are". The runner holds the mocks; these give each
+  # connection the settings its capabilities are checked against.
+  SPLUNK_BASE_URL: https://splunk.demo.invalid
+  DYNATRACE_BASE_URL: https://dynatrace.demo.invalid
+  IR360_BASE_URL: https://mq.demo.invalid
+  WINDOWS_SHARE_ALLOWED_PREFIXES: "\\\\demo\\share"
+  WEBUI_ALLOWED_DOMAINS: demo.invalid
+  MAINFRAME_HOST: mainframe.demo.invalid
+  MAINFRAME_ALLOWED_TRANSACTIONS: BEIM
+  AUTOSYS_FORCE_START_JOBS: "NIGHTLY_*,PAYROLL_*"
+
+services:
+  postgres:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_PASSWORD: demo-owner-password
+      POSTGRES_DB: aiops
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "aiops"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Once: the database roles, the schema, the tenant, the keys, the runner's enrolment.
+  # Root only so that it can hand the key files to the user the other services run as.
+  setup:
+    <<: *image
+    user: "0:0"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *control-plane
+      DATABASE_MIGRATION_URL: postgresql+asyncpg://postgres:demo-owner-password@postgres:5432/aiops
+      APP_LOGIN: aiops_demo
+      APP_PASSWORD: demo-app-password
+    entrypoint: ["python", "/setup/setup.py"]
+    volumes:
+      - keys:/keys
+      - ./setup.py:/setup/setup.py:ro
+
+  api:
+    <<: *image
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+    environment:
+      <<: *control-plane
+      WORKER_EMBEDDED: "false"
+    command: ["serve"]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - keys:/keys:ro
+    ports:
+      # The dashboard, which shares this service's network namespace.
+      - "127.0.0.1:8088:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3).status == 200 else 1)"]
+      interval: 3s
+      timeout: 4s
+      retries: 30
+
+  worker:
+    <<: *image
+    depends_on:
+      # After the API, which publishes the sample SOPs when it first starts.
+      api:
+        condition: service_healthy
+    environment:
+      <<: *control-plane
+    command: ["worker"]
+    healthcheck:
+      disable: true # it has no listener to ask
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - keys:/keys:ro
+
+  # No database, no published port. It reaches the API over the shared loopback.
+  runner:
+    <<: *image
+    depends_on:
+      api:
+        condition: service_healthy
+    network_mode: "service:api"
+    environment:
+      AGENT_DEMO_MODE: "true"
+      RUNNER_MOCK_CONNECTORS: "true"
+      RUNNER_CONTROL_PLANE_URL: http://127.0.0.1:8081
+      RUNNER_PRIVATE_KEY_REF: file:/keys/runner.key
+      RUNNER_DISPATCH_PUBLIC_KEY_FILE: /keys/dispatch.key.pub
+      RUNNER_GRANT_PUBLIC_KEY_FILE: /keys/grant.key.pub
+      RUNNER_MAX_TIER: T1
+      RUNNER_TARGETS_FILE: /etc/runner/targets.json
+    command: ["runner", "run"]
+    healthcheck:
+      disable: true # it has no listener to ask
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - keys:/keys:ro
+      - ./runner-targets.json:/etc/runner/targets.json:ro
+
+  ui:
+    build:
+      context: ../..
+      target: ui
+    image: l1-and-l2-ai-ops-ui:compose
+    depends_on:
+      api:
+        condition: service_healthy
+    network_mode: "service:api"
+    environment:
+      API_UPSTREAM: http://127.0.0.1:8081
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /etc/nginx/conf.d:uid=101,gid=101
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  # Not started by `up`. Sends the sample incidents to the webhook, once.
+  incidents:
+    <<: *image
+    profiles: ["tools"]
+    network_mode: "service:api"
+    environment:
+      WEBHOOK_URL: http://127.0.0.1:8081/webhook/incident
+    entrypoint: ["python", "/setup/send_incidents.py"]
+    volumes:
+      - ./send_incidents.py:/setup/send_incidents.py:ro
+
+volumes:
+  database:
+  keys:

@@ -94,6 +94,9 @@ class ExecutionSummary:
     completed_at: str = ""
     total_duration_ms: float = 0.0
     verified_by: str = ""
+    # A hand-over summary written by a model, if there is one. Shown labelled as
+    # model-drafted; it is never read by the engine (ADR 0009).
+    model_note: str = ""
 
     def __post_init__(self) -> None:
         self._check_outcome(self.outcome, self.verified_by)

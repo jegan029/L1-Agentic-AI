@@ -6,9 +6,12 @@ import Icon from './Icon'
 export const NAV_ITEMS = [
   { key: 'dashboard', label: 'Live dashboard',  short: 'Dashboard',  icon: 'activity',   href: '#/dashboard' },
   { key: 'incidents', label: 'Incident feed',   short: 'Incidents',  icon: 'clock',      href: '#/incidents' },
+  { key: 'actions',   label: 'Actions',         short: 'Actions',    icon: 'check-circle', href: '#/actions' },
   { key: 'library',   label: 'SOP library',     short: 'Library',    icon: 'book',       href: '#/library' },
   { key: 'sops',      label: 'SOP performance', short: 'SOPs',       icon: 'list-check', href: '#/sops' },
   { key: 'activity',  label: 'Activity feed',   short: 'Activity',   icon: 'zap',        href: '#/activity' },
+  // Shown only to roles that can read the system's configuration.
+  { key: 'setup',     label: 'Set-up',          short: 'Set-up',     icon: 'server',     href: '#/setup', needs: 'system.read' },
 ]
 
 function ConnectionStatus() {
@@ -37,6 +40,8 @@ function Account() {
 }
 
 export default function NavBar({ activePage }) {
+  const { user } = useSession()
+  const items = NAV_ITEMS.filter(i => !i.needs || user?.permissions.includes(i.needs))
   return (
     <>
       <div className="utilbar">
@@ -53,7 +58,7 @@ export default function NavBar({ activePage }) {
           </div>
 
           <nav className="nav" aria-label="Primary">
-            {NAV_ITEMS.map(item => (
+            {items.map(item => (
               <a
                 key={item.key}
                 href={item.href}

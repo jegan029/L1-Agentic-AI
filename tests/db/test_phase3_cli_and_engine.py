@@ -123,7 +123,11 @@ class TestConnectionCommands:
         assert cli.main(["connectors"]) == 0
         out = capsys.readouterr().out
         assert "splunk.search\tread\tT0" in out and "(preview)" in out
-        assert "\twrite\t" not in out
+        # The one write, with its tier (Phase 4).
+        assert [
+            line.split("\t")[0].strip() for line in out.splitlines() if "\twrite\t" in line
+        ] == ["autosys.job.force_start"]
+        assert "autosys.job.force_start\twrite\tT1" in out
 
     async def test_connection_test_and_knowledge_sync_in_demo_mode(self, tmp_path, capsys):
         settings = demo_settings(tmp_path)
@@ -194,7 +198,7 @@ class TestCapabilitySteps:
             (
                 {"step_type": "SPLUNK_SEARCH", "capability": "splunk.search",
                  "parameters": {"query": "x"}},
-                "only a CHECK step names a capability",
+                "only a CHECK or ACTION step names a capability",
             ),
         ],
     )  # fmt: skip

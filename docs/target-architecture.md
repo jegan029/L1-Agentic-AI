@@ -1,6 +1,6 @@
 # Target architecture
 
-Status: Phase 0 output, awaiting review. Describes the intended end state after Phase 6. Nothing here is built yet.
+Status: written in Phase 0 as the intended end state after Phase 6, and kept as written. It is the design, not a description of the code: [ARCHITECTURE.md](../ARCHITECTURE.md) says what was built, and section 11 lists where the two differ.
 
 Related: [delivery plan](delivery-plan.md), [threat model](threat-model.md), [controls matrix](controls-matrix.md), ADRs in [adr/](adr/).
 
@@ -288,3 +288,20 @@ These are engineering questions to settle in the phase where they arise, listed 
 3. The browser-check connector's sandboxing model.
 4. Whether personal data can be kept entirely out of the audit chain (ADR 0007), which needs privacy review.
 5. How the hosted control plane would hold per-tenant encryption keys (customer-managed keys are the likely requirement).
+
+## 11. Where the product differs from this document after Phase 6
+
+Kept short. Each line names where the as-built position is recorded.
+
+| This document says | As built |
+|---|---|
+| Mutual TLS between runner and control plane | TLS with the server authenticated by certificate, and every request, call and grant signed at the message level. No client certificates ([ADR 0010](adr/0010-runner-protocol.md)) |
+| ITSM and knowledge connectors run in whichever plane can reach the target | Always the control plane ([ADR 0010](adr/0010-runner-protocol.md)) |
+| Evidence store (write-once), SIEM export, retention | Not built (controls matrix AU-04, AU-05) |
+| Kill switch read through a short cache | Read from the database every time, with no cache |
+| Dry run in the action pipeline | Supported by the pipeline; the one shipped write has none |
+| Secrets from Azure Key Vault and Kubernetes secrets | Vault, AWS, files (which is how a Kubernetes Secret arrives) and environment; no Azure backend |
+| Connectors register through entry points with a signed list of permitted versions | A first-party list in code; no plug-in mechanism ([ADR 0005](adr/0005-connector-sdk.md)) |
+| `advisor/`, `tenancy/`, `queue/`, `events/` packages | `ai/`, and the others folded into `db/` and `service/` ([ARCHITECTURE.md](../ARCHITECTURE.md)) |
+| A demo identity with fixed users for each role | One demo user holding every role; the tests create one session per role |
+| Per-tenant encryption key for evidence | Not built; encryption at rest is the platform's (controls matrix CR-04) |

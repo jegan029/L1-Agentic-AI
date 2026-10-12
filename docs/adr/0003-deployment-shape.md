@@ -60,3 +60,12 @@ In shape A both planes are deployed together and the protocol runs in-cluster. I
 - Point 1 holds: every row carries `tenant_id` and PostgreSQL row level security enforces it, with one tenant or many.
 - Points 2 to 5 are not built. Adapters still run inside the worker process; the runner split, action grants and the evidence store arrive with write actions and packaging (Phases 4 and 6).
 - The ServiceNow connection, webhook secret, identity provider and adapters are configured per deployment, so one process serves one tenant. Per-tenant connections arrive with the connector registry in Phase 3.
+
+## As built in Phase 6
+
+- Point 2 holds with `RUNNER_MODE=remote`, which is the Helm chart's default: no operations connector is called in the control plane. `RUNNER_MODE=embedded`, the default of the code, still calls them in the worker. The ITSM connection and the SOP sources are called from the control plane in both.
+- Point 3 holds for operations connectors: with a runner, their credentials are resolved by the runner and are never sent to the control plane.
+- Point 4 holds: the runner has its own maximum tier, capability list, target lists for writes and kill switch, and checks each grant with a public key. See [ADR 0010](0010-runner-protocol.md).
+- Point 5 is not built. Results travel to the control plane and into the run record.
+- Point 6 has held since Phase 5.
+- Shape B has not been built or tried. The chart deploys shape A. Nothing has run with the control plane and the runner on different networks.

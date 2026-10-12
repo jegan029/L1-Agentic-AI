@@ -1,6 +1,7 @@
 """Database schema.
 
-Every table except `tenants` carries `tenant_id` and is listed in TENANT_TABLES.
+Every table except the two in GLOBAL_TABLES carries `tenant_id` and is listed in
+TENANT_TABLES.
 On PostgreSQL each of those has row level security (see the first migration),
 so a query can only see rows of the tenant set on its transaction.
 """
@@ -170,6 +171,9 @@ runs = sa.Table(
     sa.Column("sop_hash", sa.String(64), nullable=False, server_default=""),
     sa.Column("confidence", sa.Float()),
     sa.Column("match_rationale", sa.Text(), nullable=False, server_default=""),
+    # Parameter values a model located in the ticket (ADR 0009). Kept so that a
+    # resumed run uses the same values and does not ask again.
+    sa.Column("advised_parameters", Json),
     sa.Column("record", Json),
     sa.Column("created_at", Timestamp, nullable=False),
     sa.Column("completed_at", Timestamp),
@@ -354,7 +358,245 @@ sop_versions = sa.Table(
     sa.Index("ix_sop_versions_status", "tenant_id", "status"),
 )
 
-TENANT_TABLES = tuple(t for t in metadata.sorted_tables if t.name != "tenants")
+# Deployment-wide switches, set by the platform operator with the migration role.
+# The application role can read this table and cannot write it. It holds no tenant data.
+platform_flags = sa.Table(
+    "platform_flags",
+    metadata,
+    sa.Column("name", sa.String(64), primary_key=True),
+    sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.false()),
+    sa.Column("reason", sa.Text(), nullable=False, server_default=""),
+    sa.Column("set_by", sa.String(300), nullable=False, server_default=""),
+    sa.Column("set_at", Timestamp, nullable=False),
+)
+FLAG_KILL_SWITCH = "kill_switch"
+
+AUTONOMY_LEVELS = ("shadow", "recommend", "approval", "automatic")
+
+# One row per tenant: how far the agent may go, and the tenant's kill switch (ADR 0008).
+policies = sa.Table(
+    "policies",
+    metadata,
+    sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id"), primary_key=True),
+    sa.Column("autonomy", sa.String(20), nullable=False, server_default="shadow"),
+    sa.Column("rules", Json, nullable=False),
+    sa.Column("kill_switch", sa.Boolean(), nullable=False, server_default=sa.false()),
+    sa.Column("kill_reason", sa.Text(), nullable=False, server_default=""),
+    sa.Column("kill_set_by", sa.String(300), nullable=False, server_default=""),
+    sa.Column("kill_set_at", Timestamp),
+    sa.Column("updated_by", sa.String(300), nullable=False),
+    sa.Column("updated_at", Timestamp, nullable=False),
+    sa.CheckConstraint(
+        "autonomy IN ('shadow', 'recommend', 'approval', 'automatic')", name="ck_policies_autonomy"
+    ),
+)
+
+ACTION_STATUSES = (
+    "denied",
+    "shadowed",
+    "recommended",
+    "pending",  # waiting for an approval
+    "approved",
+    "rejected",
+    "expired",
+    "invalid",  # the approval or the decision no longer applies
+    "allowed",
+    "executing",  # the write has been authorised and may have been sent
+    "executed",  # the write was accepted; not yet verified
+    "not_done",  # a pre-check or dry run said no; nothing was changed
+    "verified",
+    "failed",  # the write or its verification failed, and nothing was rolled back
+    "rolling_back",
+    "rolled_back",
+    "rollback_failed",
+    "aborted",  # stopped by the kill switch
+)
+_ACTION_STATUS_SQL = ", ".join(f"'{s}'" for s in ACTION_STATUSES)
+
+# One row per ACTION step of a run: the policy decision, the approval if one was
+# needed, and what happened. It is also the approval request the approver sees.
+actions = sa.Table(
+    "actions",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("run_id", sa.Uuid(), sa.ForeignKey("runs.id"), nullable=False),
+    sa.Column("incident_id", sa.Uuid(), sa.ForeignKey("incidents.id"), nullable=False),
+    sa.Column("incident_number", sa.String(64), nullable=False),
+    sa.Column("step_id", sa.String(100), nullable=False),
+    sa.Column("sop_key", sa.String(100), nullable=False),
+    sa.Column("sop_version", sa.String(40), nullable=False, server_default=""),
+    sa.Column("sop_hash", sa.String(64), nullable=False, server_default=""),
+    sa.Column("sop_author_id", sa.String(300), nullable=False, server_default=""),
+    sa.Column("capability_id", sa.String(120), nullable=False),
+    sa.Column("parameters", Json, nullable=False),
+    sa.Column("call_digest", sa.String(64), nullable=False),  # capability and parameters
+    # tenant, incident, SOP version, capability and parameters: what an approval is for
+    sa.Column("action_hash", sa.String(64), nullable=False),
+    sa.Column("tier", sa.String(4), nullable=False),
+    sa.Column("verdict", sa.String(20), nullable=False),
+    sa.Column("reason_code", sa.String(60), nullable=False, server_default=""),
+    sa.Column("rule", sa.String(300), nullable=False, server_default=""),
+    sa.Column("status", sa.String(20), nullable=False),
+    sa.Column("change_template", sa.String(100), nullable=False, server_default=""),
+    sa.Column("change_sys_id", sa.String(64), nullable=False, server_default=""),
+    sa.Column("change_number", sa.String(40), nullable=False, server_default=""),
+    sa.Column("channels", Json, nullable=False),  # where an approval may come from
+    sa.Column("requested_at", Timestamp),
+    sa.Column("expires_at", Timestamp),
+    sa.Column("approver_id", sa.String(300)),
+    sa.Column("approver_email", sa.String(320), nullable=False, server_default=""),
+    sa.Column("approved_hash", sa.String(64), nullable=False, server_default=""),
+    sa.Column("decided_via", sa.String(20), nullable=False, server_default=""),
+    sa.Column("decision_note", sa.Text(), nullable=False, server_default=""),
+    sa.Column("decided_at", Timestamp),
+    sa.Column("valid_until", Timestamp),  # execution must begin before this
+    sa.Column("execution_started_at", Timestamp),
+    sa.Column("completed_at", Timestamp),
+    sa.Column("result", Json),
+    sa.Column("created_at", Timestamp, nullable=False),
+    sa.Column("updated_at", Timestamp, nullable=False),
+    sa.UniqueConstraint("run_id", "step_id", name="uq_actions_step"),
+    sa.CheckConstraint(f"status IN ({_ACTION_STATUS_SQL})", name="ck_actions_status"),
+    sa.CheckConstraint("tier IN ('T1', 'T2')", name="ck_actions_tier"),
+    sa.CheckConstraint(
+        "verdict IN ('deny', 'shadow', 'recommend', 'require_approval', 'allow')",
+        name="ck_actions_verdict",
+    ),
+    # Decision D5: nothing above T1 is ever allowed without an approval.
+    sa.CheckConstraint("verdict <> 'allow' OR tier = 'T1'", name="ck_actions_only_t1_unattended"),
+    # An approval is of exactly this action, by a named person.
+    sa.CheckConstraint(
+        "status <> 'approved' OR (approver_id IS NOT NULL AND approved_hash = action_hash)",
+        name="ck_actions_approval_is_for_this_action",
+    ),
+    # For T2 the approver is never the author of the SOP version.
+    sa.CheckConstraint(
+        "tier <> 'T2' OR approver_id IS NULL OR approver_id <> sop_author_id",
+        name="ck_actions_t2_two_people",
+    ),
+    # Nothing starts executing unless policy allowed it, or required an approval and got one.
+    sa.CheckConstraint(
+        "execution_started_at IS NULL OR verdict = 'allow' OR "
+        "(verdict = 'require_approval' AND approver_id IS NOT NULL AND approved_hash = action_hash)",
+        name="ck_actions_executed_was_authorised",
+    ),
+    # The same write is made at most once for an incident, across all its runs.
+    sa.Index(
+        "uq_actions_once_per_incident",
+        "incident_id",
+        "call_digest",
+        unique=True,
+        postgresql_where=sa.text("execution_started_at IS NOT NULL"),
+        sqlite_where=sa.text("execution_started_at IS NOT NULL"),
+    ),
+    sa.Index("ix_actions_status", "tenant_id", "status"),
+)
+
+# ── Model use (ADR 0009) ──────────────────────────────────────────────
+
+# Whether a tenant uses a model at all, with which providers, for which tasks,
+# and within which budgets. No row means no model.
+model_policies = sa.Table(
+    "model_policies",
+    metadata,
+    sa.Column("tenant_id", sa.Uuid(), sa.ForeignKey("tenants.id"), primary_key=True),
+    sa.Column("enabled", sa.Boolean(), nullable=False, server_default=sa.false()),
+    sa.Column("rules", Json, nullable=False),
+    sa.Column("updated_by", sa.String(300), nullable=False),
+    sa.Column("updated_at", Timestamp, nullable=False),
+)
+
+MODEL_CALL_OUTCOMES = ("ok", "invalid", "error", "over_budget")
+
+# One row per request to a provider, and one per request that a budget stopped.
+# Digests and counts only: neither the prompt nor the answer is stored.
+model_calls = sa.Table(
+    "model_calls",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("run_id", sa.Uuid(), sa.ForeignKey("runs.id")),  # null: not part of a run
+    sa.Column("subject", sa.String(200), nullable=False, server_default=""),
+    sa.Column("task", sa.String(20), nullable=False),
+    sa.Column("provider", sa.String(40), nullable=False),
+    sa.Column("model", sa.String(200), nullable=False),
+    sa.Column("prompt_version", sa.String(40), nullable=False),
+    sa.Column("input_digest", sa.String(64), nullable=False),
+    sa.Column("output_digest", sa.String(64), nullable=False, server_default=""),
+    sa.Column("input_tokens", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("output_tokens", sa.Integer(), nullable=False, server_default="0"),
+    sa.Column("cost_micros", sa.BigInteger(), nullable=False, server_default="0"),
+    sa.Column("outcome", sa.String(20), nullable=False),
+    sa.Column("detail", sa.String(300), nullable=False, server_default=""),
+    sa.Column("created_at", Timestamp, nullable=False),
+    sa.CheckConstraint(
+        "outcome IN (" + ", ".join(f"'{o}'" for o in MODEL_CALL_OUTCOMES) + ")",
+        name="ck_model_calls_outcome",
+    ),
+    sa.CheckConstraint(
+        "input_tokens >= 0 AND output_tokens >= 0 AND cost_micros >= 0",
+        name="ck_model_calls_not_negative",
+    ),
+    sa.Index("ix_model_calls_tenant_created", "tenant_id", "created_at"),
+    sa.Index("ix_model_calls_run", "tenant_id", "run_id"),
+)
+
+# ── The runner (ADR 0010) ─────────────────────────────────────────────
+
+# A runner a tenant administrator has enrolled: its name and its public key.
+# The private key never leaves the runner.
+runners = sa.Table(
+    "runners",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("name", sa.String(100), nullable=False),
+    sa.Column("public_key", sa.String(64), nullable=False),  # Ed25519, base64
+    sa.Column("enrolled_by", sa.String(300), nullable=False),
+    sa.Column("created_at", Timestamp, nullable=False),
+    sa.Column("revoked_at", Timestamp),
+    sa.Column("last_seen_at", Timestamp),
+    # What the runner says about itself when it asks for work: version and local ceiling.
+    sa.Column("reported", Json),
+    sa.UniqueConstraint("tenant_id", "name", name="uq_runners_name"),
+    # A runner may name itself by its key (ADR 0010), so a key belongs to one runner.
+    sa.UniqueConstraint("tenant_id", "public_key", name="uq_runners_key"),
+)
+
+RUNNER_CALL_STATUSES = ("queued", "claimed", "done", "cancelled")
+
+# One connector call waiting for, held by, or answered by a runner. A row is
+# removed when its answer has been read, so results are not kept here.
+runner_calls = sa.Table(
+    "runner_calls",
+    metadata,
+    _id(),
+    _tenant(),
+    sa.Column("kind", sa.String(20), nullable=False),  # invoke | dry_run | test
+    sa.Column("capability_id", sa.String(120), nullable=False, server_default=""),
+    sa.Column("connector_id", sa.String(64), nullable=False),
+    sa.Column("is_write", sa.Boolean(), nullable=False, server_default=sa.false()),
+    # The exact text the control plane signed, and its signature. No credential is in it.
+    sa.Column("envelope", sa.Text(), nullable=False),
+    sa.Column("signature", sa.String(128), nullable=False),
+    sa.Column("status", sa.String(20), nullable=False, server_default="queued"),
+    sa.Column("runner_id", sa.Uuid(), sa.ForeignKey("runners.id")),
+    sa.Column("created_at", Timestamp, nullable=False),
+    sa.Column("deadline", Timestamp, nullable=False),
+    sa.Column("claimed_at", Timestamp),
+    sa.Column("completed_at", Timestamp),
+    sa.Column("outcome", sa.String(20), nullable=False, server_default=""),
+    sa.Column("result", Json),
+    sa.CheckConstraint(
+        "status IN (" + ", ".join(f"'{s}'" for s in RUNNER_CALL_STATUSES) + ")",
+        name="ck_runner_calls_status",
+    ),
+    sa.Index("ix_runner_calls_claim", "tenant_id", "status", "created_at"),
+)
+
+GLOBAL_TABLES = ("tenants", "platform_flags")
+TENANT_TABLES = tuple(t for t in metadata.sorted_tables if t.name not in GLOBAL_TABLES)
 APPEND_ONLY_TABLES = ("audit_events",)
 
 # The only SOPs the engine may match and run. A view, so the rule is in the database

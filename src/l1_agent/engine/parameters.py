@@ -7,7 +7,7 @@ be bound or fails validation stops the run before any step executes.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List, Set
+from typing import Any, Dict, Iterable, List, Set, Tuple
 
 from src.l1_agent.models.incident import Incident
 from src.l1_agent.models.sop import SOP, ParameterSpec
@@ -61,6 +61,10 @@ def spec_problems(spec: ParameterSpec) -> List[str]:
                 problems.append(f"{label}: source.regex must have exactly one capture group")
         except re.error as exc:
             problems.append(f"{label}: source.regex is invalid: {exc}")
+        if not isinstance(spec.source.get("advisor", False), bool):
+            problems.append(f"{label}: source.advisor must be true or false")
+    if kind != "extraction" and isinstance(spec.source, dict) and "advisor" in spec.source:
+        problems.append(f"{label}: source.advisor is only for an extraction source")
     elif kind == "constant" and "value" not in spec.source:
         problems.append(f"{label}: constant source needs a value")
     if spec.pattern:
@@ -110,6 +114,53 @@ def bind_parameters(sop: SOP, incident: Incident) -> Dict[str, Any]:
     for spec in sop.parameters:
         values[spec.name] = _validate(spec, _raw_value(spec, incident))
     return values
+
+
+def bind_what_can_be(
+    sop: SOP, incident: Incident
+) -> Tuple[Dict[str, Any], Dict[str, ParameterError], List[ParameterSpec]]:
+    """Bind every parameter that binds. Returns (values, failures by name, not found).
+
+    "Not found" lists the parameters whose source matched nothing in the ticket,
+    as opposed to matching something that then failed validation.
+    """
+    values: Dict[str, Any] = {}
+    failures: Dict[str, ParameterError] = {}
+    not_found: List[ParameterSpec] = []
+    for spec in sop.parameters:
+        try:
+            raw = _raw_value(spec, incident)
+            if raw is None or raw == "":
+                not_found.append(spec)
+            values[spec.name] = _validate(spec, raw)
+        except ParameterError as exc:
+            failures[spec.name] = exc
+    return values, failures, not_found
+
+
+def may_be_advised(spec: ParameterSpec) -> bool:
+    """True when the SOP author allowed a model to help locate this value (ADR 0009)."""
+    return spec.source.get("kind") == "extraction" and spec.source.get("advisor") is True
+
+
+def accept_advised(spec: ParameterSpec, value: Any, incident: Incident) -> Any:
+    """Accept a value a model located, or raise ParameterError.
+
+    The model points; it does not supply. The value must stand in the ticket
+    fields the parameter reads, word for word and as a whole word, and it must
+    pass the same validation as a value the author's pattern found.
+    """
+    if not may_be_advised(spec):
+        raise ParameterError(f"parameter '{spec.name}' may not be located by a model")
+    if not isinstance(value, str) or not value.strip():
+        raise ParameterError(f"parameter '{spec.name}' was not located")
+    candidate = value.strip()
+    fields = spec.source.get("fields", ["short_description", "description"])
+    text = "\n".join(str(getattr(incident, f, "") or "") for f in fields)[:MAX_EXTRACTION_INPUT]
+    whole_word = re.compile(r"(?<![A-Za-z0-9_])" + re.escape(candidate) + r"(?![A-Za-z0-9_])")
+    if not whole_word.search(text):
+        raise ParameterError(f"parameter '{spec.name}': the located value is not in the ticket")
+    return _validate(spec, candidate)
 
 
 def placeholders_in(obj: Any) -> Set[str]:

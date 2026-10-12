@@ -31,21 +31,30 @@ class Permission(str, Enum):
     CONNECTORS_MANAGE = "connectors.manage"
     SOPS_AUTHOR = "sops.author"
     SOPS_APPROVE = "sops.approve"
-    # Declared now so the role table is complete; their routes arrive in Phase 4.
+    # Declared so the role table is complete; no route uses it yet.
     RUNS_OPERATE = "runs.operate"
+    # Approve or reject one action (ADR 0008).
     ACTIONS_APPROVE = "actions.approve"
+    # Engage the kill switch. Releasing it needs POLICY_MANAGE.
+    ACTIONS_STOP = "actions.stop"
+    # Set the autonomy level and the policy rules; release the kill switch.
+    POLICY_MANAGE = "policy.manage"
 
 
 P = Permission
 
 ROLE_PERMISSIONS: Dict[Role, FrozenSet[Permission]] = {
     Role.VIEWER: frozenset({P.INCIDENTS_READ}),
-    Role.OPERATOR: frozenset({P.INCIDENTS_READ, P.SYSTEM_READ, P.METRICS_READ, P.RUNS_OPERATE}),
+    # An operator can stop the agent and cannot start it again or change what it may do.
+    Role.OPERATOR: frozenset(
+        {P.INCIDENTS_READ, P.SYSTEM_READ, P.METRICS_READ, P.RUNS_OPERATE, P.ACTIONS_STOP}
+    ),
     Role.APPROVER: frozenset({P.INCIDENTS_READ, P.ACTIONS_APPROVE}),
     Role.SOP_AUTHOR: frozenset({P.INCIDENTS_READ, P.SOPS_AUTHOR}),
     Role.SOP_APPROVER: frozenset({P.INCIDENTS_READ, P.SOPS_APPROVE}),
-    # An administrator manages access. Reading the audit log is the auditor's job,
-    # and approving actions or SOPs is not an administrator's by default.
+    # An administrator manages access and policy. Reading the audit log is the
+    # auditor's job, and approving actions or SOPs is not an administrator's: the
+    # person who decides how far the agent may go does not also approve what it does.
     Role.TENANT_ADMIN: frozenset(
         {
             P.INCIDENTS_READ,
@@ -54,6 +63,8 @@ ROLE_PERMISSIONS: Dict[Role, FrozenSet[Permission]] = {
             P.TOKENS_MANAGE,
             P.ROLES_MANAGE,
             P.CONNECTORS_MANAGE,
+            P.ACTIONS_STOP,
+            P.POLICY_MANAGE,
         }
     ),
     Role.AUDITOR: frozenset({P.INCIDENTS_READ, P.AUDIT_READ}),

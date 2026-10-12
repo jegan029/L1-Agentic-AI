@@ -20,6 +20,8 @@ class StepType(Enum):
     CHECK = "CHECK"
     DECISION = "DECISION"
     NOTE = "NOTE"
+    # A write: names a write capability in `capability`. Goes through policy (ADR 0008).
+    ACTION = "ACTION"
     # Runs a read check and applies an assertion. The only route to RESOLVE.
     VERIFY = "VERIFY"
     # Explicit terminal steps.
@@ -61,8 +63,11 @@ class SOPStep:
     on_failure: str = ""
     requires_approval: bool = False
     timeout_seconds: int = 60
-    # For a CHECK step: the connector capability id, for example "splunk.search".
+    # For a CHECK or ACTION step: the connector capability id, for example "splunk.search".
     capability: str = ""
+    # For an ACTION step: overrides for the capability's own verification
+    # ({"assert": ..., "retries": ..., "wait_seconds": ...}). Empty uses the manifest's.
+    verify: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         data = {
@@ -78,12 +83,15 @@ class SOPStep:
         }
         if self.capability:
             data["capability"] = self.capability
+        if self.verify:
+            data["verify"] = self.verify
         return data
 
     @classmethod
     def from_dict(cls, data: dict) -> "SOPStep":
         return cls(
             capability=data.get("capability", ""),
+            verify=data.get("verify") or {},
             step_id=data.get("step_id", ""),
             step_type=data.get("step_type", ""),
             description=data.get("description", ""),
@@ -181,6 +189,8 @@ class SOP:
     # SHA-256 of the published version's canonical content. Empty for an SOP that
     # did not come from the version store (tests, files).
     content_hash: str = ""
+    # The standard change template every ACTION step of this SOP is carried out under.
+    change_template: str = ""
 
     @property
     def is_draft(self) -> bool:
@@ -202,10 +212,11 @@ class SOP:
             version=data.get("version", "1.0"),
             parameters=[ParameterSpec.from_dict(p) for p in data.get("parameters", [])],
             status=data.get("status", SOP_STATUS_PUBLISHED),
+            change_template=data.get("change_template", "") or "",
         )
 
     def to_dict(self) -> dict:
-        return {
+        data = {
             "sop_id": self.sop_id,
             "title": self.title,
             "status": self.status,
@@ -226,3 +237,7 @@ class SOP:
             },
             "version": self.version,
         }
+        # Written only when set, so that the hash of an SOP without actions does not change.
+        if self.change_template:
+            data["change_template"] = self.change_template
+        return data

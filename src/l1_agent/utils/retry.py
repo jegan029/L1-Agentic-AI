@@ -53,6 +53,10 @@ class CircuitBreaker:
         return current in (CircuitState.CLOSED, CircuitState.HALF_OPEN)
 
 
+class NotRetryable(Exception):
+    """A failure that trying again cannot help. It is raised to the caller at once."""
+
+
 async def retry_with_backoff(
     func: Callable,
     *args: Any,
@@ -75,6 +79,10 @@ async def retry_with_backoff(
             if circuit_breaker:
                 circuit_breaker.record_success()
             return result
+        except NotRetryable:
+            if circuit_breaker:
+                circuit_breaker.record_failure()
+            raise
         except retryable_exceptions as exc:
             last_exception = exc
             if circuit_breaker:

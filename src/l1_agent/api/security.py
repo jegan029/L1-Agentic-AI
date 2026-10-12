@@ -64,6 +64,10 @@ def validate_security_config(settings: Settings) -> None:
         raise SecurityConfigError(
             f"AUDIT_CHECKPOINT_KEY must be at least {MIN_SECRET_LENGTH} characters"
         )
+    if bool(agent.tls_cert_file) != bool(agent.tls_key_file):
+        raise SecurityConfigError(
+            "AGENT_TLS_CERT_FILE and AGENT_TLS_KEY_FILE are set together or not at all"
+        )
     if "*" in agent.cors_allowed_origins:
         raise SecurityConfigError("AGENT_CORS_ORIGINS must list origins; '*' is not allowed")
     if auth.session_hours < 1 or auth.session_idle_minutes < 1:

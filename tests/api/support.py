@@ -13,6 +13,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import FastAPI
 
+from src.l1_agent.ai.gateway import ModelGateway
 from src.l1_agent.api.app import AppContext, create_app
 from src.l1_agent.api.security import (
     SESSION_COOKIE,
@@ -56,6 +57,7 @@ async def build(
     saml: Any = None,
     demo_open: bool = False,
     webhook_open: bool = False,
+    provider: Any = None,
 ) -> Tuple[FastAPI, AppContext]:
     """The real application, on the test database, for one deployment tenant."""
     tenant_id = tenant_id or await backend.new_tenant()
@@ -70,6 +72,7 @@ async def build(
         saml=saml,
         demo_open=demo_open,
         webhook_open=webhook_open,
+        model=ModelGateway(backend.db, provider),
     )
     return create_app(ctx), ctx
 
@@ -102,6 +105,104 @@ def signed_headers(body: bytes, secret: str = SECRET, ts: Optional[int] = None) 
         SIGNATURE_HEADER: sign_webhook(secret, timestamp, body),
         "Content-Type": "application/json",
     }
+
+
+async def seed_model(db, tenant_id, number: str, region: str) -> None:
+    """A model policy for the tenant and one recorded model call for the run of `number`."""
+    import sqlalchemy as sa
+
+    from src.l1_agent.ai import policy as model_policy
+    from src.l1_agent.db.models import runs
+
+    await model_policy.set_model_policy(
+        db,
+        tenant_id,
+        ADMIN,
+        enabled=True,
+        rules={"providers": ["deterministic"], "tasks": ["rank"], "regions": [region]},
+    )
+    async with db.tenant(tenant_id) as conn:
+        run_id = (
+            await conn.execute(
+                sa.select(runs.c.id).where(runs.c.tenant_id == tenant_id, runs.c.number == number)
+            )
+        ).scalar_one()
+        await model_policy.record_call(
+            conn,
+            tenant_id,
+            ADMIN,
+            run_id=run_id,
+            subject=number,
+            task="rank",
+            provider="deterministic",
+            model=f"model-of-{region}",
+            prompt_version="rank/2",
+            prompt_digest="0" * 64,
+            input_digest="1" * 64,
+            output_digest="2" * 64,
+            input_tokens=10,
+            output_tokens=5,
+            cost_micros=0,
+            outcome="ok",
+        )
+
+
+async def seed_runner(db, tenant_id, name: str) -> uuid.UUID:
+    """An enrolled runner for the tenant, and one call waiting in its queue."""
+    from datetime import timedelta
+
+    from src.l1_agent.db.engine import utcnow
+    from src.l1_agent.runner import keys
+    from src.l1_agent.runner import store as runner_store
+
+    runner_id = await runner_store.enrol(db, tenant_id, ADMIN, name, keys.generate()[1])
+    await runner_store.enqueue(
+        db,
+        tenant_id,
+        call_id=uuid.uuid4(),
+        kind="invoke",
+        connector_id="splunk",
+        capability_id="splunk.search",
+        is_write=False,
+        envelope=json.dumps({"marker": name}),
+        signature="00" * 64,
+        deadline=utcnow() + timedelta(hours=1),
+    )
+    return runner_id
+
+
+async def seed_action(db, tenant_id, number: str, job: str, **overrides: Any) -> uuid.UUID:
+    """An action record for the run of incident `number`, as the policy engine would write it."""
+    import sqlalchemy as sa
+
+    from src.l1_agent.actions import store as action_store
+    from src.l1_agent.connectors.sdk.grant import call_digest
+    from src.l1_agent.db.models import runs
+
+    async with db.tenant(tenant_id) as conn:
+        run_id = (
+            await conn.execute(
+                sa.select(runs.c.id).where(runs.c.tenant_id == tenant_id, runs.c.number == number)
+            )
+        ).scalar_one()
+    parameters = {"job_name": job}
+    values = dict(
+        run_id=run_id,
+        incident_number=number,
+        step_id="step-restart",
+        sop_key="SOP-X",
+        capability_id="autosys.job.force_start",
+        parameters=parameters,
+        call_digest=call_digest("autosys.job.force_start", parameters),
+        action_hash=uuid.uuid4().hex * 2,
+        tier="T1",
+        verdict="shadow",
+        status="shadowed",
+        channels=[],
+    )
+    values.update(overrides)
+    row = await action_store.record_decision(db, tenant_id, values, {"step_id": "step-restart"})
+    return row.id
 
 
 async def audit_types(ctx: AppContext, tenant_id=None) -> List[str]:

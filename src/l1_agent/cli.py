@@ -12,6 +12,15 @@
     connection set|remove|list|test   a connector's settings and credential references
     connectors                  the connectors in this build and what each can do
     knowledge sync              pull changed articles from the SOP sources as drafts
+    policy show|set             the autonomy level and the policy rules for actions
+    killswitch on|off|status    stop every write for the tenant (--global: for all, migration role)
+    model show|set|usage        whether the tenant uses a model, with which provider and budgets
+    runner keygen --out F       make a key pair: the private key goes to F, the public key is printed
+    runner enrol|revoke|list    which runners may make this tenant's connector calls
+    runner run                  the runner itself: no database, outbound connections only
+    onboarding                  what is and is not yet set up for the tenant
+    export create --out DIR     write the tenant's SOPs, settings, runs and audit log to files
+    export verify --dir DIR     check an export against its manifest and its audit chain
     breakglass hash             hash a break-glass password
 
 Commands that change access write to the audit log as actor `system:cli`.
@@ -23,11 +32,14 @@ import argparse
 import asyncio
 import getpass
 import json
+import signal
 import sys
 import uuid
 from pathlib import Path
 from typing import List, Optional
 
+from src.l1_agent.actions import store as actions
+from src.l1_agent.ai import policy as model_policy
 from src.l1_agent.api.security import SecurityConfigError
 from src.l1_agent.audit import log as audit
 from src.l1_agent.audit.log import Actor
@@ -37,8 +49,15 @@ from src.l1_agent.connectors import hub as connections
 from src.l1_agent.connectors.catalog import default_registry
 from src.l1_agent.db.engine import Database
 from src.l1_agent.db.migrate import upgrade
+from src.l1_agent.runner import agent as runner_agent
+from src.l1_agent.runner import keys as runner_keys
+from src.l1_agent.runner import protocol
+from src.l1_agent.runner import store as runner_store
+from src.l1_agent.service import export as tenant_export
+from src.l1_agent.service import onboarding
 from src.l1_agent.sop import ingest
 from src.l1_agent.sop import store as sop_store
+from src.l1_agent.utils.logging import setup_logging
 
 CLI = Actor.system("cli")
 
@@ -101,6 +120,47 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("connectors")
     sub.add_parser("knowledge").add_subparsers(dest="action", required=True).add_parser("sync")
 
+    policy = sub.add_parser("policy").add_subparsers(dest="action", required=True)
+    policy.add_parser("show")
+    changed = policy.add_parser("set")
+    changed.add_argument("--autonomy", choices=["shadow", "recommend", "approval", "automatic"])
+    changed.add_argument("--rules", help="a JSON file with the policy rules")
+    model = sub.add_parser("model").add_subparsers(dest="action", required=True)
+    model.add_parser("show")
+    model.add_parser("usage")
+    model_set = model.add_parser("set")
+    switch = model_set.add_mutually_exclusive_group()
+    switch.add_argument("--on", dest="enabled", action="store_const", const=True, default=None)
+    switch.add_argument("--off", dest="enabled", action="store_const", const=False)
+    model_set.add_argument("--rules", help="a JSON file with the model policy rules")
+    kill = sub.add_parser("killswitch").add_subparsers(dest="action", required=True)
+    kill.add_parser("status")
+    for action in ("on", "off"):
+        p = kill.add_parser(action)
+        p.add_argument("--global", dest="everywhere", action="store_true")
+        p.add_argument("--reason", default="")
+
+    runner = sub.add_parser("runner").add_subparsers(dest="action", required=True)
+    keygen = runner.add_parser("keygen")
+    keygen.add_argument("--out", required=True, help="file to write the private key to")
+    enrol = runner.add_parser("enrol")
+    enrol.add_argument("--name", required=True)
+    key = enrol.add_mutually_exclusive_group(required=True)
+    key.add_argument("--public-key")
+    key.add_argument("--public-key-file")
+    enrol.add_argument(
+        "--if-absent",
+        action="store_true",
+        help="succeed without change when this name is already enrolled with this key",
+    )
+    runner.add_parser("revoke").add_argument("--id", required=True)
+    runner.add_parser("list")
+    runner.add_parser("run")
+    sub.add_parser("onboarding")
+    export = sub.add_parser("export").add_subparsers(dest="action", required=True)
+    export.add_parser("create").add_argument("--out", required=True)
+    export.add_parser("verify").add_argument("--dir", required=True)
+
     bg = sub.add_parser("breakglass").add_subparsers(dest="action", required=True)
     bg.add_parser("hash")
     return parser
@@ -123,17 +183,125 @@ async def _run(args: argparse.Namespace, settings: Settings) -> int:
     if args.command == "tenant":
         owner = Database.create(_migration_url(settings), demo_mode=False)
         try:
-            tenant_id = await owner.ensure_tenant(args.slug, args.name)
-            async with owner.tenant(tenant_id) as conn:
-                await audit.append(conn, tenant_id, CLI, "tenant.created", {"slug": args.slug})
+            # Safe to run again: an installer does. A tenant that exists is left as it is.
+            existing = await owner.tenant_id_for(args.slug)
+            tenant_id = existing or await owner.ensure_tenant(args.slug, args.name)
+            if existing is None:
+                async with owner.tenant(tenant_id) as conn:
+                    await audit.append(conn, tenant_id, CLI, "tenant.created", {"slug": args.slug})
         finally:
             await owner.close()
-        print(f"tenant {args.slug} {tenant_id}")
+        print(f"tenant {args.slug} {tenant_id}" + (" (already exists)" if existing else ""))
+        return 0
+
+    if args.command == "killswitch" and args.action != "status" and args.everywhere:
+        # The global switch is the platform operator's: it needs the migration role.
+        owner = Database.create(_migration_url(settings), demo_mode=False)
+        try:
+            tenants = await actions.set_global_kill_switch(
+                owner, CLI, args.action == "on", args.reason
+            )
+        finally:
+            await owner.close()
+        print(f"global kill switch {args.action} ({tenants} tenant(s))")
         return 0
 
     db = Database.create(settings.database.url, demo_mode=settings.agent.demo_mode)
     try:
         tenant_id = await _tenant(db, settings)
+        if args.command == "killswitch":
+            if args.action != "status":
+                await actions.set_kill_switch(db, tenant_id, CLI, args.action == "on", args.reason)
+            policy = await actions.get_policy(db, tenant_id)
+            everywhere = await actions.global_kill_switch(db)
+            print(f"tenant kill switch: {'ON' if policy.kill_switch else 'off'}")
+            print(f"global kill switch: {'ON' if everywhere['on'] else 'off'}")
+            return 0
+
+        if args.command == "model":
+            if args.action == "usage":
+                print(json.dumps(await model_policy.usage(db, tenant_id), indent=2))
+                return 0
+            if args.action == "set":
+                rules = None
+                if args.rules:
+                    rules = json.loads(Path(args.rules).read_text(encoding="utf-8"))
+                if rules is None and args.enabled is None:
+                    raise ConfigError("model set needs --on, --off, --rules, or a switch and rules")
+                try:
+                    await model_policy.set_model_policy(
+                        db, tenant_id, CLI, enabled=args.enabled, rules=rules
+                    )
+                except model_policy.ModelPolicyError as exc:
+                    raise ConfigError("; ".join([str(exc)] + exc.problems)) from None
+            policy = await model_policy.get_model_policy(db, tenant_id)
+            print(json.dumps(policy.to_dict(), indent=2))
+            return 0
+
+        if args.command == "policy":
+            if args.action == "set":
+                rules = None
+                if args.rules:
+                    rules = json.loads(Path(args.rules).read_text(encoding="utf-8"))
+                if rules is None and args.autonomy is None:
+                    raise ConfigError("policy set needs --autonomy, --rules, or both")
+                try:
+                    await actions.set_policy(
+                        db, tenant_id, CLI, autonomy=args.autonomy, rules=rules
+                    )
+                except actions.ActionError as exc:
+                    raise ConfigError("; ".join([str(exc)] + exc.problems)) from None
+            print(json.dumps((await actions.get_policy(db, tenant_id)).to_dict(), indent=2))
+            return 0
+
+        if args.command == "export":
+            try:
+                manifest = await tenant_export.export_tenant(
+                    db, tenant_id, settings.database.tenant_slug, Path(args.out), CLI
+                )
+            except tenant_export.ExportError as exc:
+                raise ConfigError(str(exc)) from None
+            for name, info in sorted(manifest["files"].items()):
+                print(f"{info['rows']:>8}  {name}")
+            print(f"written to {args.out}")
+            return 0
+
+        if args.command == "runner":
+            if args.action == "list":
+                for r in await runner_store.list_runners(db, tenant_id):
+                    state = "revoked" if r["revoked"] else "connected" if r["connected"] else "idle"
+                    print(f"{r['id']}\t{r['name']}\t{state}\t{r['identity']}")
+                return 0
+            if args.action == "revoke":
+                done = await runner_store.revoke(db, tenant_id, CLI, uuid.UUID(args.id))
+                print("revoked" if done else "not found")
+                return 0 if done else 1
+            public = args.public_key
+            if args.public_key_file:
+                public = Path(args.public_key_file).read_text(encoding="utf-8").strip()
+            if args.if_absent:
+                # For an installer that runs more than once: the same name with the same key.
+                wanted = runner_store.fingerprint(
+                    runner_keys.public_text(runner_keys.parse_public(public))
+                )
+                for r in await runner_store.list_runners(db, tenant_id):
+                    if r["name"] == args.name.strip() and not r["revoked"]:
+                        if r["key_fingerprint"] != wanted:
+                            raise ConfigError(
+                                f"Runner '{r['name']}' is enrolled with a different key; "
+                                "revoke it before enrolling a new one"
+                            )
+                        print(f"runner {r['id']}")
+                        print(f"identity {r['identity']}")
+                        return 0
+            try:
+                runner_id = await runner_store.enrol(db, tenant_id, CLI, args.name, public)
+            except runner_store.RunnerError as exc:
+                raise ConfigError(str(exc)) from None
+            print(f"runner {runner_id}")
+            print(f"identity {protocol.identity(tenant_id, runner_id)}")
+            return 0
+
         if args.command == "roles":
             if args.action == "list":
                 for m in await store.list_role_mappings(db, tenant_id):
@@ -251,12 +419,28 @@ async def _with_service(args: argparse.Namespace, settings: Settings) -> int:
                 print("no knowledge source is configured")
                 return 0
             failed = False
-            for result in await ingest.sync_all(ctx.db, ctx.tenant_id, sources, CLI):
+            for result in await ingest.sync_all(
+                ctx.db,
+                ctx.tenant_id,
+                sources,
+                CLI,
+                drafter=ingest.model_drafter(ctx.model, ctx.tenant_id, ctx.hub.registry),
+                registry=ctx.hub.registry,
+            ):
                 print(json.dumps(result.to_dict()))
                 failed = failed or bool(result.errors)
             return 2 if failed else 0
+        if args.command == "onboarding":
+            report = await onboarding.status(ctx, ctx.tenant_id)
+            for step in report["steps"]:
+                mark = "done" if step["done"] else "todo" if step["required"] else "skip"
+                print(f"{mark}  {step['title']}: {step['detail']}")
+                if not step["done"] and step["how"]:
+                    print(f"      {step['how']}")
+            print(f"{report['done']} of {report['total']} required steps done")
+            return 0 if report["complete"] else 3
         try:
-            checks = await ctx.hub.test(ctx.tenant_id, args.connector)
+            checks = await ctx.hub.test(ctx.tenant_id, args.connector, ctx.itsm)
         except LookupError:
             raise ConfigError(f"Unknown connector '{args.connector}'") from None
         for check in checks:
@@ -277,11 +461,50 @@ def _print_connectors() -> None:
             print(f"    {cap.id}\t{cap.kind.value}\t{tier}\t{cap.summary}")
 
 
+def _keygen(path: str) -> int:
+    target = Path(path)
+    if target.exists():
+        print(f"error: {target} already exists; a key is never overwritten", file=sys.stderr)
+        return 1
+    pem, public = runner_keys.generate()
+    target.write_text(pem, encoding="ascii")
+    try:
+        target.chmod(0o600)
+    except OSError:
+        pass  # no POSIX permissions here; protect the file by other means
+    public_file = target.with_name(target.name + ".pub")
+    public_file.write_text(public + "\n", encoding="ascii")
+    print(f"private key written to {target}")
+    print(f"public key written to {public_file}")
+    print(f"public key {public}")
+    return 0
+
+
+async def _serve_runner(settings: Settings) -> None:
+    """Run until SIGTERM or SIGINT, then let calls in flight return their results."""
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for name in ("SIGTERM", "SIGINT"):
+        try:
+            loop.add_signal_handler(getattr(signal, name), stop.set)
+        except (NotImplementedError, AttributeError, ValueError):
+            pass  # not available on this platform; the default handler ends the process
+    await runner_agent.serve(settings, stop)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "connectors":
         _print_connectors()
         return 0
+    if args.command == "runner" and args.action == "keygen":
+        return _keygen(args.out)
+    if args.command == "export" and args.action == "verify":
+        problems = tenant_export.verify_export(Path(args.dir))
+        for problem in problems:
+            print(f"PROBLEM: {problem}")
+        print("OK" if not problems else "FAILED")
+        return 0 if not problems else 2
     if args.command == "breakglass":
         first = getpass.getpass("Break-glass password: ")
         if first != getpass.getpass("Again: "):
@@ -304,7 +527,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             upgrade(_migration_url(settings), settings.database.app_role)
             print("migrations applied")
             return 0
-        if args.command == "knowledge" or (args.command == "connection" and args.action == "test"):
+        if args.command == "runner" and args.action == "run":
+            setup_logging(settings.agent.log_level)
+            asyncio.run(_serve_runner(settings))
+            return 0
+        if args.command in ("knowledge", "onboarding") or (
+            args.command == "connection" and args.action == "test"
+        ):
             return asyncio.run(_with_service(args, settings))
         return asyncio.run(_run(args, settings))
     except (ConfigError, SecurityConfigError, ValueError) as exc:

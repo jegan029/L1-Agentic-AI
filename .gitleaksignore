@@ -9,3 +9,11 @@
 82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:generic-api-key:295
 82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:generic-api-key:316
 82e086fdcf706f27a7f9deef6d18ab0168882547:tests/unit/security/test_hardening.py:jwt:247
+# Phase 5: made-up values in the redaction corpus and its tests, which exist to
+# check that such shapes are removed before a model request.
+ec00a652506a77a76dbd28ae9ade5a3e19460e31:evals/redaction.json:jwt:13
+ec00a652506a77a76dbd28ae9ade5a3e19460e31:evals/redaction.json:curl-auth-header:7
+ec00a652506a77a76dbd28ae9ade5a3e19460e31:evals/redaction.json:private-key:14
+ec00a652506a77a76dbd28ae9ade5a3e19460e31:tests/unit/ai/test_redaction.py:aws-access-token:20
+ec00a652506a77a76dbd28ae9ade5a3e19460e31:tests/unit/ai/test_redaction.py:generic-api-key:16
+ec00a652506a77a76dbd28ae9ade5a3e19460e31:evals/redaction.json:aws-access-token:11

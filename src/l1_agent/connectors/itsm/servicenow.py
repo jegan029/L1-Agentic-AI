@@ -5,8 +5,9 @@ works a ticket it claims it, and a ticket someone else already holds is
 left alone.
 
 Basic authentication, paging, the claim step and the hand-over to another
-group have run against one ServiceNow developer instance (tests/live). OAuth
-is covered only by contract tests written from the vendor documentation.
+group have run against one ServiceNow developer instance (tests/live). OAuth,
+and everything to do with change records and approvals, is covered only by
+contract tests written from the vendor documentation.
 """
 
 from __future__ import annotations
@@ -15,7 +16,13 @@ from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 
 from src.l1_agent.config.settings import ConfigError, ServiceNowSettings
-from src.l1_agent.connectors.itsm.base import ClaimResult
+from src.l1_agent.connectors.itsm.base import (
+    ChangeApproval,
+    ChangeRef,
+    ChangeUnavailable,
+    ClaimResult,
+)
+from src.l1_agent.connectors.sdk.base import CheckResult
 from src.l1_agent.connectors.sdk.http import (
     Auth,
     BasicAuth,
@@ -25,7 +32,7 @@ from src.l1_agent.connectors.sdk.http import (
 )
 from src.l1_agent.connectors.sdk.manifest import Family, Manifest, SecretSlot
 from src.l1_agent.connectors.sdk.schema import closed
-from src.l1_agent.connectors.sdk.secrets import ConnectionSecrets, LiteralSecrets
+from src.l1_agent.connectors.sdk.secrets import ConnectionSecrets, LiteralSecrets, SecretError
 from src.l1_agent.models.incident import Incident, _raw_value
 from src.l1_agent.utils.logging import get_logger
 from src.l1_agent.utils.metrics import metrics
@@ -36,6 +43,10 @@ STATE_NEW = "1"
 STATE_IN_PROGRESS = "2"
 RESOLVED_STATE = "6"
 CLAIMABLE_STATES = frozenset({STATE_NEW, STATE_IN_PROGRESS})
+# A standard change on a stock instance: Scheduled, Implement, Review, then Closed.
+CHANGE_STATES_TO_CLOSE = ("-2", "-1", "0")
+CHANGE_CLOSED = "3"
+MAX_APPROVERS = 25
 INCIDENT_FIELDS = (
     "sys_id,number,short_description,description,category,"
     "subcategory,cmdb_ci,assignment_group,priority,state,"
@@ -74,7 +85,10 @@ class ServiceNowConnector:
         display_name="ServiceNow ITSM",
         notes=(
             "The integration user needs read and write on the incident table for the intake "
-            "group (the itil role on a stock instance) and read on sys_user."
+            "group (the itil role on a stock instance) and read on sys_user. For actions it "
+            "also needs to create standard changes from the templates SOPs name, and, when "
+            "approvals are collected in ServiceNow, to read sys_user_grmember and to create "
+            "and read sysapproval_approver records."
         ),
         config=closed(
             {
@@ -85,6 +99,7 @@ class ServiceNowConnector:
                 "assignment_group": {"type": "string"},
                 "incident_table": {"type": "string"},
                 "close_code": {"type": "string"},
+                "change_assignment_group": {"type": "string"},
                 "claim": {"type": "boolean"},
             },
             required=["base_url"],
@@ -138,6 +153,26 @@ class ServiceNowConnector:
 
     async def close(self) -> None:
         await self._http.close()
+
+    async def test_connection(self) -> List[CheckResult]:
+        """Sign in and make the two reads intake depends on. Nothing is written."""
+        table = self._settings.incident_table
+        reads = [
+            ("read the incident table", f"/api/now/table/{table}", "sys_id"),
+            ("read users (needed to claim a ticket)", "/api/now/table/sys_user", "sys_id"),
+        ]
+        checks: List[CheckResult] = []
+        for name, path, fields in reads:
+            try:
+                await self._get(path, {"sysparm_limit": "1", "sysparm_fields": fields})
+                checks.append(CheckResult(name, True))
+            except ServiceNowError as exc:
+                checks.append(CheckResult(name, False, str(exc)[:300]))
+            except SecretError as exc:
+                return checks + [CheckResult("credentials", False, str(exc))]
+            except Exception as exc:  # unreachable host, TLS failure
+                return checks + [CheckResult("reach the instance", False, type(exc).__name__)]
+        return checks
 
     async def _request(
         self,
@@ -307,6 +342,204 @@ class ServiceNowConnector:
             return ClaimResult(False, "someone else took the ticket at the same moment")
         metrics.increment("servicenow.incidents_claimed")
         return ClaimResult(True)
+
+    # ── Change records and approvals (ADR 0008) ───────────────────────
+    #
+    # Written from the Change Management API and Table API documentation.
+    # Open, note, ask and close have run against one developer instance; reading a
+    # person's decision has not.
+
+    async def open_change(
+        self,
+        template: str,
+        *,
+        correlation: str,
+        short_description: str,
+        description: str,
+        incident_sys_id: str,
+    ) -> ChangeRef:
+        """Open a standard change from a named template, once per `correlation`.
+
+        The correlation (the action's hash) is stored on the change. A second
+        call with the same one returns the change that already exists.
+        """
+        found = await self._get(
+            "/api/now/table/change_request",
+            {
+                "sysparm_query": f"correlation_id={correlation}",
+                "sysparm_fields": "sys_id,number",
+                "sysparm_limit": "1",
+            },
+        )
+        rows = found.get("result") or []
+        if rows:
+            return ChangeRef(_raw_value(rows[0].get("sys_id", "")), _raw_value(rows[0]["number"]))
+
+        templates = await self._get(
+            "/api/now/table/std_change_record_producer",
+            {
+                "sysparm_query": f"name={template}^active=true",
+                "sysparm_fields": "sys_id",
+                "sysparm_limit": "1",
+            },
+        )
+        rows = templates.get("result") or []
+        template_id = _raw_value(rows[0].get("sys_id", "")) if rows else ""
+        if not template_id:
+            raise ChangeUnavailable(f"there is no active standard change template '{template}'")
+        fields = {
+            "short_description": short_description,
+            "description": description,
+            "correlation_id": correlation,
+        }
+        group = self._settings.change_assignment_group
+        if group:
+            fields["assignment_group"] = await self._change_group(group)
+        created = await self._request(
+            "POST", f"/api/sn_chg_rest/change/standard/{template_id}", data=fields
+        )
+        result = created.get("result", {})
+        change = ChangeRef(
+            _raw_value(result.get("sys_id", "")), _raw_value(result.get("number", ""))
+        )
+        if not change.sys_id or not change.number:
+            raise ChangeUnavailable("ServiceNow did not return the change it was asked to open")
+        metrics.increment("servicenow.changes_opened")
+        try:
+            # The incident shows which change it was worked under.
+            await self._patch(
+                f"/api/now/table/{self._settings.incident_table}/{incident_sys_id}",
+                {"rfc": change.sys_id},
+            )
+        except ServiceNowError as exc:
+            logger.warning("Could not link %s to its incident: %s", change.number, exc.status)
+        return change
+
+    async def _change_group(self, name: str) -> str:
+        """The sys_id of the group changes are assigned to. No group, no change."""
+        if "^" in name or "\n" in name or "\r" in name:
+            raise ChangeUnavailable("the change assignment group is not a plain group name")
+        found = await self._get(
+            "/api/now/table/sys_user_group",
+            {
+                "sysparm_query": f"name={name}^active=true",
+                "sysparm_fields": "sys_id",
+                "sysparm_limit": "1",
+            },
+        )
+        rows = found.get("result") or []
+        group_id = _raw_value(rows[0].get("sys_id", "")) if rows else ""
+        if not group_id:
+            raise ChangeUnavailable(f"there is no active group '{name}' to assign the change to")
+        return str(group_id)
+
+    async def _why_not(self, change: ChangeRef, state: str) -> str:
+        """What the instance says a move to `state` still needs. Empty when it does not say."""
+        try:
+            got = await self._get(f"/api/sn_chg_rest/change/{change.sys_id}/nextstates")
+        except ServiceNowError:
+            return ""
+        result = got.get("result")
+        groups = result.get("state_transitions", []) if isinstance(result, dict) else []
+        for transition in (t for group in groups if isinstance(group, list) for t in group):
+            if not isinstance(transition, dict) or str(transition.get("to_state")) != state:
+                continue
+            unmet = [
+                str((c.get("condition") or {}).get("name", ""))
+                for c in transition.get("conditions") or []
+                if isinstance(c, dict) and not c.get("passed")
+            ]
+            unmet = [name for name in unmet if name]
+            if unmet:
+                name = str(transition.get("display_value", "")) or f"the move to state {state}"
+                return f"'{name}' needs: {'; '.join(unmet)}"[:200]
+        return ""
+
+    async def request_change_approval(self, change: ChangeRef, group: str) -> int:
+        """Ask each active member of a group to approve the change. Returns how many."""
+        members = await self._get_all(
+            "/api/now/table/sys_user_grmember",
+            {"sysparm_query": f"group.name={group}^user.active=true", "sysparm_fields": "user"},
+        )
+        wanted: List[str] = []
+        for member in members:
+            user = _raw_value(member.get("user", ""))
+            if user and user not in wanted:
+                wanted.append(user)
+        wanted = wanted[:MAX_APPROVERS]
+        if not wanted:
+            raise ChangeUnavailable(f"approval group '{group}' has no active members")
+        asked = await self._get_all(
+            "/api/now/table/sysapproval_approver",
+            {"sysparm_query": f"sysapproval={change.sys_id}", "sysparm_fields": "approver"},
+        )
+        already = {_raw_value(row.get("approver", "")) for row in asked}
+        for user in wanted:
+            if user in already:
+                continue
+            await self._request(
+                "POST",
+                "/api/now/table/sysapproval_approver",
+                data={
+                    "sysapproval": change.sys_id,
+                    "document_id": change.sys_id,
+                    "source_table": "change_request",
+                    "approver": user,
+                    "state": "requested",
+                },
+            )
+        return len(wanted)
+
+    async def change_approval(self, change: ChangeRef) -> ChangeApproval:
+        """Where the approval stands. One rejection rejects; otherwise one approval approves."""
+        record = await self._get(
+            f"/api/now/table/change_request/{change.sys_id}",
+            {"sysparm_fields": "correlation_id", "sysparm_display_value": "false"},
+        )
+        correlation = _raw_value(record.get("result", {}).get("correlation_id", ""))
+        rows = await self._get_all(
+            "/api/now/table/sysapproval_approver",
+            {
+                "sysparm_query": f"sysapproval={change.sys_id}^ORDERBYsys_updated_on",
+                "sysparm_fields": "state,approver.user_name,approver.email,comments",
+                "sysparm_display_value": "false",
+            },
+        )
+        for wanted in ("rejected", "approved"):
+            for row in rows:
+                if _raw_value(row.get("state", "")) == wanted:
+                    return ChangeApproval(
+                        state=wanted,
+                        approver=str(_raw_value(row.get("approver.user_name", ""))),
+                        approver_email=str(_raw_value(row.get("approver.email", ""))),
+                        comment=str(_raw_value(row.get("comments", "")))[:500],
+                        correlation=correlation,
+                    )
+        return ChangeApproval(state="requested", correlation=correlation)
+
+    async def note_change(self, change: ChangeRef, note: str) -> None:
+        await self._patch(f"/api/now/table/change_request/{change.sys_id}", {"work_notes": note})
+
+    async def close_change(self, change: ChangeRef, successful: bool, notes: str) -> None:
+        """Take the change through its states to Closed, with the result."""
+        path = f"/api/now/table/change_request/{change.sys_id}"
+        for state in CHANGE_STATES_TO_CLOSE:
+            try:
+                await self._patch(path, {"state": state})
+            except ServiceNowError as exc:
+                # The refusal itself names a business rule; the instance can say what is missing.
+                why = await self._why_not(change, state)
+                if not why:
+                    raise
+                raise ServiceNowError("PATCH", path, exc.status, exc.message, why) from None
+        await self._patch(
+            path,
+            {
+                "state": CHANGE_CLOSED,
+                "close_code": "successful" if successful else "unsuccessful",
+                "close_notes": notes[:4000],
+            },
+        )
 
     # ── Knowledge base records ────────────────────────────────────────
 

@@ -91,6 +91,9 @@ const STEP_LABELS = {
   DYNATRACE_METRICS: 'Dynatrace metrics',
   WEB_UI_CHECK: 'Web UI check',
   MAINFRAME_CHECK: 'Mainframe check',
+  CHECK: 'Check',
+  ACTION: 'Action',
+  VERIFY: 'Verification',
   DECISION: 'Decision',
   NOTE: 'Note',
 }

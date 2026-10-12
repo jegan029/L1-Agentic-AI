@@ -128,7 +128,8 @@ class AutosysAdapter(BaseAdapter):
     @staticmethod
     def _validate_job_name(name: str) -> bool:
         """Validate job name to prevent command injection."""
-        return bool(re.match(r"^[a-zA-Z0-9_.\-/]+$", name))
+        # fullmatch: with `$` a name ending in a newline would pass.
+        return bool(re.fullmatch(r"[a-zA-Z0-9_.\-/]+", name))
 
     @staticmethod
     def _parse_autorep_output(output: str) -> Dict[str, Any]:

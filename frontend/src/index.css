@@ -463,6 +463,15 @@ dialog.drawer::backdrop { background: rgba(2, 11, 91, 0.3); }
 .reason strong { display: block; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 2px; }
 .reason p { color: var(--text-primary); font-size: 13px; overflow-wrap: anywhere; }
 
+.model-note {
+  display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--radius-md);
+  color: var(--neutral); background: var(--neutral-bg); border: 1px dashed var(--neutral-border);
+}
+.model-note .icon { font-size: 18px; margin-top: 1px; }
+.model-note strong { display: block; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase; margin-bottom: 2px; }
+.model-note__text { color: var(--text-primary); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 6px; }
+.plain-list { list-style: none; padding: 0; margin: 8px 0; display: grid; gap: 6px; }
+
 .section-label { font-size: 12px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 12px; }
 
 .steps { display: flex; flex-direction: column; }
@@ -634,3 +643,35 @@ dialog.drawer::backdrop { background: rgba(2, 11, 91, 0.3); }
 .plain-list { margin: 4px 0 0; padding-left: 18px; font-size: 13px; }
 .plain-list li + li { margin-top: 2px; }
 .chip--inline { margin-left: 8px; }
+
+/* ── Actions and approvals ─────────────────────────────────────── */
+.btn--danger { background: var(--red, #b42318); border-color: var(--red, #b42318); color: #fff; }
+.btn--danger:hover:not(:disabled) { background: #8f1c13; border-color: #8f1c13; color: #fff; }
+.requests { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; }
+.request { padding: 14px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); display: grid; gap: 12px; }
+.request__head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.request__what { font-weight: 600; font-size: 14px; }
+.request__facts { margin: 0; display: grid; gap: 6px; font-size: 13px; }
+.request__facts > div { display: grid; grid-template-columns: minmax(120px, 190px) 1fr; gap: 8px; }
+.request__facts dt { color: var(--text-muted); }
+.request__facts dd { margin: 0; overflow-wrap: anywhere; }
+.request__hash { font-size: 11px; }
+.card__body > .field + .muted, .card__body > .muted + .actions { margin-top: 10px; }
+.card__body details { margin-top: 10px; font-size: 13px; }
+@media (max-width: 560px) { .request__facts > div { grid-template-columns: 1fr; gap: 0; } }
+
+/* ── Set-up: the checklist and the connector forms ─────────────────── */
+.setup-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; counter-reset: setup; }
+.setup-step { display: grid; grid-template-columns: 84px 1fr; gap: 14px; align-items: start; }
+.setup-step .badge { justify-self: start; }
+.setup-step__title { margin: 0; font-weight: 600; font-size: 14px; }
+.setup-step__detail { margin: 2px 0 0; font-size: 13px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.setup-step .muted { margin: 4px 0 0; font-size: 13px; color: var(--text-muted); }
+.card__title .muted { font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--text-muted); }
+.setup-form { display: grid; gap: 12px; margin-top: 12px; max-width: 640px; }
+.setup-form .field { width: 100%; }
+.setup-form__list { height: auto; min-height: 72px; padding: 8px 12px; resize: vertical; }
+.setup-form__group { border: 1px solid var(--border-subtle); border-radius: 6px; padding: 12px 14px; margin: 0; display: grid; gap: 12px; }
+.setup-form__group legend { padding: 0 6px; }
+.setup-form input[type="checkbox"] { width: 18px; height: 18px; }
+@media (max-width: 560px) { .setup-step { grid-template-columns: 1fr; gap: 6px; } }

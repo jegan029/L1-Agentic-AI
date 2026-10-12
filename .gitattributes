@@ -1,0 +1,9 @@
+# Files that are run or read on Linux keep Unix line endings on every checkout,
+# whatever the machine's own setting. A shell script with Windows line endings does not run.
+*.sh        text eol=lf
+*.template  text eol=lf
+Dockerfile  text eol=lf
+*.lock      text eol=lf
+deploy/**/*.yaml text eol=lf
+deploy/**/*.tpl  text eol=lf
+deploy/**/*.txt  text eol=lf

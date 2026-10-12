@@ -16,3 +16,4 @@ ec00a652506a77a76dbd28ae9ade5a3e19460e31:evals/redaction.json:curl-auth-header:7
 ec00a652506a77a76dbd28ae9ade5a3e19460e31:evals/redaction.json:private-key:14
 ec00a652506a77a76dbd28ae9ade5a3e19460e31:tests/unit/ai/test_redaction.py:aws-access-token:20
 ec00a652506a77a76dbd28ae9ade5a3e19460e31:tests/unit/ai/test_redaction.py:generic-api-key:16
+ec00a652506a77a76dbd28ae9ade5a3e19460e31:evals/redaction.json:aws-access-token:11

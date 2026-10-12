@@ -80,6 +80,8 @@ jobs:
 
       - name: Run all tests with coverage (SQLite and PostgreSQL)
         run: |
+          # Without this the step's result is tee's, and a failed test passes the job.
+          set -o pipefail
           pytest tests/ -v --timeout=180 --junitxml=test-results.xml \
             --cov=src/l1_agent --cov-report=term-missing --cov-report=xml:coverage.xml \
             --cov-fail-under=75 | tee result.txt

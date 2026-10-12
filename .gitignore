@@ -36,6 +36,8 @@ coverage.xml
 .pytest_cache/
 cover/
 *.log
+# A fixture the file share contract test reads.
+!tests/fixtures/contracts/fileshare/*.log
 local_settings.py
 db.sqlite3
 db.sqlite3-journal

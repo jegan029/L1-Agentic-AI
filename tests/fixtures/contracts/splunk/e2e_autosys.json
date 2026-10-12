@@ -1,0 +1,79 @@
+{
+  "note": "Hand-written from vendor API documentation; not captured from a live system.",
+  "exchanges": [
+    {
+      "request": {
+        "method": "POST",
+        "path": "/services/search/jobs",
+        "headers": {
+          "Authorization": "Bearer sp-hybrid"
+        },
+        "form": {
+          "search": "search index=batch_logs source=autosys \"BATCH_PAYMENT_PROCESS\" (FAILURE OR ERROR) | head 100",
+          "earliest_time": "-4h",
+          "latest_time": "now",
+          "max_count": "100"
+        }
+      },
+      "response": {
+        "status": 201,
+        "json": {
+          "sid": "1700000000.91"
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/1700000000.91"
+      },
+      "response": {
+        "json": {
+          "entry": [
+            {
+              "name": "search",
+              "content": {
+                "isDone": true,
+                "dispatchState": "DONE"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "path": "/services/search/jobs/1700000000.91/results",
+        "query": {
+          "output_mode": "json",
+          "count": "100"
+        }
+      },
+      "response": {
+        "json": {
+          "results": [
+            {
+              "_raw": "ERROR job=BATCH_PAYMENT_PROCESS event=FAILURE status=FA exit_code=1 message=\"Job terminated with exit code 1\"",
+              "_time": "2026-03-01T02:04:10.000+00:00",
+              "_bkt": "batch_logs~3~A1",
+              "host": "batch-server-01",
+              "source": "autosys",
+              "sourcetype": "autosys",
+              "index": "batch_logs"
+            },
+            {
+              "_raw": "ERROR job=BATCH_PAYMENT_PROCESS step=load_payments message=\"Connection refused: paydb01:1521\"",
+              "_time": "2026-03-01T02:04:00.000+00:00",
+              "_bkt": "batch_logs~3~A1",
+              "host": "batch-server-01",
+              "source": "autosys",
+              "sourcetype": "autosys",
+              "index": "batch_logs"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

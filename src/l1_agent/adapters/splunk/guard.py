@@ -316,6 +316,32 @@ def _check_search_terms(tokens: List[_Token], allowed: Tuple[str, ...], *, base:
     return found
 
 
+def unquoted_placeholders(query: Any) -> List[str]:
+    """The `${name}` placeholders in a search that do not stand inside double quotes.
+
+    A value from a ticket goes into a search as a quoted term, never as bare
+    SPL. The SOP validator uses this; the guard still checks the rendered search.
+    """
+    if not isinstance(query, str):
+        return []
+    found: List[str] = []
+    quoted = False
+    i, n = 0, len(query)
+    while i < n:
+        ch = query[i]
+        if quoted and ch == "\\":
+            i += 2
+            continue
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted and query.startswith("${", i):
+            end = query.find("}", i)
+            if end != -1:
+                found.append(query[i + 2 : end])
+        i += 1
+    return found
+
+
 def guard(
     query: Any,
     time_range: Any = None,

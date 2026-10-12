@@ -59,6 +59,7 @@ markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "live_servicenow: reads and writes the configured ServiceNow instance; skipped unless SERVICENOW_* are set",
     "live_llm: calls the configured model provider; skipped unless LLM_API_KEY, LLM_ENDPOINT and LLM_MODEL are set",
+    "splunk_live: seeds and searches a Splunk lab; skipped unless SPLUNK_LIVE_TESTS=1",
 ]
 
 [tool.ruff]

@@ -16,6 +16,8 @@ from src.l1_agent.adapters.schemas import (
     is_step_capability,
     validate_step_parameters,
 )
+from src.l1_agent.adapters.splunk.guard import unquoted_placeholders
+from src.l1_agent.connectors.catalog import capability_for
 from src.l1_agent.connectors.sdk.manifest import Kind
 from src.l1_agent.engine import expressions
 from src.l1_agent.engine.parameters import spec_problems, undeclared_placeholders
@@ -256,6 +258,23 @@ def verified_flags_on_entry(sop: SOP) -> Dict[str, Set[bool]]:
     return flags
 
 
+def _search_quoting_problems(step: SOPStep) -> List[str]:
+    """A ticket value goes into a Splunk search as a quoted term, never as bare SPL."""
+    searches = []
+    if capability_for(step.step_type, step.capability) == "splunk.search":
+        searches.append(step.parameters)
+    check = str(step.parameters.get("check", ""))
+    if capability_for(check, check if "." in check else "") == "splunk.search":
+        searches.append(step.parameters.get("parameters", {}))
+    return [
+        f"step '{step.step_id}': placeholder '${{{name}}}' must be inside double quotes "
+        "in a Splunk search"
+        for parameters in searches
+        if isinstance(parameters, dict)
+        for name in unquoted_placeholders(parameters.get("query"))
+    ]
+
+
 def validate_sop(sop: SOP) -> List[str]:
     """Return every problem found. An empty list means the SOP may execute."""
     problems: List[str] = []
@@ -289,6 +308,7 @@ def validate_sop(sop: SOP) -> List[str]:
 
     for step in sop.steps:
         problems += _step_problems(step, index)
+        problems += _search_quoting_problems(step)
     acts = any(s.step_type.upper() == StepType.ACTION.value for s in sop.steps)
     if acts and any(
         isinstance(spec.source, dict) and spec.source.get("advisor") for spec in sop.parameters
